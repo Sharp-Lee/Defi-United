@@ -12,7 +12,7 @@ interface Props {
 }
 
 export function DonateForm({ selected, canBroadcast }: Props) {
-  const { state, dispatch, getProvider, getChildWallet } = useApp();
+  const { state, dispatch, getProvider, getRoot, getChildWallet } = useApp();
   const [amountStr, setAmountStr] = useState("0.00001");
   const [plan, setPlan] = useState<DonatePlan | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -30,8 +30,16 @@ export function DonateForm({ selected, canBroadcast }: Props) {
       const provider = getProvider();
       if (!provider) throw new Error("Provider 未就绪");
       if (selectedChildren.length === 0) throw new Error("未选择子账户");
+      const root = getRoot();
+      if (!root) throw new Error("Root 未派生");
       const amountWei = parseEther(amountStr);
-      const p = await planDonate(selectedChildren.length, amountWei, provider);
+      const p = await planDonate(
+        selectedChildren.length,
+        amountWei,
+        state.vault!.donationTarget,
+        root.address,
+        provider,
+      );
       setPlan(p);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -52,6 +60,7 @@ export function DonateForm({ selected, canBroadcast }: Props) {
         wallets,
         state.vault!.donationTarget,
         plan.perChildValueWei,
+        plan.perChildGas,
         provider,
         (rec) => dispatch({ type: "TX", record: rec }),
       );
@@ -114,7 +123,11 @@ export function DonateForm({ selected, canBroadcast }: Props) {
             <div>{plan.count}</div>
             <div>每个金额</div>
             <div className="mono">{fmtEth(plan.perChildValueWei)} ETH</div>
-            <div>每笔预估 gas</div>
+            <div>目标类型</div>
+            <div>{plan.targetIsContract ? "合约" : "EOA"}</div>
+            <div>每笔 gasLimit</div>
+            <div className="mono">{plan.perChildGas.toString()} units</div>
+            <div>每笔预估 gas 费</div>
             <div className="mono">{fmtEth(plan.perChildFeeWei)} ETH</div>
             <div>总捐款</div>
             <div className="mono">{fmtEth(plan.totalValueWei)} ETH</div>

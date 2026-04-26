@@ -95,30 +95,53 @@ export async function distribute(
 
 export interface DonatePlan {
   perChildValueWei: bigint;
+  perChildGas: bigint;
   perChildFeeWei: bigint;
   perChildTotalWei: bigint;
   totalValueWei: bigint;
   totalFeeWei: bigint;
   count: number;
+  targetIsContract: boolean;
 }
 
 export async function planDonate(
   count: number,
   amountWei: bigint,
+  target: string,
+  fromAddr: string,
   provider: JsonRpcProvider,
 ): Promise<DonatePlan> {
   if (amountWei <= 0n) throw new Error("捐款金额必须大于 0");
   if (count <= 0) throw new Error("未选择子账户");
+  if (!isAddress(target)) throw new Error("目标地址无效");
   const fees = await getFees(provider);
-  const perChildFeeWei = PLAIN_TRANSFER_GAS * fees.maxFeePerGas;
+
+  // Detect contract target — 21000 only covers EOA→EOA. A receive()/fallback()
+  // with any state writes can easily push past that and OOG the tx.
+  const code = await provider.getCode(target);
+  const targetIsContract = code !== "0x" && code.length > 2;
+
+  let perChildGas = PLAIN_TRANSFER_GAS;
+  try {
+    const est = await provider.estimateGas({ from: fromAddr, to: target, value: amountWei });
+    perChildGas = (est * 13n) / 10n; // +30% buffer
+    if (perChildGas < PLAIN_TRANSFER_GAS) perChildGas = PLAIN_TRANSFER_GAS;
+  } catch {
+    // estimateGas can fail (e.g. contract reverts on small value); fall back.
+    if (targetIsContract) perChildGas = 100_000n; // safer default for unknown contract
+  }
+
+  const perChildFeeWei = perChildGas * fees.maxFeePerGas;
   const perChildTotalWei = amountWei + perChildFeeWei;
   return {
     perChildValueWei: amountWei,
+    perChildGas,
     perChildFeeWei,
     perChildTotalWei,
     totalValueWei: amountWei * BigInt(count),
     totalFeeWei: perChildFeeWei * BigInt(count),
     count,
+    targetIsContract,
   };
 }
 
@@ -126,6 +149,7 @@ export async function donate(
   children: HDNodeWallet[],
   target: string,
   amountWei: bigint,
+  perChildGas: bigint,
   provider: JsonRpcProvider,
   onTx: OnTx,
   concurrency = 8,
@@ -152,7 +176,7 @@ export async function donate(
           const tx = await signer.sendTransaction({
             to: target,
             value: amountWei,
-            gasLimit: PLAIN_TRANSFER_GAS,
+            gasLimit: perChildGas,
             maxFeePerGas: fees.maxFeePerGas,
             maxPriorityFeePerGas: fees.maxPriorityFeePerGas,
           });
