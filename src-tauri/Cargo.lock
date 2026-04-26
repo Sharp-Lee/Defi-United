@@ -4210,6 +4210,7 @@ dependencies = [
  "base64 0.22.1",
  "bip39",
  "dirs",
+ "libc",
  "rand 0.8.6",
  "secrecy",
  "serde",
