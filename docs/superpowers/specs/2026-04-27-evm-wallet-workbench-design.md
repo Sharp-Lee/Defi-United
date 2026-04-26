@@ -177,9 +177,11 @@ UI 不负责：
   - 包含最终 nonce、gasLimit、maxFeePerGas、maxPriorityFeePerGas、raw tx 摘要
 - `ChainOutcome`
   - 广播哈希和链上最终状态
-  - 包含 `pending`、`confirmed`、`failed`、`replaced`、`cancelled`
+  - 包含 `pending`、`confirmed`、`failed`、`replaced`、`cancelled`、`dropped`
 
 这样既能回看用户最初意图，也能看到最终实际上链的参数。
+
+`dropped` 用于表示交易未被确认、未被显式替换、但已经从追踪中的公共 mempool 或 RPC 视角消失的终态。
 
 ### Rebuild Boundary
 
@@ -279,6 +281,15 @@ UI 不负责：
 - maxFeePerGas
 - maxPriorityFeePerGas
 
+面板同时展示当前链的实时 fee 参考值，并将用户输入与实时参考值进行对比。
+
+第一版加入以下 fee 护栏：
+
+- 当 `maxFeePerGas` 超过当前实时参考值的 3 倍时，显示高风险警告
+- 当 `maxPriorityFeePerGas` 超过当前实时参考值的 3 倍时，显示高风险警告
+- 当手动 `gasLimit` 超过当前估算值的 2 倍时，显示高风险警告
+- 触发任一高风险警告时，确认页必须增加二次确认，明确提示总成本可能远超当前网络条件
+
 ### Draft Freezing
 
 用户点击确认后，系统必须生成不可变的 `transfer draft`。以下任意条件发生变化时，确认页失效，必须重新生成 draft：
@@ -348,8 +359,21 @@ Rust 侧完成最终交易构建、签名和广播。
 - `failed`
 - `replaced`
 - `cancelled`
+- `dropped`
 
 历史记录不能只显示最终成功状态，必须保留中间迁移。
+
+### Step 6: Background Reconciliation
+
+应用在会话期间必须维护一个独立于当前视图的 pending 交易后台 reconciler。它负责持续追踪本地已知 pending 交易，并在以下事件发生时释放或更新本地 nonce 预留：
+
+- 交易确认
+- 交易失败
+- 交易被替换
+- 交易被取消
+- 交易被判定为 `dropped`
+
+这个 reconciler 不能依赖用户是否停留在 History 页面。
 
 ## Nonce and Pending Policy
 
@@ -357,7 +381,16 @@ Rust 侧完成最终交易构建、签名和广播。
 
 ### Editing Lock
 
-同一 `account + chain` 同时只允许存在一个“待广播且可编辑中的交易草稿”。这能避免多笔草稿互相争抢 nonce。
+同一 `account + chain` 同时只允许存在一个“普通待广播且可编辑中的交易草稿”。这能避免多笔普通草稿互相争抢 nonce。
+
+`replace` 和 `cancel` 不走普通草稿通道，而是走绑定到单笔 pending 交易的专用流程：
+
+- 专用流程必须指向一笔现有 pending submission
+- 专用流程沿用原交易的 `chainId`、`from`、`nonce`
+- `replace` 允许在保留同 nonce 的前提下更新 fee，并按产品定义调整交易内容
+- `cancel` 使用同 nonce、向自身发送 0 值交易的模型完成
+
+因此，replace / cancel 是“对现有 pending 交易的受控后续动作”，不是第二个普通可编辑草稿。
 
 ### Local Nonce Reservation
 
@@ -377,6 +410,7 @@ Rust 侧完成最终交易构建、签名和广播。
 - `pending -> confirmed`
 - `pending -> replaced`
 - `pending -> cancelled`
+- `pending -> dropped`
 
 ## Error Handling
 
@@ -486,8 +520,10 @@ Rust 侧完成最终交易构建、签名和广播。
 默认行为：
 
 - 账户列表只在进入页面、手动刷新、广播后刷新
-- 历史页只轮询当前可见的 pending 交易
+- History 页面只额外展示和筛选 pending 交易，但 pending 状态更新由应用级后台 reconciler 统一驱动
 - 非当前链和非当前视图不做高频轮询
+
+应用级后台 reconciler 只追踪本地已知 pending 交易，不承担全量账户扫描职责。
 
 ## V1 Screen Structure
 
@@ -591,6 +627,7 @@ Rust 侧完成最终交易构建、签名和广播。
 - confirmed
 - replaced
 - cancelled
+- dropped
 
 产品对外只支持主网，不等于工程验证要依赖主网。
 
@@ -631,7 +668,7 @@ Rust 侧完成最终交易构建、签名和广播。
 - 自动锁定
 - 失败恢复
 - 日志脱敏
-- pending / replaced / cancelled 完整状态
+- pending / replaced / cancelled / dropped 完整状态
 - 数据迁移与损坏恢复策略
 
 ## Extension Path
