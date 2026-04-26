@@ -128,7 +128,6 @@ Expected: FAIL with `Cannot find module './AppShell'` or an equivalent missing-f
     "@tauri-apps/cli": "^2.0.0",
     "@testing-library/jest-dom": "^6.6.3",
     "@testing-library/react": "^16.1.0",
-    "@testing-library/user-event": "^14.5.2",
     "jsdom": "^25.0.1",
     "vitest": "^2.1.8"
   }
