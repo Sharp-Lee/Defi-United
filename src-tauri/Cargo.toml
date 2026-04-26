@@ -8,10 +8,14 @@ tauri-build = { version = "2.0.0", features = [] }
 
 [dependencies]
 aes-gcm = "0.10"
+alloy-primitives = "0.8"
 argon2 = "0.5"
 base64 = "0.22"
 bip39 = "2.1"
+coins-bip32 = "0.12"
+coins-bip39 = "0.12"
 dirs = "6"
+ethers = "2"
 libc = "0.2"
 rand = "0.8"
 secrecy = "0.10"
