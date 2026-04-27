@@ -1,12 +1,14 @@
 use std::collections::HashSet;
 use std::sync::{Mutex, OnceLock};
 
+use crate::diagnostics::{append_diagnostic_event, DiagnosticEventInput, DiagnosticLevel};
 use crate::models::{NativeTransferIntent, SubmissionKind, SubmissionRecord};
 use crate::transactions::{
     load_history_records, persist_pending_history, reconcile_pending_history,
     submit_native_transfer, submit_native_transfer_with_history_kind,
 };
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -360,6 +362,17 @@ pub async fn replace_pending_transfer(request: PendingMutationRequest) -> Result
         crate::models::ChainOutcomeState::Replaced,
         Some(record.submission.tx_hash.clone()),
     ) {
+        append_diagnostic_event(DiagnosticEventInput {
+            level: DiagnosticLevel::Error,
+            category: "transaction",
+            source: "transactions_command",
+            event: "replacePriorHistoryMarkFailed",
+            chain_id: record.submission.chain_id,
+            account_index: record.submission.account_index,
+            tx_hash: Some(tx_hash.clone()),
+            message: Some(error.clone()),
+            metadata: json!({ "replacementTxHash": record.submission.tx_hash }),
+        });
         return Err(pending_mutation_mark_failure_error(&record, &error));
     }
     serde_json::to_string(&record).map_err(|e| e.to_string())
@@ -384,6 +397,17 @@ pub async fn cancel_pending_transfer(request: PendingMutationRequest) -> Result<
         crate::models::ChainOutcomeState::Cancelled,
         Some(record.submission.tx_hash.clone()),
     ) {
+        append_diagnostic_event(DiagnosticEventInput {
+            level: DiagnosticLevel::Error,
+            category: "transaction",
+            source: "transactions_command",
+            event: "cancelPriorHistoryMarkFailed",
+            chain_id: record.submission.chain_id,
+            account_index: record.submission.account_index,
+            tx_hash: Some(tx_hash.clone()),
+            message: Some(error.clone()),
+            metadata: json!({ "cancellationTxHash": record.submission.tx_hash }),
+        });
         return Err(pending_mutation_mark_failure_error(&record, &error));
     }
     serde_json::to_string(&record).map_err(|e| e.to_string())

@@ -4,8 +4,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use ethers::providers::{Http, Middleware, Provider};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use tokio::time::{timeout, Duration};
 
+use crate::diagnostics::{append_diagnostic_event, DiagnosticEventInput, DiagnosticLevel};
 use crate::models::{AppConfig, RpcEndpointConfig};
 use crate::storage::{config_path, write_file_atomic};
 
@@ -34,17 +36,78 @@ fn now_unix_seconds() -> Result<String, String> {
 }
 
 async fn probe_rpc_chain_id(rpc_url: &str) -> Result<u64, String> {
-    let provider =
-        Provider::<Http>::try_from(rpc_url).map_err(|_| "RPC URL is invalid".to_string())?;
+    let provider = Provider::<Http>::try_from(rpc_url).map_err(|_| {
+        append_diagnostic_event(DiagnosticEventInput {
+            level: DiagnosticLevel::Error,
+            category: "rpc",
+            source: "config",
+            event: "rpcChainIdProbeProviderInvalid",
+            chain_id: None,
+            account_index: None,
+            tx_hash: None,
+            message: Some("RPC URL is invalid".to_string()),
+            metadata: json!({ "stage": "provider" }),
+        });
+        "RPC URL is invalid".to_string()
+    })?;
+    append_diagnostic_event(DiagnosticEventInput {
+        level: DiagnosticLevel::Info,
+        category: "rpc",
+        source: "config",
+        event: "rpcChainIdProbeStarted",
+        chain_id: None,
+        account_index: None,
+        tx_hash: None,
+        message: None,
+        metadata: json!({ "timeoutSeconds": RPC_CHAIN_ID_PROBE_TIMEOUT_SECONDS }),
+    });
     let chain_id = timeout(
         Duration::from_secs(RPC_CHAIN_ID_PROBE_TIMEOUT_SECONDS),
         provider.get_chainid(),
     )
     .await
-    .map_err(|_| "RPC chainId probe timed out".to_string())?
-    .map_err(|_| "RPC chainId probe failed".to_string())?;
+    .map_err(|_| {
+        append_diagnostic_event(DiagnosticEventInput {
+            level: DiagnosticLevel::Error,
+            category: "rpc",
+            source: "config",
+            event: "rpcChainIdProbeTimedOut",
+            chain_id: None,
+            account_index: None,
+            tx_hash: None,
+            message: Some("RPC chainId probe timed out".to_string()),
+            metadata: json!({ "timeoutSeconds": RPC_CHAIN_ID_PROBE_TIMEOUT_SECONDS }),
+        });
+        "RPC chainId probe timed out".to_string()
+    })?
+    .map_err(|_| {
+        append_diagnostic_event(DiagnosticEventInput {
+            level: DiagnosticLevel::Error,
+            category: "rpc",
+            source: "config",
+            event: "rpcChainIdProbeFailed",
+            chain_id: None,
+            account_index: None,
+            tx_hash: None,
+            message: Some("RPC chainId probe failed".to_string()),
+            metadata: json!({}),
+        });
+        "RPC chainId probe failed".to_string()
+    })?;
 
-    Ok(chain_id.as_u64())
+    let chain_id = chain_id.as_u64();
+    append_diagnostic_event(DiagnosticEventInput {
+        level: DiagnosticLevel::Info,
+        category: "rpc",
+        source: "config",
+        event: "rpcChainIdProbeSucceeded",
+        chain_id: Some(chain_id),
+        account_index: None,
+        tx_hash: None,
+        message: None,
+        metadata: json!({}),
+    });
+    Ok(chain_id)
 }
 
 pub fn ensure_rpc_chain_id_matches(
@@ -96,7 +159,20 @@ pub fn remember_validated_rpc_with_remote_chain_id(
     endpoint: ValidatedRpcEndpointInput,
     remote_chain_id: u64,
 ) -> Result<AppConfig, String> {
-    ensure_rpc_chain_id_matches(endpoint.chain_id, remote_chain_id)?;
+    if let Err(error) = ensure_rpc_chain_id_matches(endpoint.chain_id, remote_chain_id) {
+        append_diagnostic_event(DiagnosticEventInput {
+            level: DiagnosticLevel::Error,
+            category: "rpc",
+            source: "config",
+            event: "rpcValidationRejected",
+            chain_id: Some(endpoint.chain_id),
+            account_index: None,
+            tx_hash: None,
+            message: Some(error.clone()),
+            metadata: json!({ "remoteChainId": remote_chain_id }),
+        });
+        return Err(error);
+    }
 
     let _guard = config_lock()
         .lock()
@@ -122,7 +198,31 @@ pub fn remember_validated_rpc_with_remote_chain_id(
     }
 
     config.default_chain_id = chain_id;
-    write_app_config(&config)?;
+    if let Err(error) = write_app_config(&config) {
+        append_diagnostic_event(DiagnosticEventInput {
+            level: DiagnosticLevel::Error,
+            category: "rpc",
+            source: "config",
+            event: "rpcValidationSaveFailed",
+            chain_id: Some(chain_id),
+            account_index: None,
+            tx_hash: None,
+            message: Some(error.clone()),
+            metadata: json!({ "remoteChainId": remote_chain_id }),
+        });
+        return Err(error);
+    }
+    append_diagnostic_event(DiagnosticEventInput {
+        level: DiagnosticLevel::Info,
+        category: "rpc",
+        source: "config",
+        event: "rpcValidationSaved",
+        chain_id: Some(chain_id),
+        account_index: None,
+        tx_hash: None,
+        message: None,
+        metadata: json!({ "remoteChainId": remote_chain_id }),
+    });
     Ok(config)
 }
 

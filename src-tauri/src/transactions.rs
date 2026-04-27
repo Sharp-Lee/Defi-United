@@ -10,8 +10,10 @@ use ethers::types::{
     transaction::{eip1559::Eip1559TransactionRequest, response::TransactionReceipt},
     Address, H256, U256, U64,
 };
+use serde_json::json;
 
 use crate::accounts::derive_wallet;
+use crate::diagnostics::{append_diagnostic_event, DiagnosticEventInput, DiagnosticLevel};
 use crate::models::{
     ChainOutcome, HistoryErrorSummary, IntentSnapshotMetadata, NonceThread, ReceiptSummary,
     ReconcileSummary, SubmissionKind, SubmissionRecord,
@@ -38,6 +40,78 @@ pub fn load_history_records() -> Result<Vec<HistoryRecord>, String> {
 fn write_history_records(records: &[HistoryRecord]) -> Result<(), String> {
     let raw = serde_json::to_string_pretty(records).map_err(|e| e.to_string())?;
     write_file_atomic(&history_path()?, &raw)
+}
+
+fn record_transaction_diagnostic(
+    level: DiagnosticLevel,
+    event: &'static str,
+    chain_id: Option<u64>,
+    account_index: Option<u32>,
+    tx_hash: Option<String>,
+    message: Option<String>,
+    metadata: serde_json::Value,
+) {
+    append_diagnostic_event(DiagnosticEventInput {
+        level,
+        category: "transaction",
+        source: "transactions",
+        event,
+        chain_id,
+        account_index,
+        tx_hash,
+        message,
+        metadata,
+    });
+}
+
+fn record_native_transfer_error(
+    intent: &NativeTransferIntent,
+    event: &'static str,
+    error: String,
+    metadata: serde_json::Value,
+) -> String {
+    record_transaction_diagnostic(
+        DiagnosticLevel::Error,
+        event,
+        Some(intent.chain_id),
+        Some(intent.account_index),
+        None,
+        Some(error.clone()),
+        metadata,
+    );
+    error
+}
+
+fn parse_native_transfer_address(
+    intent: &NativeTransferIntent,
+    field: &'static str,
+    value: &str,
+    event: &'static str,
+) -> Result<Address, String> {
+    value.parse::<Address>().map_err(|e| {
+        record_native_transfer_error(
+            intent,
+            event,
+            format!("{e}"),
+            json!({ "field": field, "nonce": intent.nonce }),
+        )
+    })
+}
+
+fn parse_native_transfer_u256(
+    intent: &NativeTransferIntent,
+    field: &'static str,
+    value: &str,
+    event: &'static str,
+) -> Result<U256, String> {
+    U256::from_dec_str(value).map_err(|e| {
+        record_native_transfer_error(
+            intent,
+            event,
+            e.to_string(),
+            json!({ "field": field, "nonce": intent.nonce }),
+        )
+    })
 }
 
 fn now_unix_seconds() -> Result<String, String> {
@@ -158,7 +232,27 @@ pub fn persist_pending_history_with_kind(
 
     let mut records = load_history_records()?;
     records.push(record.clone());
-    write_history_records(&records)?;
+    if let Err(error) = write_history_records(&records) {
+        record_transaction_diagnostic(
+            DiagnosticLevel::Error,
+            "pendingHistoryWriteFailed",
+            Some(record.intent.chain_id),
+            Some(record.intent.account_index),
+            Some(record.submission.tx_hash.clone()),
+            Some(error.clone()),
+            json!({ "kind": record.submission.kind }),
+        );
+        return Err(error);
+    }
+    record_transaction_diagnostic(
+        DiagnosticLevel::Info,
+        "pendingHistoryWriteSucceeded",
+        Some(record.intent.chain_id),
+        Some(record.intent.account_index),
+        Some(record.submission.tx_hash.clone()),
+        None,
+        json!({ "kind": record.submission.kind }),
+    );
 
     Ok(record)
 }
@@ -180,16 +274,16 @@ pub fn mark_prior_history_state_with_replacement(
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let mut records = load_history_records()?;
 
-    let Some(record) = records
-        .iter_mut()
-        .find(|record| record.outcome.tx_hash == tx_hash)
+    let Some(record_index) = records
+        .iter()
+        .position(|record| record.outcome.tx_hash == tx_hash)
     else {
         return Err(format!(
             "pending history record not found for tx_hash {tx_hash}"
         ));
     };
 
-    if record.outcome.state != ChainOutcomeState::Pending {
+    if records[record_index].outcome.state != ChainOutcomeState::Pending {
         return Err(format!(
             "history record for tx_hash {tx_hash} is not pending"
         ));
@@ -201,16 +295,50 @@ pub fn mark_prior_history_state_with_replacement(
         ChainOutcomeState::Cancelled => "markedCancelledByLocalSubmission",
         _ => "markedByLocalHistoryMutation",
     };
-    record.outcome.state = next_state;
-    record.outcome.reconcile_summary = Some(ReconcileSummary {
-        source: "localHistoryMutation".to_string(),
-        checked_at: Some(marked_at),
-        rpc_chain_id: None,
-        latest_confirmed_nonce: None,
-        decision: decision.to_string(),
-    });
-    record.nonce_thread.replaced_by_tx_hash = replaced_by_tx_hash;
-    write_history_records(&records)
+    let diagnostic_chain_id;
+    let diagnostic_account_index;
+    let diagnostic_tx_hash;
+    let diagnostic_state;
+    let diagnostic_replaced_by_tx_hash;
+    {
+        let record = &mut records[record_index];
+        record.outcome.state = next_state;
+        record.outcome.reconcile_summary = Some(ReconcileSummary {
+            source: "localHistoryMutation".to_string(),
+            checked_at: Some(marked_at),
+            rpc_chain_id: None,
+            latest_confirmed_nonce: None,
+            decision: decision.to_string(),
+        });
+        record.nonce_thread.replaced_by_tx_hash = replaced_by_tx_hash;
+        diagnostic_chain_id = record.intent.chain_id;
+        diagnostic_account_index = record.intent.account_index;
+        diagnostic_tx_hash = record.outcome.tx_hash.clone();
+        diagnostic_state = record.outcome.state.clone();
+        diagnostic_replaced_by_tx_hash = record.nonce_thread.replaced_by_tx_hash.clone();
+    }
+    if let Err(error) = write_history_records(&records) {
+        record_transaction_diagnostic(
+            DiagnosticLevel::Error,
+            "pendingHistoryMarkFailed",
+            Some(diagnostic_chain_id),
+            Some(diagnostic_account_index),
+            Some(diagnostic_tx_hash.clone()),
+            Some(error.clone()),
+            json!({ "nextState": diagnostic_state, "replacedByTxHash": diagnostic_replaced_by_tx_hash }),
+        );
+        return Err(error);
+    }
+    record_transaction_diagnostic(
+        DiagnosticLevel::Info,
+        "pendingHistoryMarked",
+        Some(diagnostic_chain_id),
+        Some(diagnostic_account_index),
+        Some(diagnostic_tx_hash),
+        None,
+        json!({ "nextState": diagnostic_state, "replacedByTxHash": diagnostic_replaced_by_tx_hash }),
+    );
+    Ok(())
 }
 
 pub fn broadcast_history_write_error(tx_hash: &str, error: &str) -> String {
@@ -378,7 +506,27 @@ pub fn apply_pending_history_update_details(
             }
         }
     }
-    write_history_records(&records)?;
+    if let Err(error) = write_history_records(&records) {
+        record_transaction_diagnostic(
+            DiagnosticLevel::Error,
+            "reconcileHistoryWriteFailed",
+            Some(chain_id),
+            None,
+            None,
+            Some(error.clone()),
+            json!({ "updateCount": updates.len() }),
+        );
+        return Err(error);
+    }
+    record_transaction_diagnostic(
+        DiagnosticLevel::Info,
+        "reconcileHistoryWriteSucceeded",
+        Some(chain_id),
+        None,
+        None,
+        None,
+        json!({ "updateCount": updates.len() }),
+    );
     Ok(records)
 }
 
@@ -397,13 +545,47 @@ pub async fn reconcile_pending_history(
     rpc_url: String,
     chain_id: u64,
 ) -> Result<Vec<HistoryRecord>, String> {
-    let provider = Provider::<Http>::try_from(rpc_url).map_err(|e| e.to_string())?;
-    let remote_chain_id = provider.get_chainid().await.map_err(|e| e.to_string())?;
+    let provider = Provider::<Http>::try_from(rpc_url).map_err(|e| {
+        let error = e.to_string();
+        record_transaction_diagnostic(
+            DiagnosticLevel::Error,
+            "reconcileProviderInvalid",
+            Some(chain_id),
+            None,
+            None,
+            Some(error.clone()),
+            json!({ "stage": "provider" }),
+        );
+        error
+    })?;
+    let remote_chain_id = provider.get_chainid().await.map_err(|e| {
+        let error = e.to_string();
+        record_transaction_diagnostic(
+            DiagnosticLevel::Error,
+            "reconcileChainIdProbeFailed",
+            Some(chain_id),
+            None,
+            None,
+            Some(error.clone()),
+            json!({}),
+        );
+        error
+    })?;
     if remote_chain_id.as_u64() != chain_id {
-        return Err(format!(
+        let error = format!(
             "remote chainId {} does not match requested chainId {}",
             remote_chain_id, chain_id
-        ));
+        );
+        record_transaction_diagnostic(
+            DiagnosticLevel::Error,
+            "reconcileChainIdMismatch",
+            Some(chain_id),
+            None,
+            None,
+            Some(error.clone()),
+            json!({ "remoteChainId": remote_chain_id.as_u64() }),
+        );
+        return Err(error);
     }
 
     let records = load_history_records()?;
@@ -416,15 +598,42 @@ pub async fn reconcile_pending_history(
         .cloned()
         .collect::<Vec<_>>();
 
+    let pending_count = pending_records.len();
     let checked_at = now_unix_seconds()?;
     let mut updates = Vec::new();
     for record in pending_records {
         let tx_hash = record.outcome.tx_hash.clone();
-        let parsed_hash = tx_hash.parse::<H256>().map_err(|e| format!("{e}"))?;
+        let parsed_hash = tx_hash.parse::<H256>().map_err(|e| {
+            let error = format!("{e}");
+            let identity = history_identity_for_record(&record);
+            record_transaction_diagnostic(
+                DiagnosticLevel::Error,
+                "reconcileTxHashInvalid",
+                Some(identity.chain_id),
+                Some(identity.account_index),
+                Some(tx_hash.clone()),
+                Some(error.clone()),
+                json!({}),
+            );
+            error
+        })?;
         if let Some(receipt) = provider
             .get_transaction_receipt(parsed_hash)
             .await
-            .map_err(|e| e.to_string())?
+            .map_err(|e| {
+                let error = e.to_string();
+                let identity = history_identity_for_record(&record);
+                record_transaction_diagnostic(
+                    DiagnosticLevel::Error,
+                    "reconcileReceiptLookupFailed",
+                    Some(identity.chain_id),
+                    Some(identity.account_index),
+                    Some(tx_hash.clone()),
+                    Some(error.clone()),
+                    json!({}),
+                );
+                error
+            })?
         {
             let next_state = chain_outcome_from_receipt_status(receipt.status);
             if next_state != ChainOutcomeState::Pending {
@@ -455,14 +664,35 @@ pub async fn reconcile_pending_history(
         }
 
         let identity = history_identity_for_record(&record);
-        let from = identity
-            .from
-            .parse::<Address>()
-            .map_err(|e| format!("{e}"))?;
+        let from = identity.from.parse::<Address>().map_err(|e| {
+            let error = format!("{e}");
+            record_transaction_diagnostic(
+                DiagnosticLevel::Error,
+                "reconcileFromAddressInvalid",
+                Some(identity.chain_id),
+                Some(identity.account_index),
+                Some(tx_hash.clone()),
+                Some(error.clone()),
+                json!({ "identitySource": identity.source }),
+            );
+            error
+        })?;
         let latest_confirmed_nonce = provider
             .get_transaction_count(from, None)
             .await
-            .map_err(|e| e.to_string())?
+            .map_err(|e| {
+                let error = e.to_string();
+                record_transaction_diagnostic(
+                    DiagnosticLevel::Error,
+                    "reconcileNonceLookupFailed",
+                    Some(identity.chain_id),
+                    Some(identity.account_index),
+                    Some(tx_hash.clone()),
+                    Some(error.clone()),
+                    json!({}),
+                );
+                error
+            })?
             .as_u64();
         if let Some(next_state) = dropped_state_for_missing_receipt(&record, latest_confirmed_nonce)
         {
@@ -484,6 +714,15 @@ pub async fn reconcile_pending_history(
         }
     }
 
+    record_transaction_diagnostic(
+        DiagnosticLevel::Info,
+        "reconcilePendingHistoryChecked",
+        Some(chain_id),
+        None,
+        None,
+        None,
+        json!({ "pendingCount": pending_count, "updateCount": updates.len() }),
+    );
     apply_pending_history_update_details(chain_id, &updates)
 }
 
@@ -492,42 +731,144 @@ async fn preflight_native_transfer(
     signer_address: Address,
     provider: &Provider<Http>,
 ) -> Result<(), String> {
-    let remote_chain_id = provider.get_chainid().await.map_err(|e| e.to_string())?;
+    record_transaction_diagnostic(
+        DiagnosticLevel::Info,
+        "nativeTransferPreflightStarted",
+        Some(intent.chain_id),
+        Some(intent.account_index),
+        None,
+        None,
+        json!({ "nonce": intent.nonce }),
+    );
+    let remote_chain_id = provider.get_chainid().await.map_err(|e| {
+        let error = e.to_string();
+        record_transaction_diagnostic(
+            DiagnosticLevel::Error,
+            "nativeTransferPreflightChainIdFailed",
+            Some(intent.chain_id),
+            Some(intent.account_index),
+            None,
+            Some(error.clone()),
+            json!({ "nonce": intent.nonce }),
+        );
+        error
+    })?;
     if remote_chain_id.as_u64() != intent.chain_id {
-        return Err(format!(
+        let error = format!(
             "remote chainId {} does not match intent chainId {}",
             remote_chain_id, intent.chain_id
-        ));
+        );
+        record_transaction_diagnostic(
+            DiagnosticLevel::Error,
+            "nativeTransferPreflightChainIdMismatch",
+            Some(intent.chain_id),
+            Some(intent.account_index),
+            None,
+            Some(error.clone()),
+            json!({ "remoteChainId": remote_chain_id.as_u64(), "nonce": intent.nonce }),
+        );
+        return Err(error);
     }
 
-    let expected_from: Address = intent.from.parse().map_err(|e| format!("{e}"))?;
+    let expected_from = parse_native_transfer_address(
+        intent,
+        "from",
+        &intent.from,
+        "nativeTransferPreflightAddressInvalid",
+    )?;
     if signer_address != expected_from {
+        record_transaction_diagnostic(
+            DiagnosticLevel::Error,
+            "nativeTransferPreflightSignerMismatch",
+            Some(intent.chain_id),
+            Some(intent.account_index),
+            None,
+            Some("derived wallet does not match intent.from".to_string()),
+            json!({ "nonce": intent.nonce }),
+        );
         return Err("derived wallet does not match intent.from".to_string());
     }
 
     let balance = provider
         .get_balance(signer_address, None)
         .await
-        .map_err(|e| e.to_string())?;
-    let value = U256::from_dec_str(&intent.value_wei).map_err(|e| e.to_string())?;
-    let gas_limit = U256::from_dec_str(&intent.gas_limit).map_err(|e| e.to_string())?;
-    let max_fee_per_gas = U256::from_dec_str(&intent.max_fee_per_gas).map_err(|e| e.to_string())?;
+        .map_err(|e| {
+            record_native_transfer_error(
+                intent,
+                "nativeTransferPreflightBalanceFailed",
+                e.to_string(),
+                json!({ "nonce": intent.nonce }),
+            )
+        })?;
+    let value = parse_native_transfer_u256(
+        intent,
+        "value_wei",
+        &intent.value_wei,
+        "nativeTransferPreflightNumericFieldInvalid",
+    )?;
+    let gas_limit = parse_native_transfer_u256(
+        intent,
+        "gas_limit",
+        &intent.gas_limit,
+        "nativeTransferPreflightNumericFieldInvalid",
+    )?;
+    let max_fee_per_gas = parse_native_transfer_u256(
+        intent,
+        "max_fee_per_gas",
+        &intent.max_fee_per_gas,
+        "nativeTransferPreflightNumericFieldInvalid",
+    )?;
     let total_cost = value + gas_limit * max_fee_per_gas;
     if balance < total_cost {
+        record_transaction_diagnostic(
+            DiagnosticLevel::Error,
+            "nativeTransferPreflightInsufficientFunds",
+            Some(intent.chain_id),
+            Some(intent.account_index),
+            None,
+            Some("balance cannot cover value plus max gas cost".to_string()),
+            json!({ "nonce": intent.nonce }),
+        );
         return Err("balance cannot cover value plus max gas cost".to_string());
     }
 
     let latest_nonce = provider
         .get_transaction_count(signer_address, None)
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| {
+            record_native_transfer_error(
+                intent,
+                "nativeTransferPreflightNonceLookupFailed",
+                e.to_string(),
+                json!({ "nonce": intent.nonce }),
+            )
+        })?;
     if intent.nonce < latest_nonce.as_u64() {
-        return Err(format!(
+        let error = format!(
             "intent nonce {} is below latest on-chain nonce {}",
             intent.nonce, latest_nonce
-        ));
+        );
+        record_transaction_diagnostic(
+            DiagnosticLevel::Error,
+            "nativeTransferPreflightNonceTooLow",
+            Some(intent.chain_id),
+            Some(intent.account_index),
+            None,
+            Some(error.clone()),
+            json!({ "nonce": intent.nonce, "latestNonce": latest_nonce.as_u64() }),
+        );
+        return Err(error);
     }
 
+    record_transaction_diagnostic(
+        DiagnosticLevel::Info,
+        "nativeTransferPreflightSucceeded",
+        Some(intent.chain_id),
+        Some(intent.account_index),
+        None,
+        None,
+        json!({ "nonce": intent.nonce }),
+    );
     Ok(())
 }
 
@@ -542,29 +883,111 @@ pub async fn submit_native_transfer_with_history_kind(
 ) -> Result<HistoryRecord, String> {
     let wallet = with_session_mnemonic(|mnemonic| derive_wallet(mnemonic, intent.account_index))?
         .with_chain_id(intent.chain_id);
-    let provider = Provider::<Http>::try_from(intent.rpc_url.clone()).map_err(|e| e.to_string())?;
+    let provider = Provider::<Http>::try_from(intent.rpc_url.clone()).map_err(|e| {
+        let error = e.to_string();
+        record_transaction_diagnostic(
+            DiagnosticLevel::Error,
+            "nativeTransferProviderInvalid",
+            Some(intent.chain_id),
+            Some(intent.account_index),
+            None,
+            Some(error.clone()),
+            json!({ "kind": kind }),
+        );
+        error
+    })?;
     preflight_native_transfer(&intent, wallet.address(), &provider).await?;
-    load_history_records()?;
+    if let Err(error) = load_history_records() {
+        record_transaction_diagnostic(
+            DiagnosticLevel::Error,
+            "nativeTransferHistoryPreloadFailed",
+            Some(intent.chain_id),
+            Some(intent.account_index),
+            None,
+            Some(error.clone()),
+            json!({ "kind": kind }),
+        );
+        return Err(error);
+    }
     let signer = SignerMiddleware::new(provider, wallet);
 
     let tx = Eip1559TransactionRequest::new()
-        .to(intent.to.parse::<Address>().map_err(|e| format!("{e}"))?)
-        .from(intent.from.parse::<Address>().map_err(|e| format!("{e}"))?)
-        .value(U256::from_dec_str(&intent.value_wei).map_err(|e| e.to_string())?)
+        .to(parse_native_transfer_address(
+            &intent,
+            "to",
+            &intent.to,
+            "nativeTransferTransactionFieldInvalid",
+        )?)
+        .from(parse_native_transfer_address(
+            &intent,
+            "from",
+            &intent.from,
+            "nativeTransferTransactionFieldInvalid",
+        )?)
+        .value(parse_native_transfer_u256(
+            &intent,
+            "value_wei",
+            &intent.value_wei,
+            "nativeTransferTransactionFieldInvalid",
+        )?)
         .nonce(U256::from(intent.nonce))
-        .gas(U256::from_dec_str(&intent.gas_limit).map_err(|e| e.to_string())?)
-        .max_fee_per_gas(U256::from_dec_str(&intent.max_fee_per_gas).map_err(|e| e.to_string())?)
-        .max_priority_fee_per_gas(
-            U256::from_dec_str(&intent.max_priority_fee_per_gas).map_err(|e| e.to_string())?,
-        )
+        .gas(parse_native_transfer_u256(
+            &intent,
+            "gas_limit",
+            &intent.gas_limit,
+            "nativeTransferTransactionFieldInvalid",
+        )?)
+        .max_fee_per_gas(parse_native_transfer_u256(
+            &intent,
+            "max_fee_per_gas",
+            &intent.max_fee_per_gas,
+            "nativeTransferTransactionFieldInvalid",
+        )?)
+        .max_priority_fee_per_gas(parse_native_transfer_u256(
+            &intent,
+            "max_priority_fee_per_gas",
+            &intent.max_priority_fee_per_gas,
+            "nativeTransferTransactionFieldInvalid",
+        )?)
         .chain_id(intent.chain_id);
 
-    let pending = signer
-        .send_transaction(tx, None)
-        .await
-        .map_err(|e| e.to_string())?;
+    let pending = signer.send_transaction(tx, None).await.map_err(|e| {
+        let error = e.to_string();
+        record_transaction_diagnostic(
+            DiagnosticLevel::Error,
+            "nativeTransferBroadcastFailed",
+            Some(intent.chain_id),
+            Some(intent.account_index),
+            None,
+            Some(error.clone()),
+            json!({ "kind": kind, "nonce": intent.nonce }),
+        );
+        error
+    })?;
     let tx_hash = format!("{:#x}", pending.tx_hash());
+    record_transaction_diagnostic(
+        DiagnosticLevel::Info,
+        "nativeTransferBroadcastSucceeded",
+        Some(intent.chain_id),
+        Some(intent.account_index),
+        Some(tx_hash.clone()),
+        None,
+        json!({ "kind": kind, "nonce": intent.nonce }),
+    );
 
-    persist_pending_history_with_kind(intent, tx_hash.clone(), kind, replaces_tx_hash)
-        .map_err(|error| broadcast_history_write_error(&tx_hash, &error))
+    let history_kind = kind.clone();
+    persist_pending_history_with_kind(intent, tx_hash.clone(), kind, replaces_tx_hash).map_err(
+        |error| {
+            record_transaction_diagnostic(
+                DiagnosticLevel::Error,
+                "nativeTransferHistoryWriteAfterBroadcastFailed",
+                None,
+                None,
+                Some(tx_hash.clone()),
+                Some(error.clone()),
+                json!({ "kind": history_kind }),
+            );
+            broadcast_history_write_error(&tx_hash, &error)
+        },
+    )
 }

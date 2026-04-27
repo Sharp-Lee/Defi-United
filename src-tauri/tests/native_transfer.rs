@@ -1,10 +1,14 @@
 use std::fs;
+use std::io::{Read, Write};
+use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::thread;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use ethers::types::U64;
-use wallet_workbench_lib::storage::history_path;
+use wallet_workbench_lib::diagnostics::read_diagnostic_events_from_path;
+use wallet_workbench_lib::storage::{diagnostics_path, history_path};
 use wallet_workbench_lib::transactions::{
     apply_pending_history_updates, broadcast_history_write_error,
     chain_outcome_from_receipt_status, dropped_state_for_missing_receipt, load_history_records,
@@ -52,6 +56,40 @@ fn with_test_app_dir(test_name: &str, f: impl FnOnce(&Path)) {
         std::env::remove_var(APP_DIR_ENV);
     }
     fs::remove_dir_all(&dir).expect("remove temp dir");
+}
+
+struct TestAppDirGuard {
+    dir: PathBuf,
+    previous: Option<std::ffi::OsString>,
+}
+
+impl TestAppDirGuard {
+    fn new(test_name: &str) -> Self {
+        let dir = unique_test_dir(test_name);
+        let previous = std::env::var_os(APP_DIR_ENV);
+
+        if dir.exists() {
+            fs::remove_dir_all(&dir).expect("clean temp dir");
+        }
+
+        fs::create_dir_all(&dir).expect("create temp dir");
+        std::env::set_var(APP_DIR_ENV, &dir);
+        wallet_workbench_lib::session::clear_session_mnemonic();
+
+        Self { dir, previous }
+    }
+}
+
+impl Drop for TestAppDirGuard {
+    fn drop(&mut self) {
+        wallet_workbench_lib::session::clear_session_mnemonic();
+        if let Some(value) = &self.previous {
+            std::env::set_var(APP_DIR_ENV, value);
+        } else {
+            std::env::remove_var(APP_DIR_ENV);
+        }
+        let _ = fs::remove_dir_all(&self.dir);
+    }
 }
 
 fn native_transfer_intent(nonce: u64, value_wei: &str) -> NativeTransferIntent {
@@ -127,6 +165,39 @@ fn history_record(nonce: u64, state: ChainOutcomeState, tx_hash: &str) -> Histor
     }
 }
 
+fn start_preflight_rpc_server() -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind rpc server");
+    let address = listener.local_addr().expect("local addr");
+    thread::spawn(move || {
+        for (index, stream) in listener.incoming().take(2).enumerate() {
+            let mut stream = stream.expect("accept rpc request");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .expect("set read timeout");
+            let mut buffer = [0; 4096];
+            let bytes = stream.read(&mut buffer).expect("read rpc request");
+            let request = String::from_utf8_lossy(&buffer[..bytes]);
+            let result = if request.contains("eth_chainId") || index == 0 {
+                "\"0x1\""
+            } else if request.contains("eth_getBalance") || index == 1 {
+                "\"0xffffffffffffffffffff\""
+            } else {
+                "null"
+            };
+            let body = format!(r#"{{"jsonrpc":"2.0","id":1,"result":{result}}}"#);
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("write rpc response");
+        }
+    });
+    format!("http://{address}")
+}
+
 #[test]
 fn writes_pending_history_before_confirmation() {
     with_test_app_dir("pending-history", |_| {
@@ -165,6 +236,58 @@ fn writes_pending_history_before_confirmation() {
         assert_eq!(records[0].outcome.tx_hash, first.outcome.tx_hash);
         assert_eq!(records[1].outcome.tx_hash, "0xabc");
     });
+}
+
+#[test]
+fn pending_history_write_records_a_diagnostic_event() {
+    with_test_app_dir("pending-history-diagnostics", |_| {
+        persist_pending_history(native_transfer_intent(4, "1"), "0xabc".into()).expect("persist");
+
+        let events =
+            read_diagnostic_events_from_path(&diagnostics_path().expect("diagnostics path"))
+                .expect("read diagnostics");
+
+        let event = events
+            .iter()
+            .find(|event| event.event == "pendingHistoryWriteSucceeded")
+            .expect("pending history diagnostic");
+        assert_eq!(event.category, "transaction");
+        assert_eq!(event.chain_id, Some(1));
+        assert_eq!(event.account_index, Some(1));
+        assert_eq!(event.tx_hash.as_deref(), Some("0xabc"));
+    });
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn preflight_parse_failure_records_a_diagnostic_event() {
+    let _guard = test_lock().lock().expect("test lock");
+    let _app_dir_guard = TestAppDirGuard::new("preflight-parse-diagnostics");
+    wallet_workbench_lib::session::write_session_mnemonic(
+        "test test test test test test test test test test test junk".into(),
+    );
+
+    let mut intent = native_transfer_intent(0, "not-a-number");
+    intent.rpc_url = start_preflight_rpc_server();
+    intent.chain_id = 1;
+    intent.from = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8".into();
+
+    let result = wallet_workbench_lib::transactions::submit_native_transfer(intent).await;
+    let events = read_diagnostic_events_from_path(&diagnostics_path().expect("diagnostics path"))
+        .expect("read diagnostics");
+
+    assert!(result.is_err(), "submit should fail");
+    let event = events
+        .iter()
+        .find(|event| event.event == "nativeTransferPreflightNumericFieldInvalid")
+        .unwrap_or_else(|| {
+            panic!("preflight parse diagnostic; result={result:?}; events={events:?}")
+        });
+    assert_eq!(event.chain_id, Some(1));
+    assert_eq!(event.account_index, Some(1));
+    assert_eq!(
+        event.metadata.get("field").and_then(|value| value.as_str()),
+        Some("value_wei")
+    );
 }
 
 #[test]

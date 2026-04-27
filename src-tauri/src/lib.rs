@@ -1,5 +1,6 @@
 pub mod accounts;
 pub mod commands;
+pub mod diagnostics;
 pub mod models;
 pub mod session;
 pub mod storage;
