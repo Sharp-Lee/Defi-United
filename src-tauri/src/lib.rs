@@ -16,6 +16,8 @@ pub fn run() {
             commands::accounts::save_scanned_account,
             commands::config::load_app_config,
             commands::config::remember_validated_rpc,
+            commands::diagnostics::export_diagnostic_events,
+            commands::diagnostics::load_diagnostic_events,
             commands::transactions::build_pending_history,
             commands::transactions::cancel_pending_transfer,
             commands::transactions::load_transaction_history,

@@ -1,4 +1,5 @@
 import { AccountsView } from "../features/accounts/AccountsView";
+import { DiagnosticsView } from "../features/diagnostics/DiagnosticsView";
 import { HistoryView } from "../features/history/HistoryView";
 import { SettingsView } from "../features/settings/SettingsView";
 import { TransferView } from "../features/transfer/TransferView";
@@ -9,7 +10,7 @@ import type { ChainRecord } from "../core/chains/registry";
 import type { AccountRecord, HistoryRecord, PendingMutationRequest } from "../lib/tauri";
 import type { AccountChainState } from "../lib/rpc";
 
-export type WorkspaceTab = "accounts" | "transfer" | "history" | "settings";
+export type WorkspaceTab = "accounts" | "transfer" | "history" | "diagnostics" | "settings";
 
 export interface AppShellProps {
   session: { status: "locked" | "ready" };
@@ -39,7 +40,7 @@ export interface AppShellProps {
   onTransferSubmitted?: (record: HistoryRecord) => void;
 }
 
-const workspaceTabs: WorkspaceTab[] = ["accounts", "transfer", "history", "settings"];
+const workspaceTabs: WorkspaceTab[] = ["accounts", "transfer", "history", "diagnostics", "settings"];
 
 function tabLabel(tab: WorkspaceTab) {
   return tab[0].toUpperCase() + tab.slice(1);
@@ -152,6 +153,7 @@ export function AppShell({
                 onReplace={onReplacePending}
               />
             )}
+            {activeTab === "diagnostics" && <DiagnosticsView />}
             {activeTab === "settings" && (
               <SettingsView
                 busy={busy}

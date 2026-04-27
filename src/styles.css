@@ -201,6 +201,12 @@ td {
   letter-spacing: 0;
 }
 
+.section-subtitle {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
 .settings-grid,
 .transfer-grid {
   max-width: 820px;
@@ -225,6 +231,70 @@ td {
 
 .history-controls .secondary-button {
   min-width: 72px;
+}
+
+.diagnostics-controls {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(120px, 1fr)) auto;
+  gap: 10px;
+  align-items: end;
+}
+
+.diagnostics-export {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.diagnostics-export h3,
+.diagnostics-export p {
+  margin: 0;
+}
+
+.diagnostics-export div {
+  display: grid;
+  gap: 6px;
+}
+
+.diagnostics-export p {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.diagnostics-level {
+  display: inline-flex;
+  min-height: 26px;
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 3px 7px;
+  color: var(--muted);
+  background: var(--panel-soft);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.diagnostics-level-info {
+  border-color: rgba(80, 147, 255, 0.58);
+  color: #b9d3ff;
+  background: rgba(80, 147, 255, 0.12);
+}
+
+.diagnostics-level-warn {
+  border-color: rgba(211, 154, 50, 0.62);
+  color: #ffd891;
+  background: rgba(211, 154, 50, 0.12);
+}
+
+.diagnostics-level-error {
+  border-color: rgba(224, 82, 82, 0.6);
+  color: #ffb5b5;
+  background: rgba(224, 82, 82, 0.12);
 }
 
 .history-status,
@@ -641,8 +711,13 @@ td {
     flex-wrap: wrap;
   }
 
-  .history-controls {
+  .history-controls,
+  .diagnostics-controls {
     grid-template-columns: 1fr;
+  }
+
+  .diagnostics-export {
+    display: grid;
   }
 
   .history-detail-header,

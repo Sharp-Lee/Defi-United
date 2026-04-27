@@ -52,6 +52,39 @@ export interface AppConfig {
   };
 }
 
+export type DiagnosticLevel = "info" | "warn" | "error";
+
+export interface DiagnosticEvent {
+  timestamp: string;
+  level: DiagnosticLevel;
+  category: string;
+  source: string;
+  event: string;
+  chainId?: number;
+  accountIndex?: number;
+  txHash?: string;
+  message?: string;
+  metadata: Record<string, unknown>;
+}
+
+export interface DiagnosticEventQuery {
+  limit?: number;
+  category?: string;
+  sinceTimestamp?: number;
+  untilTimestamp?: number;
+  chainId?: number;
+  account?: string;
+  txHash?: string;
+  level?: DiagnosticLevel;
+  status?: string;
+}
+
+export interface DiagnosticExportResult {
+  path: string;
+  count: number;
+  scope: DiagnosticEventQuery & { limit: number };
+}
+
 export function createVault(password: string) {
   return invoke<void>("create_vault", { password });
 }
@@ -167,4 +200,12 @@ export async function replacePendingTransfer(request: PendingMutationRequest) {
 export async function cancelPendingTransfer(request: PendingMutationRequest) {
   const raw = await invoke<string>("cancel_pending_transfer", { request });
   return normalizeHistoryRecord(JSON.parse(raw));
+}
+
+export function loadDiagnosticEvents(query: DiagnosticEventQuery = {}) {
+  return invoke<DiagnosticEvent[]>("load_diagnostic_events", { query });
+}
+
+export function exportDiagnosticEvents(query: DiagnosticEventQuery = {}) {
+  return invoke<DiagnosticExportResult>("export_diagnostic_events", { query });
 }
