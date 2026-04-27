@@ -1049,4 +1049,33 @@ describe("HistoryView", () => {
     expect(panel.getAllByText("RPC unavailable or rejected").length).toBeGreaterThan(0);
     expect(panel.getByText("The RPC endpoint failed, timed out, or returned an error while checking this transaction.")).toBeInTheDocument();
   });
+
+  it("shows only a P4 follow-up prompt for dropped records without a review action button", () => {
+    renderHistory([record({ txHash: "0xdropped", state: "Dropped" })]);
+
+    expect(screen.queryByRole("button", { name: /review/i })).not.toBeInTheDocument();
+    expect(screen.getByText(/Dropped records can be reviewed or reconciled manually in P4/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Details" }));
+
+    const guidance = within(screen.getByLabelText("Action guidance"));
+    expect(guidance.getByText("P4 Review")).toBeInTheDocument();
+    expect(guidance.getByText("Disabled")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /review/i })).not.toBeInTheDocument();
+  });
+
+  it("describes refresh as global tracked history instead of a row-scoped reconcile", () => {
+    renderHistory([record({ txHash: "0xpending", state: "Pending" })]);
+
+    expect(screen.getByRole("button", { name: "Refresh tracked history" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Refresh\/Reconcile 0xpending/i })).not.toBeInTheDocument();
+    expect(screen.queryByText(/Refresh\/Reconcile 0xpending/i)).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Details" }));
+
+    const guidance = within(screen.getByLabelText("Action guidance"));
+    expect(guidance.getByText("Global refresh/reconcile")).toBeInTheDocument();
+    expect(guidance.getByText(/currently selected chain\/RPC/)).toBeInTheDocument();
+    expect(guidance.getByText(/not a single transaction/)).toBeInTheDocument();
+  });
 });

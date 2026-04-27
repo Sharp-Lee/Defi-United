@@ -1,4 +1,9 @@
 import { useMemo, useState } from "react";
+import {
+  getHistoryActionGates,
+  isCurrentPendingActionTarget,
+  type HistoryActionGate,
+} from "../../core/history/actions";
 import { getHistoryErrorDisplay, getRawHistoryErrorDisplay } from "../../core/history/errors";
 import { HistoryErrorCard } from "./HistoryErrorCard";
 import {
@@ -191,23 +196,6 @@ function sortedThreadEntries(entries: HistoryReadModel[]) {
 
 function threadOrderTimestamp(entry: HistoryReadModel) {
   return entry.broadcastedAt ?? entry.record.intent_snapshot.captured_at ?? timestampValue(entry);
-}
-
-function isSupersededInThread(entry: HistoryReadModel, entries: HistoryReadModel[]) {
-  return (
-    entry.replacedByTxHash !== null ||
-    entry.status === "replaced" ||
-    entry.status === "cancelled" ||
-    entries.some((candidate) => candidate.replacesTxHash === entry.txHash)
-  );
-}
-
-function isActionablePending(entry: HistoryReadModel, entries: HistoryReadModel[]) {
-  return (
-    entry.status === "pending" &&
-    entries.some((candidate) => candidate.originalIndex === entry.originalIndex) &&
-    !isSupersededInThread(entry, entries)
-  );
 }
 
 function statusClass(status: HistoryStatus) {
@@ -426,30 +414,53 @@ export function HistoryView({
   }
 
   function renderActions(entry: HistoryReadModel, threadEntries: HistoryReadModel[]) {
-    const current = isActionablePending(entry, threadEntries);
+    const actionGates = getHistoryActionGates(entry, threadEntries);
+    const reconcile = actionGates.find((action) => action.kind === "reconcile");
+    const replace = actionGates.find((action) => action.kind === "replace");
+    const cancel = actionGates.find((action) => action.kind === "cancel");
     return (
       <div className="button-row history-actions">
         {renderDetailButton(entry)}
-        {current && (
+        {reconcile && (
+          <button
+            className="secondary-button"
+            disabled={disabled || isBusy || !reconcile.enabled}
+            onClick={handleRefresh}
+            title={reconcile.reason}
+            type="button"
+          >
+            Refresh tracked history
+          </button>
+        )}
+        {replace && cancel && (
           <>
             <button
               className="secondary-button"
-              disabled={disabled}
+              disabled={disabled || !replace.enabled || !onReplace}
               onClick={() => onReplace?.(pendingRequestFromRecord(entry.record))}
+              title={!onReplace ? "Replace handler is not available in this view." : replace.reason}
               type="button"
             >
               Replace {short(entry.txHash)}
             </button>
             <button
               className="secondary-button"
-              disabled={disabled}
+              disabled={disabled || !cancel.enabled || !onCancelPending}
               onClick={() => onCancelPending?.(pendingRequestFromRecord(entry.record))}
+              title={!onCancelPending ? "Cancel handler is not available in this view." : cancel.reason}
               type="button"
             >
               Cancel {short(entry.txHash)}
             </button>
           </>
         )}
+        {actionGates
+          .filter((action) => !action.enabled)
+          .map((action) => (
+            <span className="history-action-reason" key={action.kind}>
+              {action.label}: {action.reason}
+            </span>
+          ))}
       </div>
     );
   }
@@ -653,7 +664,7 @@ export function HistoryView({
                         <div key={`${entry.txHash}-${entry.originalIndex}`}>
                           {roleLabel(entry)}: {short(entry.txHash)}
                           <span className="history-thread-relation"> {relationshipLabel(entry)}</span>
-                          {isActionablePending(
+                          {isCurrentPendingActionTarget(
                             entry,
                             allThreadEntriesByKey.get(group.key) ?? [],
                           ) && (
@@ -776,7 +787,7 @@ function NonceThreadTimeline({
       </header>
       <ol>
         {entries.map((entry) => {
-          const current = isActionablePending(entry, threadEntries);
+          const current = isCurrentPendingActionTarget(entry, threadEntries);
           return (
             <li key={`${entry.txHash}-${entry.originalIndex}-timeline`}>
               <div className="history-thread-step-main">
@@ -820,7 +831,8 @@ function HistorySubmissionDetails({
   renderStatus: (status: HistoryStatus) => JSX.Element;
 }) {
   const { record } = entry;
-  const current = isActionablePending(entry, threadEntries);
+  const current = isCurrentPendingActionTarget(entry, threadEntries);
+  const actionGates = getHistoryActionGates(entry, threadEntries);
   const errorDisplay = getHistoryErrorDisplay({
     record,
     status: entry.status,
@@ -851,6 +863,7 @@ function HistorySubmissionDetails({
           meta={`${statusLabels[entry.status]} · chainId ${formatMaybe(entry.chainId)} · nonce ${formatMaybe(entry.nonce)}`}
         />
       )}
+      {actionGates.length > 0 && <HistoryActionGuidance actions={actionGates} />}
       <div className="history-detail-grid">
         <HistoryDetailSection
           title="Intent"
@@ -948,6 +961,23 @@ function outcomeTimeLabel(status: HistoryStatus) {
     case "unknown":
       return "Finalized at";
   }
+}
+
+function HistoryActionGuidance({ actions }: { actions: HistoryActionGate[] }) {
+  return (
+    <section className="history-action-guidance" aria-label="Action guidance">
+      <h5>Action Guidance</h5>
+      <ul>
+        {actions.map((action) => (
+          <li key={action.kind}>
+            <strong>{action.label}</strong>
+            <span>{action.enabled ? "Available" : "Disabled"}</span>
+            <p>{action.reason}</p>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
 }
 
 function HistoryDetailSection({
