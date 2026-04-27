@@ -20,9 +20,10 @@ use crate::diagnostics::{
     append_diagnostic_event, sanitize_diagnostic_message, DiagnosticEventInput, DiagnosticLevel,
 };
 use crate::models::{
-    ChainOutcome, HistoryErrorSummary, HistoryRecoveryIntent, HistoryRecoveryIntentStatus,
-    HistoryRecoveryResult, HistoryRecoveryResultStatus, IntentSnapshotMetadata, NonceThread,
-    ReceiptSummary, ReconcileSummary, SubmissionKind, SubmissionRecord,
+    ChainOutcome, DroppedReviewSummary, HistoryErrorSummary, HistoryRecoveryIntent,
+    HistoryRecoveryIntentStatus, HistoryRecoveryResult, HistoryRecoveryResultStatus,
+    IntentSnapshotMetadata, NonceThread, ReceiptSummary, ReconcileSummary, SubmissionKind,
+    SubmissionRecord,
 };
 use crate::session::with_session_mnemonic;
 use crate::storage::{
@@ -851,6 +852,7 @@ fn persist_pending_history_with_kind_at(
             reconciled_at: None,
             reconcile_summary: None,
             error_summary: None,
+            dropped_review_history: Vec::new(),
         },
         nonce_thread,
     };
@@ -1166,6 +1168,673 @@ fn receipt_summary(receipt: &TransactionReceipt) -> ReceiptSummary {
     }
 }
 
+fn history_record_matches_tx_hash(record: &HistoryRecord, tx_hash: &str) -> bool {
+    record.outcome.tx_hash.eq_ignore_ascii_case(tx_hash)
+        || record.submission.tx_hash.eq_ignore_ascii_case(tx_hash)
+}
+
+fn require_dropped_review_identity(record: &HistoryRecord) -> Result<HistoryIdentity, String> {
+    let tx_hash = record.submission.tx_hash.trim();
+    if tx_hash.is_empty() || tx_hash == "unknown" {
+        return Err("dropped review requires frozen submission tx_hash".to_string());
+    }
+    Ok(HistoryIdentity {
+        source: "submission",
+        chain_id: record
+            .submission
+            .chain_id
+            .ok_or_else(|| "dropped review requires frozen submission chain_id".to_string())?,
+        account_index: record
+            .submission
+            .account_index
+            .ok_or_else(|| "dropped review requires frozen submission account_index".to_string())?,
+        from: record
+            .submission
+            .from
+            .as_ref()
+            .filter(|value| !value.trim().is_empty())
+            .cloned()
+            .ok_or_else(|| "dropped review requires frozen submission from".to_string())?,
+        nonce: record
+            .submission
+            .nonce
+            .ok_or_else(|| "dropped review requires frozen submission nonce".to_string())?,
+    })
+}
+
+fn history_error_summary(source: &str, category: &str, message: &str) -> HistoryErrorSummary {
+    HistoryErrorSummary {
+        source: source.to_string(),
+        category: category.to_string(),
+        message: sanitize_diagnostic_message(message),
+    }
+}
+
+fn summarize_rpc_endpoint(rpc_url: &str) -> String {
+    let trimmed = rpc_url.trim();
+    let Some((scheme, rest)) = trimmed.split_once("://") else {
+        return "[redacted_endpoint]".to_string();
+    };
+    let scheme = scheme.to_ascii_lowercase();
+    if scheme.is_empty()
+        || !scheme
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '+' | '-' | '.'))
+    {
+        return "[redacted_endpoint]".to_string();
+    }
+
+    let authority = rest
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or_default()
+        .rsplit('@')
+        .next()
+        .unwrap_or_default();
+    if authority.is_empty() || authority.contains(char::is_whitespace) {
+        return "[redacted_endpoint]".to_string();
+    }
+
+    format!("{scheme}://{authority}")
+}
+
+fn dropped_review_summary(
+    record: &HistoryRecord,
+    reviewed_at: String,
+    rpc_endpoint_summary: String,
+    requested_chain_id: Option<u64>,
+    rpc_chain_id: Option<u64>,
+    latest_confirmed_nonce: Option<u64>,
+    transaction_found: Option<bool>,
+    local_same_nonce_tx_hash: Option<String>,
+    local_same_nonce_state: Option<ChainOutcomeState>,
+    result_state: ChainOutcomeState,
+    receipt: Option<ReceiptSummary>,
+    decision: &str,
+    recommendation: &str,
+    error_summary: Option<HistoryErrorSummary>,
+) -> DroppedReviewSummary {
+    DroppedReviewSummary {
+        reviewed_at,
+        source: "droppedManualReview".to_string(),
+        tx_hash: record.submission.tx_hash.clone(),
+        rpc_endpoint_summary,
+        requested_chain_id,
+        rpc_chain_id,
+        latest_confirmed_nonce,
+        transaction_found,
+        local_same_nonce_tx_hash,
+        local_same_nonce_state,
+        original_state: record.outcome.state.clone(),
+        original_finalized_at: record.outcome.finalized_at.clone(),
+        original_reconciled_at: record.outcome.reconciled_at.clone(),
+        original_reconcile_summary: record.outcome.reconcile_summary.clone(),
+        result_state,
+        receipt,
+        decision: decision.to_string(),
+        recommendation: recommendation.to_string(),
+        error_summary,
+    }
+}
+
+fn local_same_nonce_review_result(
+    record: &HistoryRecord,
+    records: &[HistoryRecord],
+) -> Option<(ChainOutcomeState, String, String)> {
+    let identity = require_dropped_review_identity(record).ok()?;
+    let target_hash = &record.submission.tx_hash;
+    let explicit_replacement = record
+        .nonce_thread
+        .replaced_by_tx_hash
+        .as_ref()
+        .filter(|value| !value.trim().is_empty());
+
+    records.iter().find_map(|candidate| {
+        if history_record_matches_tx_hash(candidate, target_hash) {
+            return None;
+        }
+        let candidate_identity =
+            submission_identity(candidate).or_else(|| nonce_thread_identity(candidate))?;
+        if candidate_identity.chain_id != identity.chain_id
+            || candidate_identity.account_index != identity.account_index
+            || !candidate_identity.from.eq_ignore_ascii_case(&identity.from)
+            || candidate_identity.nonce != identity.nonce
+        {
+            return None;
+        }
+
+        let candidate_hash = candidate.submission.tx_hash.clone();
+        let is_explicit = explicit_replacement
+            .is_some_and(|replacement| replacement.eq_ignore_ascii_case(&candidate_hash))
+            || candidate
+                .submission
+                .replaces_tx_hash
+                .as_ref()
+                .is_some_and(|replaces| replaces.eq_ignore_ascii_case(target_hash))
+            || candidate
+                .nonce_thread
+                .replaces_tx_hash
+                .as_ref()
+                .is_some_and(|replaces| replaces.eq_ignore_ascii_case(target_hash));
+        if !is_explicit {
+            return None;
+        }
+
+        match candidate.submission.kind {
+            SubmissionKind::Cancellation => Some((
+                ChainOutcomeState::Cancelled,
+                candidate_hash,
+                "localCancellationSameNonce".to_string(),
+            )),
+            SubmissionKind::Replacement | SubmissionKind::NativeTransfer => Some((
+                ChainOutcomeState::Replaced,
+                candidate_hash,
+                "localReplacementSameNonce".to_string(),
+            )),
+            SubmissionKind::Legacy => None,
+        }
+    })
+}
+
+fn apply_dropped_review_result(
+    tx_hash: &str,
+    identity: &HistoryIdentity,
+    mut review: DroppedReviewSummary,
+) -> Result<Vec<HistoryRecord>, String> {
+    let _guard = history_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut records = load_history_records()?;
+    let Some(record_index) = records
+        .iter()
+        .position(|record| history_record_matches_tx_hash(record, tx_hash))
+    else {
+        return Err(format!(
+            "dropped history record not found for tx_hash {tx_hash}"
+        ));
+    };
+
+    if records[record_index].outcome.state != ChainOutcomeState::Dropped {
+        return Err(format!(
+            "history record for tx_hash {tx_hash} is no longer dropped"
+        ));
+    }
+    let locked_identity = require_dropped_review_identity(&records[record_index])?;
+    if locked_identity.chain_id != identity.chain_id
+        || locked_identity.account_index != identity.account_index
+        || !locked_identity.from.eq_ignore_ascii_case(&identity.from)
+        || locked_identity.nonce != identity.nonce
+    {
+        return Err("dropped review frozen submission identity changed before write".to_string());
+    }
+
+    if matches!(
+        review.result_state,
+        ChainOutcomeState::Replaced | ChainOutcomeState::Cancelled
+    ) {
+        match local_same_nonce_review_result(&records[record_index], &records) {
+            Some((fresh_state, fresh_hash, fresh_decision)) => {
+                review.result_state = fresh_state.clone();
+                review.local_same_nonce_tx_hash = Some(fresh_hash);
+                review.local_same_nonce_state = Some(fresh_state);
+                review.decision = fresh_decision;
+                review.recommendation = "Fresh local same-nonce transaction history still identifies the dropped record as superseded; no mempool inference was used.".to_string();
+            }
+            None => {
+                review.result_state = ChainOutcomeState::Dropped;
+                review.local_same_nonce_tx_hash = None;
+                review.local_same_nonce_state = None;
+                review.decision = "staleLocalSameNonceRelation".to_string();
+                review.recommendation = "Local same-nonce relation changed before the review write; outcome remains uncertain/still dropped.".to_string();
+            }
+        }
+    }
+
+    let record = &mut records[record_index];
+    review.original_state = record.outcome.state.clone();
+    review.original_finalized_at = record.outcome.finalized_at.clone();
+    review.original_reconciled_at = record.outcome.reconciled_at.clone();
+    review.original_reconcile_summary = record.outcome.reconcile_summary.clone();
+    record.outcome.dropped_review_history.push(review.clone());
+
+    if review.result_state != ChainOutcomeState::Dropped {
+        record.outcome.state = review.result_state.clone();
+        if review.receipt.is_some() {
+            record.outcome.receipt = review.receipt.clone();
+        }
+        record.outcome.finalized_at = Some(review.reviewed_at.clone());
+        record.outcome.reconciled_at = Some(review.reviewed_at.clone());
+        record.outcome.reconcile_summary = Some(ReconcileSummary {
+            source: review.source.clone(),
+            checked_at: Some(review.reviewed_at.clone()),
+            rpc_chain_id: review.rpc_chain_id,
+            latest_confirmed_nonce: review.latest_confirmed_nonce,
+            decision: review.decision.clone(),
+        });
+        record.outcome.error_summary = None;
+    }
+
+    write_history_records(&records)?;
+    record_transaction_diagnostic(
+        DiagnosticLevel::Info,
+        "droppedReviewHistoryWriteSucceeded",
+        Some(identity.chain_id),
+        Some(identity.account_index),
+        Some(tx_hash.to_string()),
+        None,
+        json!({
+            "decision": review.decision,
+            "resultState": format!("{:?}", review.result_state),
+            "rpcChainId": review.rpc_chain_id,
+        }),
+    );
+    Ok(records)
+}
+
+pub async fn review_dropped_history_record(
+    tx_hash: String,
+    rpc_url: String,
+    requested_chain_id: u64,
+) -> Result<Vec<HistoryRecord>, String> {
+    let (record, records_snapshot) = {
+        let _guard = history_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let records = load_history_records()?;
+        let Some(record) = records
+            .iter()
+            .find(|record| history_record_matches_tx_hash(record, &tx_hash))
+            .cloned()
+        else {
+            return Err(format!(
+                "dropped history record not found for tx_hash {tx_hash}"
+            ));
+        };
+        (record, records)
+    };
+
+    if record.outcome.state != ChainOutcomeState::Dropped {
+        return Err(format!(
+            "history record for tx_hash {tx_hash} is not dropped"
+        ));
+    }
+    let identity = require_dropped_review_identity(&record)?;
+    let checked_at = now_unix_seconds()?;
+    let rpc_endpoint_summary = summarize_rpc_endpoint(&rpc_url);
+
+    if requested_chain_id != identity.chain_id {
+        let error = format!(
+            "requested chainId {requested_chain_id} does not match frozen submission chainId {}",
+            identity.chain_id
+        );
+        record_transaction_diagnostic(
+            DiagnosticLevel::Warn,
+            "droppedReviewRequestedChainIdMismatch",
+            Some(identity.chain_id),
+            Some(identity.account_index),
+            Some(record.submission.tx_hash.clone()),
+            Some(error.clone()),
+            json!({ "requestedChainId": requested_chain_id }),
+        );
+        let review = dropped_review_summary(
+            &record,
+            checked_at,
+            rpc_endpoint_summary.clone(),
+            Some(requested_chain_id),
+            None,
+            None,
+            None,
+            None,
+            None,
+            ChainOutcomeState::Dropped,
+            None,
+            "requestedChainIdMismatch",
+            "Select an RPC for the frozen submission chainId and run dropped review again.",
+            Some(history_error_summary(
+                "droppedManualReview",
+                "chainIdMismatch",
+                &error,
+            )),
+        );
+        return apply_dropped_review_result(&tx_hash, &identity, review);
+    }
+
+    let provider = match Provider::<Http>::try_from(rpc_url) {
+        Ok(provider) => provider,
+        Err(error) => {
+            let message = sanitize_diagnostic_message(&error.to_string());
+            record_transaction_diagnostic(
+                DiagnosticLevel::Error,
+                "droppedReviewProviderInvalid",
+                Some(identity.chain_id),
+                Some(identity.account_index),
+                Some(record.submission.tx_hash.clone()),
+                Some(message.clone()),
+                json!({}),
+            );
+            let review = dropped_review_summary(
+                &record,
+                checked_at,
+                rpc_endpoint_summary.clone(),
+                Some(requested_chain_id),
+                None,
+                None,
+                None,
+                None,
+                None,
+                ChainOutcomeState::Dropped,
+                None,
+                "rpcProviderInvalid",
+                "RPC was unavailable before review could verify chain state; fix the endpoint and review again.",
+                Some(history_error_summary(
+                    "droppedManualReview",
+                    "rpcUnavailable",
+                    &message,
+                )),
+            );
+            return apply_dropped_review_result(&tx_hash, &identity, review);
+        }
+    };
+
+    let remote_chain_id = match provider.get_chainid().await {
+        Ok(chain_id) => chain_id.as_u64(),
+        Err(error) => {
+            let message = sanitize_diagnostic_message(&error.to_string());
+            record_transaction_diagnostic(
+                DiagnosticLevel::Error,
+                "droppedReviewChainIdProbeFailed",
+                Some(identity.chain_id),
+                Some(identity.account_index),
+                Some(record.submission.tx_hash.clone()),
+                Some(message.clone()),
+                json!({}),
+            );
+            let review = dropped_review_summary(
+                &record,
+                checked_at,
+                rpc_endpoint_summary.clone(),
+                Some(requested_chain_id),
+                None,
+                None,
+                None,
+                None,
+                None,
+                ChainOutcomeState::Dropped,
+                None,
+                "rpcChainIdProbeFailed",
+                "RPC chainId could not be verified; no outcome was changed.",
+                Some(history_error_summary(
+                    "droppedManualReview",
+                    "rpcUnavailable",
+                    &message,
+                )),
+            );
+            return apply_dropped_review_result(&tx_hash, &identity, review);
+        }
+    };
+
+    if remote_chain_id != identity.chain_id {
+        let error = format!(
+            "remote chainId {remote_chain_id} does not match frozen submission chainId {}",
+            identity.chain_id
+        );
+        record_transaction_diagnostic(
+            DiagnosticLevel::Warn,
+            "droppedReviewChainIdMismatch",
+            Some(identity.chain_id),
+            Some(identity.account_index),
+            Some(record.submission.tx_hash.clone()),
+            Some(error.clone()),
+            json!({ "remoteChainId": remote_chain_id }),
+        );
+        let review = dropped_review_summary(
+            &record,
+            checked_at,
+            rpc_endpoint_summary.clone(),
+            Some(requested_chain_id),
+            Some(remote_chain_id),
+            None,
+            None,
+            None,
+            None,
+            ChainOutcomeState::Dropped,
+            None,
+            "rpcChainIdMismatch",
+            "Use an RPC endpoint for the frozen submission chainId; no outcome was changed.",
+            Some(history_error_summary(
+                "droppedManualReview",
+                "chainIdMismatch",
+                &error,
+            )),
+        );
+        return apply_dropped_review_result(&tx_hash, &identity, review);
+    }
+
+    let parsed_hash = match record.submission.tx_hash.parse::<H256>() {
+        Ok(hash) => hash,
+        Err(error) => {
+            let message = sanitize_diagnostic_message(&error.to_string());
+            let review = dropped_review_summary(
+                &record,
+                checked_at,
+                rpc_endpoint_summary.clone(),
+                Some(requested_chain_id),
+                Some(remote_chain_id),
+                None,
+                None,
+                None,
+                None,
+                ChainOutcomeState::Dropped,
+                None,
+                "txHashInvalid",
+                "The frozen transaction hash is invalid, so this dropped record cannot be reviewed safely.",
+                Some(history_error_summary(
+                    "droppedManualReview",
+                    "invalidIdentity",
+                    &message,
+                )),
+            );
+            return apply_dropped_review_result(&tx_hash, &identity, review);
+        }
+    };
+
+    let receipt = match provider.get_transaction_receipt(parsed_hash).await {
+        Ok(receipt) => receipt,
+        Err(error) => {
+            let message = sanitize_diagnostic_message(&error.to_string());
+            record_transaction_diagnostic(
+                DiagnosticLevel::Error,
+                "droppedReviewReceiptLookupFailed",
+                Some(identity.chain_id),
+                Some(identity.account_index),
+                Some(record.submission.tx_hash.clone()),
+                Some(message.clone()),
+                json!({}),
+            );
+            let review = dropped_review_summary(
+                &record,
+                checked_at,
+                rpc_endpoint_summary.clone(),
+                Some(requested_chain_id),
+                Some(remote_chain_id),
+                None,
+                None,
+                None,
+                None,
+                ChainOutcomeState::Dropped,
+                None,
+                "receiptLookupFailed",
+                "Receipt lookup failed; no outcome was changed.",
+                Some(history_error_summary(
+                    "droppedManualReview",
+                    "rpcUnavailable",
+                    &message,
+                )),
+            );
+            return apply_dropped_review_result(&tx_hash, &identity, review);
+        }
+    };
+
+    if let Some(receipt) = receipt {
+        let next_state = match receipt.status.map(|value| value.as_u64()) {
+            Some(1) => ChainOutcomeState::Confirmed,
+            Some(_) => ChainOutcomeState::Failed,
+            None => ChainOutcomeState::Dropped,
+        };
+        let receipt = receipt_summary(&receipt);
+        let decision = format!(
+            "receiptStatus{}",
+            receipt
+                .status
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "Unknown".to_string())
+        );
+        let recommendation = match next_state {
+            ChainOutcomeState::Confirmed => {
+                "Receipt is confirmed; ChainOutcome was updated while retaining the original dropped audit."
+            }
+            ChainOutcomeState::Failed => {
+                "Receipt is failed on chain; ChainOutcome was updated while retaining the original dropped audit."
+            }
+            _ => {
+                "Receipt was found, but its status is unknown; outcome remains uncertain/still dropped."
+            }
+        };
+        let review = dropped_review_summary(
+            &record,
+            checked_at,
+            rpc_endpoint_summary.clone(),
+            Some(requested_chain_id),
+            Some(remote_chain_id),
+            None,
+            None,
+            None,
+            None,
+            next_state,
+            Some(receipt),
+            &decision,
+            recommendation,
+            None,
+        );
+        return apply_dropped_review_result(&tx_hash, &identity, review);
+    }
+
+    let transaction_found = match provider.get_transaction(parsed_hash).await {
+        Ok(transaction) => Some(transaction.is_some()),
+        Err(error) => {
+            let message = sanitize_diagnostic_message(&error.to_string());
+            record_transaction_diagnostic(
+                DiagnosticLevel::Warn,
+                "droppedReviewTransactionLookupFailed",
+                Some(identity.chain_id),
+                Some(identity.account_index),
+                Some(record.submission.tx_hash.clone()),
+                Some(message.clone()),
+                json!({}),
+            );
+            None
+        }
+    };
+
+    let latest_confirmed_nonce = match identity.from.parse::<Address>() {
+        Ok(from) => match provider.get_transaction_count(from, None).await {
+            Ok(nonce) => Some(nonce.as_u64()),
+            Err(error) => {
+                let message = sanitize_diagnostic_message(&error.to_string());
+                record_transaction_diagnostic(
+                    DiagnosticLevel::Warn,
+                    "droppedReviewNonceLookupFailed",
+                    Some(identity.chain_id),
+                    Some(identity.account_index),
+                    Some(record.submission.tx_hash.clone()),
+                    Some(message),
+                    json!({}),
+                );
+                None
+            }
+        },
+        Err(error) => {
+            let message = sanitize_diagnostic_message(&error.to_string());
+            record_transaction_diagnostic(
+                DiagnosticLevel::Error,
+                "droppedReviewFromAddressInvalid",
+                Some(identity.chain_id),
+                Some(identity.account_index),
+                Some(record.submission.tx_hash.clone()),
+                Some(message),
+                json!({}),
+            );
+            None
+        }
+    };
+
+    if let Some((state, local_hash, decision)) =
+        local_same_nonce_review_result(&record, &records_snapshot)
+    {
+        let review = dropped_review_summary(
+            &record,
+            checked_at,
+            rpc_endpoint_summary.clone(),
+            Some(requested_chain_id),
+            Some(remote_chain_id),
+            latest_confirmed_nonce,
+            transaction_found,
+            Some(local_hash),
+            Some(state.clone()),
+            state,
+            None,
+            &decision,
+            "Local same-nonce transaction history identifies the dropped record as superseded; no mempool inference was used.",
+            None,
+        );
+        return apply_dropped_review_result(&tx_hash, &identity, review);
+    }
+
+    let (decision, recommendation) = match (transaction_found, latest_confirmed_nonce) {
+        (Some(true), _) => (
+            "transactionFoundReceiptMissing",
+            "Transaction is visible by hash but has no receipt yet; outcome remains uncertain/still dropped.",
+        ),
+        (Some(false), Some(nonce)) if identity.nonce < nonce => (
+            "stillMissingReceiptNonceAdvanced",
+            "Receipt is still missing and account nonce has advanced; outcome remains uncertain/still dropped, not failed.",
+        ),
+        (Some(false), Some(_)) => (
+            "stillMissingReceiptNonceNotAdvanced",
+            "Receipt is still missing and account nonce has not advanced past this nonce; outcome remains uncertain/still dropped.",
+        ),
+        (Some(false), None) => (
+            "stillMissingReceiptNonceUnknown",
+            "Receipt and transaction are missing, but nonce lookup failed; outcome remains uncertain/still dropped.",
+        ),
+        (None, Some(_)) => (
+            "transactionLookupUnknown",
+            "Transaction lookup failed, but nonce was checked; outcome remains uncertain/still dropped.",
+        ),
+        (None, None) => (
+            "rpcLookupsIncomplete",
+            "Transaction and nonce lookups were incomplete; outcome remains uncertain/still dropped.",
+        ),
+    };
+    let review = dropped_review_summary(
+        &record,
+        checked_at,
+        rpc_endpoint_summary.clone(),
+        Some(requested_chain_id),
+        Some(remote_chain_id),
+        latest_confirmed_nonce,
+        transaction_found,
+        None,
+        None,
+        ChainOutcomeState::Dropped,
+        None,
+        decision,
+        recommendation,
+        None,
+    );
+    apply_dropped_review_result(&tx_hash, &identity, review)
+}
+
 pub async fn reconcile_pending_history(
     rpc_url: String,
     chain_id: u64,
@@ -1466,6 +2135,7 @@ fn history_record_from_recovery_intent(
                 decision,
             }),
             error_summary: None,
+            dropped_review_history: Vec::new(),
         },
         nonce_thread: NonceThread {
             source: "historyRecoveryIntent".to_string(),

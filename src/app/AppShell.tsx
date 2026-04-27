@@ -30,6 +30,7 @@ export interface AppShellProps {
   history?: HistoryRecord[];
   historyRecoveryIntents?: HistoryRecoveryIntent[];
   historyRecoveryRpcDisabledReason?: string | null;
+  historyReviewRpcDisabledReason?: string | null;
   chains?: ChainRecord[];
   selectedChainId?: bigint;
   rpcUrl?: string;
@@ -46,6 +47,7 @@ export interface AppShellProps {
   onQuarantineHistory?: () => Promise<void> | void;
   onRecoverBroadcastedHistory?: (recoveryId: string) => Promise<void> | void;
   onDismissHistoryRecovery?: (recoveryId: string) => Promise<void> | void;
+  onReviewDropped?: (txHash: string) => Promise<void> | void;
   onReplacePending?: (request: PendingMutationRequest) => Promise<void> | void;
   onCancelPending?: (request: PendingMutationRequest) => Promise<void> | void;
   onChainChange?: (chainId: bigint) => void;
@@ -72,6 +74,7 @@ export function AppShell({
   history = [],
   historyRecoveryIntents = [],
   historyRecoveryRpcDisabledReason = null,
+  historyReviewRpcDisabledReason = null,
   chains = BUILT_IN_CHAINS,
   selectedChainId = 1n,
   rpcUrl = "",
@@ -88,6 +91,7 @@ export function AppShell({
   onQuarantineHistory = async () => {},
   onRecoverBroadcastedHistory = async () => {},
   onDismissHistoryRecovery = async () => {},
+  onReviewDropped = async () => {},
   onReplacePending = async () => {},
   onCancelPending = async () => {},
   onChainChange = () => {},
@@ -184,8 +188,10 @@ export function AppShell({
                 onRefresh={onRefreshHistory}
                 onRecoverBroadcastedHistory={onRecoverBroadcastedHistory}
                 onReplace={onReplacePending}
+                onReviewDropped={onReviewDropped}
                 recoveryIntents={historyRecoveryIntents}
                 recoveryRpcDisabledReason={historyRecoveryRpcDisabledReason}
+                reviewRpcDisabledReason={historyReviewRpcDisabledReason}
                 storage={historyStorage}
               />
             )}

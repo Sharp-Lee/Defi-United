@@ -254,6 +254,15 @@ export async function reconcilePendingHistory(rpcUrl: string, chainId: number) {
   return parseHistory(raw);
 }
 
+export async function reviewDroppedHistoryRecord(txHash: string, rpcUrl: string, chainId: number) {
+  const raw = await invoke<string>("review_dropped_history_record_command", {
+    txHash,
+    rpcUrl,
+    chainId,
+  });
+  return parseHistory(raw);
+}
+
 export async function loadHistoryRecoveryIntents() {
   const raw = await invoke<string>("load_history_recovery_intents_command");
   return JSON.parse(raw) as HistoryRecoveryIntent[];

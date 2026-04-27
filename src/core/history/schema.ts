@@ -68,6 +68,28 @@ export interface HistoryErrorSummary {
   message: string;
 }
 
+export interface DroppedReviewSummary {
+  reviewed_at: string | null;
+  source: string;
+  tx_hash: string;
+  rpc_endpoint_summary: string;
+  requested_chain_id: number | null;
+  rpc_chain_id: number | null;
+  latest_confirmed_nonce: number | null;
+  transaction_found: boolean | null;
+  local_same_nonce_tx_hash: string | null;
+  local_same_nonce_state: ChainOutcomeState | null;
+  original_state: ChainOutcomeState;
+  original_finalized_at: string | null;
+  original_reconciled_at: string | null;
+  original_reconcile_summary: ReconcileSummary | null;
+  result_state: ChainOutcomeState;
+  receipt: ReceiptSummary | null;
+  decision: string;
+  recommendation: string;
+  error_summary: HistoryErrorSummary | null;
+}
+
 export interface ChainOutcome {
   state: ChainOutcomeState;
   tx_hash: string;
@@ -76,6 +98,7 @@ export interface ChainOutcome {
   reconciled_at: string | null;
   reconcile_summary: ReconcileSummary | null;
   error_summary: HistoryErrorSummary | null;
+  dropped_review_history: DroppedReviewSummary[];
 }
 
 export interface NonceThread {
@@ -126,6 +149,10 @@ function stringOrDefault(value: unknown, fallback = UNKNOWN) {
 
 function numberOrNull(value: unknown) {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function booleanOrNull(value: unknown) {
+  return typeof value === "boolean" ? value : null;
 }
 
 function objectOrEmpty(value: unknown): Record<string, unknown> {
@@ -200,6 +227,36 @@ function normalizeErrorSummary(rawSummary: unknown): HistoryErrorSummary | null 
   };
 }
 
+function normalizeDroppedReview(rawReview: unknown): DroppedReviewSummary {
+  const review = objectOrEmpty(rawReview);
+  const localState = normalizeOutcomeState(review.local_same_nonce_state);
+  return {
+    reviewed_at: stringOrNull(review.reviewed_at),
+    source: stringOrDefault(review.source, LEGACY),
+    tx_hash: stringOrDefault(review.tx_hash),
+    rpc_endpoint_summary: stringOrDefault(review.rpc_endpoint_summary),
+    requested_chain_id: numberOrNull(review.requested_chain_id),
+    rpc_chain_id: numberOrNull(review.rpc_chain_id),
+    latest_confirmed_nonce: numberOrNull(review.latest_confirmed_nonce),
+    transaction_found: booleanOrNull(review.transaction_found),
+    local_same_nonce_tx_hash: stringOrNull(review.local_same_nonce_tx_hash),
+    local_same_nonce_state: localState === "Unknown" ? null : localState,
+    original_state: normalizeOutcomeState(review.original_state),
+    original_finalized_at: stringOrNull(review.original_finalized_at),
+    original_reconciled_at: stringOrNull(review.original_reconciled_at),
+    original_reconcile_summary: normalizeReconcileSummary(review.original_reconcile_summary),
+    result_state: normalizeOutcomeState(review.result_state),
+    receipt: normalizeReceipt(review.receipt),
+    decision: stringOrDefault(review.decision),
+    recommendation: stringOrDefault(review.recommendation),
+    error_summary: normalizeErrorSummary(review.error_summary),
+  };
+}
+
+function normalizeDroppedReviews(rawReviews: unknown): DroppedReviewSummary[] {
+  return Array.isArray(rawReviews) ? rawReviews.map(normalizeDroppedReview) : [];
+}
+
 function normalizeOutcome(rawOutcome: unknown): ChainOutcome {
   const outcome = objectOrEmpty(rawOutcome);
   return {
@@ -210,6 +267,7 @@ function normalizeOutcome(rawOutcome: unknown): ChainOutcome {
     reconciled_at: stringOrNull(outcome.reconciled_at),
     reconcile_summary: normalizeReconcileSummary(outcome.reconcile_summary),
     error_summary: normalizeErrorSummary(outcome.error_summary),
+    dropped_review_history: normalizeDroppedReviews(outcome.dropped_review_history),
   };
 }
 

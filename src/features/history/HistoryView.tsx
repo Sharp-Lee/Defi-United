@@ -84,6 +84,10 @@ function formatOptional(value: string | number | null | undefined) {
   return value === null || value === undefined ? "Unknown" : value.toString();
 }
 
+function formatOptionalBoolean(value: boolean | null | undefined) {
+  return value === null || value === undefined ? null : value ? "Yes" : "No";
+}
+
 function formatAccount(entry: Pick<HistoryReadModel, "account">) {
   const index = entry.account.accountIndex === null ? "?" : entry.account.accountIndex.toString();
   const from = entry.account.from ?? "unknown";
@@ -258,6 +262,7 @@ export function HistoryView({
   onQuarantineHistory,
   onRecoverBroadcastedHistory,
   onDismissRecovery,
+  onReviewDropped,
   onReplace,
   onCancelPending,
   disabled = false,
@@ -267,12 +272,14 @@ export function HistoryView({
   lastQuarantine = null,
   recoveryIntents = [],
   recoveryRpcDisabledReason = null,
+  reviewRpcDisabledReason = null,
 }: {
   items: HistoryRecord[];
   onRefresh: () => Promise<void> | void;
   onQuarantineHistory?: () => Promise<void> | void;
   onRecoverBroadcastedHistory?: (recoveryId: string) => Promise<void> | void;
   onDismissRecovery?: (recoveryId: string) => Promise<void> | void;
+  onReviewDropped?: (txHash: string) => Promise<void> | void;
   onReplace?: (request: PendingMutationRequest) => Promise<void> | void;
   onCancelPending?: (request: PendingMutationRequest) => Promise<void> | void;
   disabled?: boolean;
@@ -282,6 +289,7 @@ export function HistoryView({
   lastQuarantine?: HistoryStorageQuarantineResult | null;
   recoveryIntents?: HistoryRecoveryIntent[];
   recoveryRpcDisabledReason?: string | null;
+  reviewRpcDisabledReason?: string | null;
 }) {
   const [viewMode, setViewMode] = useState<"submissions" | "threads">("submissions");
   const [accountFilter, setAccountFilter] = useState(ALL);
@@ -374,7 +382,7 @@ export function HistoryView({
   const isBusy = loading || refreshing;
   const storageBlocked = storage?.status === "corrupted";
   const storageBlockedReason = storageBlocked
-    ? "Disabled while local transaction history is unreadable. Retry the read or quarantine the damaged file before submitting, replacing, or cancelling."
+    ? "Disabled while local transaction history is unreadable. Retry the read or quarantine the damaged file before submitting, replacing, cancelling, or reviewing dropped records."
     : null;
   const statusMessage = refreshError ?? error;
   const statusError = useMemo(
@@ -465,6 +473,15 @@ export function HistoryView({
     const reconcile = actionGates.find((action) => action.kind === "reconcile");
     const replace = actionGates.find((action) => action.kind === "replace");
     const cancel = actionGates.find((action) => action.kind === "cancel");
+    const droppedReview = actionGates.find((action) => action.kind === "droppedReview");
+    const droppedReviewBlockedReason = droppedReview
+      ? storageBlockedReason ??
+        (!droppedReview.enabled
+          ? droppedReview.reason
+          : !onReviewDropped
+            ? "Dropped review handler is not available in this view."
+            : reviewRpcDisabledReason)
+      : null;
     return (
       <div className="button-row history-actions">
         {renderDetailButton(entry)}
@@ -507,16 +524,44 @@ export function HistoryView({
             </button>
           </>
         )}
-        {storageBlockedReason && (replace || cancel) && (
+        {storageBlockedReason && (replace || cancel || droppedReview) && (
           <span className="history-action-reason">
-            Submit/replace/cancel: {storageBlockedReason}
+            {replace || cancel ? "Submit/replace/cancel" : "History actions"}:{" "}
+            {storageBlockedReason}
           </span>
         )}
+        {droppedReview && (
+          <button
+            className="secondary-button"
+            disabled={
+              disabled ||
+              isBusy ||
+              storageBlocked ||
+              !droppedReview.enabled ||
+              !onReviewDropped ||
+              Boolean(reviewRpcDisabledReason)
+            }
+            onClick={() => void onReviewDropped?.(entry.txHash)}
+            title={
+              droppedReviewBlockedReason ?? droppedReview.reason
+            }
+            type="button"
+          >
+            Review dropped
+          </button>
+        )}
         {actionGates
-          .filter((action) => !action.enabled)
+          .filter(
+            (action) =>
+              !action.enabled ||
+              (action.kind === "droppedReview" && action.enabled && reviewRpcDisabledReason),
+          )
           .map((action) => (
             <span className="history-action-reason" key={action.kind}>
-              {action.label}: {action.reason}
+              {action.label}:{" "}
+              {action.kind === "droppedReview" && action.enabled && reviewRpcDisabledReason
+                ? reviewRpcDisabledReason
+                : action.reason}
             </span>
           ))}
       </div>
@@ -995,16 +1040,17 @@ function HistoryStorageRecoveryCard({
           <span>History storage recovery</span>
           <h3>{corruptionLabels[corruptionType]}</h3>
         </div>
-        <span className="pill danger-pill">Submissions disabled</span>
+        <span className="pill danger-pill">History actions disabled</span>
       </header>
       <p>
-        Local transaction history cannot be trusted right now. New submit, replace, and cancel
-        actions stay blocked so pending nonce recovery is not bypassed.
+        Local transaction history cannot be trusted right now. New submit, replace, cancel, and
+        dropped review actions stay blocked so pending nonce recovery and review audit trails are
+        not bypassed.
       </p>
       <dl>
         <div>
           <dt>Impact</dt>
-          <dd>History list, pending nonce recovery, submit, replace, and cancel.</dd>
+          <dd>History list, pending nonce recovery, submit, replace, cancel, and dropped review.</dd>
         </div>
         <div>
           <dt>Original file</dt>
@@ -1278,6 +1324,10 @@ function outcomeRows(entry: HistoryReadModel): Array<[string, string | number | 
   const receipt = outcome.receipt;
   const reconcile = outcome.reconcile_summary;
   const error = outcome.error_summary;
+  const latestReview =
+    outcome.dropped_review_history.length > 0
+      ? outcome.dropped_review_history[outcome.dropped_review_history.length - 1]
+      : null;
   const errorDisplay = getHistoryErrorDisplay({
     record: entry.record,
     status: entry.status,
@@ -1299,6 +1349,25 @@ function outcomeRows(entry: HistoryReadModel): Array<[string, string | number | 
     ["Reconcile RPC chainId", reconcile?.rpc_chain_id],
     ["Reconcile latest confirmed nonce", reconcile?.latest_confirmed_nonce],
     ["Reconcile decision", reconcile?.decision],
+    ["Dropped review count", outcome.dropped_review_history.length || null],
+    ["Original dropped decision", latestReview?.original_reconcile_summary?.decision],
+    ["Original dropped source", latestReview?.original_reconcile_summary?.source],
+    ["Original dropped at", formatTimestamp(latestReview?.original_reconciled_at ?? null)],
+    ["Latest review at", formatTimestamp(latestReview?.reviewed_at ?? null)],
+    ["Latest review source", latestReview?.source],
+    ["Latest review RPC endpoint", latestReview?.rpc_endpoint_summary],
+    ["Latest review requested chainId", latestReview?.requested_chain_id],
+    ["Latest review RPC chainId", latestReview?.rpc_chain_id],
+    ["Latest review transaction found", formatOptionalBoolean(latestReview?.transaction_found)],
+    ["Latest review latest confirmed nonce", latestReview?.latest_confirmed_nonce],
+    ["Latest review local same nonce tx", latestReview?.local_same_nonce_tx_hash],
+    ["Latest review local same nonce state", latestReview?.local_same_nonce_state],
+    ["Latest review result", latestReview?.result_state],
+    ["Latest review decision", latestReview?.decision],
+    ["Latest review recommendation", latestReview?.recommendation],
+    ["Latest review error source", latestReview?.error_summary?.source],
+    ["Latest review error category", latestReview?.error_summary?.category],
+    ["Latest review error", latestReview?.error_summary?.message],
     ["Error class", errorDisplay?.label],
     ["Error title", errorDisplay?.title],
     ["Error source", errorDisplay?.source ?? error?.source],

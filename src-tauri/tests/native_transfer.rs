@@ -17,8 +17,9 @@ use wallet_workbench_lib::transactions::{
     load_history_records, load_history_recovery_intents, mark_prior_history_state,
     mark_prior_history_state_with_replacement, next_nonce_with_pending_history, nonce_thread_key,
     persist_pending_history, persist_pending_history_with_kind, quarantine_history_storage,
-    reconcile_pending_history, recover_broadcasted_history_record, ChainOutcomeState,
-    HistoryCorruptionType, HistoryRecord, HistoryStorageStatus, NativeTransferIntent,
+    reconcile_pending_history, recover_broadcasted_history_record, review_dropped_history_record,
+    ChainOutcomeState, HistoryCorruptionType, HistoryRecord, HistoryStorageStatus,
+    NativeTransferIntent,
 };
 
 const APP_DIR_ENV: &str = "EVM_WALLET_WORKBENCH_APP_DIR";
@@ -153,6 +154,7 @@ fn history_record(nonce: u64, state: ChainOutcomeState, tx_hash: &str) -> Histor
             reconciled_at: None,
             reconcile_summary: None,
             error_summary: None,
+            dropped_review_history: Vec::new(),
         },
         nonce_thread: wallet_workbench_lib::models::NonceThread {
             source: "derived".into(),
@@ -403,6 +405,151 @@ fn confirmed_recovery_receipt_json() -> String {
           "type":"0x2"
         }}"#
     )
+}
+
+fn receipt_json(tx_hash: &str, status: u64) -> String {
+    let bloom = format!("0x{}", "0".repeat(512));
+    format!(
+        r#"{{
+          "transactionHash":"{tx_hash}",
+          "transactionIndex":"0x0",
+          "blockHash":"0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "blockNumber":"0x1",
+          "from":"0x1111111111111111111111111111111111111111",
+          "to":"0x2222222222222222222222222222222222222222",
+          "cumulativeGasUsed":"0x5208",
+          "gasUsed":"0x5208",
+          "contractAddress":null,
+          "logs":[],
+          "logsBloom":"{bloom}",
+          "status":"0x{status:x}",
+          "effectiveGasPrice":"0x1",
+          "type":"0x2"
+        }}"#
+    )
+}
+
+fn receipt_json_without_status(tx_hash: &str) -> String {
+    let bloom = format!("0x{}", "0".repeat(512));
+    format!(
+        r#"{{
+          "transactionHash":"{tx_hash}",
+          "transactionIndex":"0x0",
+          "blockHash":"0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "blockNumber":"0x1",
+          "from":"0x1111111111111111111111111111111111111111",
+          "to":"0x2222222222222222222222222222222222222222",
+          "cumulativeGasUsed":"0x5208",
+          "gasUsed":"0x5208",
+          "contractAddress":null,
+          "logs":[],
+          "logsBloom":"{bloom}",
+          "effectiveGasPrice":"0x1",
+          "type":"0x2"
+        }}"#
+    )
+}
+
+fn full_hash(ch: char) -> String {
+    format!("0x{}", ch.to_string().repeat(64))
+}
+
+fn start_dropped_review_rpc_server(
+    chain_id_result: &'static str,
+    receipt_result: String,
+    transaction_result: &'static str,
+    nonce_result: &'static str,
+    request_count: usize,
+) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind rpc server");
+    let address = listener.local_addr().expect("local addr");
+    thread::spawn(move || {
+        for stream in listener.incoming().take(request_count) {
+            let mut stream = stream.expect("accept rpc request");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .expect("set read timeout");
+            let mut buffer = [0; 4096];
+            let bytes = stream.read(&mut buffer).expect("read rpc request");
+            let mut request = String::from_utf8_lossy(&buffer[..bytes]).to_string();
+            while !request.contains("eth_") {
+                match stream.read(&mut buffer) {
+                    Ok(0) => break,
+                    Ok(bytes) => request.push_str(&String::from_utf8_lossy(&buffer[..bytes])),
+                    Err(_) => break,
+                }
+            }
+            let result = if request.contains("eth_chainId") {
+                chain_id_result.to_string()
+            } else if request.contains("eth_getTransactionReceipt") {
+                receipt_result.clone()
+            } else if request.contains("eth_getTransactionByHash") {
+                transaction_result.to_string()
+            } else if request.contains("eth_getTransactionCount") {
+                nonce_result.to_string()
+            } else {
+                "null".to_string()
+            };
+            let body = format!(r#"{{"jsonrpc":"2.0","id":1,"result":{result}}}"#);
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("write rpc response");
+        }
+    });
+    format!("http://{address}")
+}
+
+fn start_dropped_review_rpc_server_writing_history_on_transaction_lookup(
+    history_path: PathBuf,
+    history_contents: String,
+) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind rpc server");
+    let address = listener.local_addr().expect("local addr");
+    thread::spawn(move || {
+        for stream in listener.incoming().take(4) {
+            let mut stream = stream.expect("accept rpc request");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .expect("set read timeout");
+            let mut buffer = [0; 4096];
+            let bytes = stream.read(&mut buffer).expect("read rpc request");
+            let mut request = String::from_utf8_lossy(&buffer[..bytes]).to_string();
+            while !request.contains("eth_") {
+                match stream.read(&mut buffer) {
+                    Ok(0) => break,
+                    Ok(bytes) => request.push_str(&String::from_utf8_lossy(&buffer[..bytes])),
+                    Err(_) => break,
+                }
+            }
+            let result = if request.contains("eth_chainId") {
+                "\"0x1\"".to_string()
+            } else if request.contains("eth_getTransactionReceipt") {
+                "null".to_string()
+            } else if request.contains("eth_getTransactionByHash") {
+                fs::write(&history_path, &history_contents).expect("write concurrent history");
+                "null".to_string()
+            } else if request.contains("eth_getTransactionCount") {
+                "\"0x5\"".to_string()
+            } else {
+                "null".to_string()
+            };
+            let body = format!(r#"{{"jsonrpc":"2.0","id":1,"result":{result}}}"#);
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("write rpc response");
+        }
+    });
+    format!("http://{address}")
 }
 
 #[test]
@@ -1783,6 +1930,342 @@ fn receipt_status_maps_to_terminal_history_states() {
         chain_outcome_from_receipt_status(None),
         ChainOutcomeState::Pending
     );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn dropped_review_confirms_receipt_and_preserves_original_dropped_audit() {
+    let _guard = test_lock().lock().expect("test lock");
+    let _app_dir = TestAppDirGuard::new("dropped-review-confirmed");
+    let tx_hash = full_hash('a');
+    let mut record = history_record(4, ChainOutcomeState::Dropped, &tx_hash);
+    record.outcome.finalized_at = Some("1700000100".into());
+    record.outcome.reconciled_at = Some("1700000100".into());
+    record.outcome.reconcile_summary = Some(wallet_workbench_lib::models::ReconcileSummary {
+        source: "rpcNonce".into(),
+        checked_at: Some("1700000100".into()),
+        rpc_chain_id: Some(1),
+        latest_confirmed_nonce: Some(5),
+        decision: "missingReceiptNonceAdvanced".into(),
+    });
+    fs::write(
+        history_path().expect("history path"),
+        serde_json::to_string_pretty(&vec![record]).expect("serialize history"),
+    )
+    .expect("write history");
+    let base_rpc_url =
+        start_dropped_review_rpc_server("\"0x1\"", receipt_json(&tx_hash, 1), "null", "\"0x5\"", 2);
+    let rpc_url = format!(
+        "{}{}{}",
+        base_rpc_url.replacen("http://", "http://user:pass@", 1),
+        "/private/path",
+        "?token=secret-token"
+    );
+
+    let records = review_dropped_history_record(tx_hash.clone(), rpc_url, 1)
+        .await
+        .expect("review dropped");
+
+    assert_eq!(records[0].outcome.state, ChainOutcomeState::Confirmed);
+    assert_eq!(records[0].outcome.receipt.as_ref().unwrap().status, Some(1));
+    assert_eq!(records[0].outcome.dropped_review_history.len(), 1);
+    let review = &records[0].outcome.dropped_review_history[0];
+    assert_eq!(review.original_state, ChainOutcomeState::Dropped);
+    assert_eq!(
+        review
+            .original_reconcile_summary
+            .as_ref()
+            .expect("original dropped summary")
+            .decision,
+        "missingReceiptNonceAdvanced"
+    );
+    assert_eq!(review.result_state, ChainOutcomeState::Confirmed);
+    assert_eq!(review.decision, "receiptStatus1");
+    assert_eq!(review.rpc_endpoint_summary, base_rpc_url);
+    assert!(!review.rpc_endpoint_summary.contains("user"));
+    assert!(!review.rpc_endpoint_summary.contains("pass"));
+    assert!(!review.rpc_endpoint_summary.contains("secret-token"));
+    assert!(!review.rpc_endpoint_summary.contains("private"));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn dropped_review_marks_failed_only_from_failed_receipt() {
+    let _guard = test_lock().lock().expect("test lock");
+    let _app_dir = TestAppDirGuard::new("dropped-review-failed");
+    let tx_hash = full_hash('b');
+    fs::write(
+        history_path().expect("history path"),
+        serde_json::to_string_pretty(&vec![history_record(
+            4,
+            ChainOutcomeState::Dropped,
+            &tx_hash,
+        )])
+        .expect("serialize history"),
+    )
+    .expect("write history");
+    let rpc_url =
+        start_dropped_review_rpc_server("\"0x1\"", receipt_json(&tx_hash, 0), "null", "\"0x5\"", 2);
+
+    let records = review_dropped_history_record(tx_hash, rpc_url, 1)
+        .await
+        .expect("review dropped");
+
+    assert_eq!(records[0].outcome.state, ChainOutcomeState::Failed);
+    assert_eq!(
+        records[0].outcome.dropped_review_history[0].decision,
+        "receiptStatus0"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn dropped_review_keeps_uncertain_missing_receipt_as_dropped_not_failed() {
+    let _guard = test_lock().lock().expect("test lock");
+    let _app_dir = TestAppDirGuard::new("dropped-review-still-dropped");
+    let tx_hash = full_hash('c');
+    fs::write(
+        history_path().expect("history path"),
+        serde_json::to_string_pretty(&vec![history_record(
+            4,
+            ChainOutcomeState::Dropped,
+            &tx_hash,
+        )])
+        .expect("serialize history"),
+    )
+    .expect("write history");
+    let rpc_url = start_dropped_review_rpc_server("\"0x1\"", "null".into(), "null", "\"0x5\"", 4);
+
+    let records = review_dropped_history_record(tx_hash, rpc_url, 1)
+        .await
+        .expect("review dropped");
+
+    assert_eq!(records[0].outcome.state, ChainOutcomeState::Dropped);
+    let review = &records[0].outcome.dropped_review_history[0];
+    assert_eq!(review.result_state, ChainOutcomeState::Dropped);
+    assert_eq!(review.decision, "stillMissingReceiptNonceAdvanced");
+    assert!(review.recommendation.contains("not failed"));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn dropped_review_keeps_receipt_with_unknown_status_as_dropped_not_pending() {
+    let _guard = test_lock().lock().expect("test lock");
+    let _app_dir = TestAppDirGuard::new("dropped-review-unknown-receipt-status");
+    let tx_hash = full_hash('5');
+    fs::write(
+        history_path().expect("history path"),
+        serde_json::to_string_pretty(&vec![history_record(
+            4,
+            ChainOutcomeState::Dropped,
+            &tx_hash,
+        )])
+        .expect("serialize history"),
+    )
+    .expect("write history");
+    let rpc_url = start_dropped_review_rpc_server(
+        "\"0x1\"",
+        receipt_json_without_status(&tx_hash),
+        "null",
+        "\"0x5\"",
+        2,
+    );
+
+    let records = review_dropped_history_record(tx_hash, rpc_url, 1)
+        .await
+        .expect("review dropped");
+
+    assert_eq!(records[0].outcome.state, ChainOutcomeState::Dropped);
+    assert!(records[0].outcome.receipt.is_none());
+    let review = &records[0].outcome.dropped_review_history[0];
+    assert_eq!(review.result_state, ChainOutcomeState::Dropped);
+    assert_eq!(review.decision, "receiptStatusUnknown");
+    assert_eq!(
+        review.receipt.as_ref().expect("review receipt").status,
+        None
+    );
+    assert!(review.recommendation.contains("status is unknown"));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn dropped_review_uses_local_same_nonce_replacement_without_mempool_inference() {
+    let _guard = test_lock().lock().expect("test lock");
+    let _app_dir = TestAppDirGuard::new("dropped-review-local-replacement");
+    let dropped_hash = full_hash('d');
+    let replacement_hash = full_hash('e');
+    let mut dropped = history_record(4, ChainOutcomeState::Dropped, &dropped_hash);
+    dropped.nonce_thread.replaced_by_tx_hash = Some(replacement_hash.clone());
+    let mut replacement = history_record(4, ChainOutcomeState::Pending, &replacement_hash);
+    replacement.submission.kind = wallet_workbench_lib::models::SubmissionKind::Replacement;
+    replacement.submission.replaces_tx_hash = Some(dropped_hash.clone());
+    replacement.nonce_thread.replaces_tx_hash = Some(dropped_hash.clone());
+    fs::write(
+        history_path().expect("history path"),
+        serde_json::to_string_pretty(&vec![dropped, replacement]).expect("serialize history"),
+    )
+    .expect("write history");
+    let rpc_url = start_dropped_review_rpc_server("\"0x1\"", "null".into(), "null", "\"0x5\"", 4);
+
+    let records = review_dropped_history_record(dropped_hash, rpc_url, 1)
+        .await
+        .expect("review dropped");
+    let original = records
+        .iter()
+        .find(|record| record.submission.tx_hash == full_hash('d'))
+        .expect("dropped original");
+
+    assert_eq!(original.outcome.state, ChainOutcomeState::Replaced);
+    let review = &original.outcome.dropped_review_history[0];
+    assert_eq!(
+        review.local_same_nonce_tx_hash.as_deref(),
+        Some(replacement_hash.as_str())
+    );
+    assert_eq!(review.decision, "localReplacementSameNonce");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn dropped_review_revalidates_local_same_nonce_relation_inside_final_history_lock() {
+    let _guard = test_lock().lock().expect("test lock");
+    let _app_dir = TestAppDirGuard::new("dropped-review-stale-local-relation");
+    let dropped_hash = full_hash('1');
+    let replacement_hash = full_hash('2');
+    let mut dropped = history_record(4, ChainOutcomeState::Dropped, &dropped_hash);
+    dropped.nonce_thread.replaced_by_tx_hash = Some(replacement_hash.clone());
+    let mut replacement = history_record(4, ChainOutcomeState::Pending, &replacement_hash);
+    replacement.submission.kind = wallet_workbench_lib::models::SubmissionKind::Replacement;
+    replacement.submission.replaces_tx_hash = Some(dropped_hash.clone());
+    replacement.nonce_thread.replaces_tx_hash = Some(dropped_hash.clone());
+    fs::write(
+        history_path().expect("history path"),
+        serde_json::to_string_pretty(&vec![dropped.clone(), replacement.clone()])
+            .expect("serialize initial history"),
+    )
+    .expect("write initial history");
+
+    dropped.nonce_thread.replaced_by_tx_hash = None;
+    replacement.submission.replaces_tx_hash = None;
+    replacement.nonce_thread.replaces_tx_hash = None;
+    let stale_relation_removed_history = serde_json::to_string_pretty(&vec![dropped, replacement])
+        .expect("serialize concurrent history");
+    let rpc_url = start_dropped_review_rpc_server_writing_history_on_transaction_lookup(
+        history_path().expect("history path"),
+        stale_relation_removed_history,
+    );
+
+    let records = review_dropped_history_record(dropped_hash.clone(), rpc_url, 1)
+        .await
+        .expect("review dropped");
+    let original = records
+        .iter()
+        .find(|record| record.submission.tx_hash == dropped_hash)
+        .expect("dropped original");
+
+    assert_eq!(original.outcome.state, ChainOutcomeState::Dropped);
+    let review = &original.outcome.dropped_review_history[0];
+    assert_eq!(review.result_state, ChainOutcomeState::Dropped);
+    assert_eq!(review.decision, "staleLocalSameNonceRelation");
+    assert_eq!(review.local_same_nonce_tx_hash, None);
+    assert!(review
+        .recommendation
+        .contains("changed before the review write"));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn dropped_review_uses_local_same_nonce_cancellation_without_mempool_inference() {
+    let _guard = test_lock().lock().expect("test lock");
+    let _app_dir = TestAppDirGuard::new("dropped-review-local-cancellation");
+    let dropped_hash = full_hash('6');
+    let cancellation_hash = full_hash('7');
+    let mut dropped = history_record(4, ChainOutcomeState::Dropped, &dropped_hash);
+    dropped.nonce_thread.replaced_by_tx_hash = Some(cancellation_hash.clone());
+    let mut cancellation = history_record(4, ChainOutcomeState::Pending, &cancellation_hash);
+    cancellation.submission.kind = wallet_workbench_lib::models::SubmissionKind::Cancellation;
+    cancellation.submission.replaces_tx_hash = Some(dropped_hash.clone());
+    cancellation.nonce_thread.replaces_tx_hash = Some(dropped_hash.clone());
+    fs::write(
+        history_path().expect("history path"),
+        serde_json::to_string_pretty(&vec![dropped, cancellation]).expect("serialize history"),
+    )
+    .expect("write history");
+    let rpc_url = start_dropped_review_rpc_server("\"0x1\"", "null".into(), "null", "\"0x5\"", 4);
+
+    let records = review_dropped_history_record(dropped_hash, rpc_url, 1)
+        .await
+        .expect("review dropped");
+    let original = records
+        .iter()
+        .find(|record| record.submission.tx_hash == full_hash('6'))
+        .expect("dropped original");
+
+    assert_eq!(original.outcome.state, ChainOutcomeState::Cancelled);
+    assert_eq!(
+        original.outcome.dropped_review_history[0].decision,
+        "localCancellationSameNonce"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn dropped_review_records_rpc_and_chain_errors_without_changing_outcome() {
+    let _guard = test_lock().lock().expect("test lock");
+    let _app_dir = TestAppDirGuard::new("dropped-review-safe-errors");
+    let rpc_error_hash = full_hash('8');
+    let mismatch_hash = full_hash('9');
+    fs::write(
+        history_path().expect("history path"),
+        serde_json::to_string_pretty(&vec![
+            history_record(4, ChainOutcomeState::Dropped, &rpc_error_hash),
+            history_record(5, ChainOutcomeState::Dropped, &mismatch_hash),
+        ])
+        .expect("serialize history"),
+    )
+    .expect("write history");
+    let rpc_error_records =
+        review_dropped_history_record(rpc_error_hash.clone(), "http://127.0.0.1:1".into(), 1)
+            .await
+            .expect("review with unavailable rpc");
+    let rpc_error_record = rpc_error_records
+        .iter()
+        .find(|record| record.submission.tx_hash == rpc_error_hash)
+        .expect("rpc error record");
+    assert_eq!(rpc_error_record.outcome.state, ChainOutcomeState::Dropped);
+    assert_eq!(
+        rpc_error_record.outcome.dropped_review_history[0]
+            .error_summary
+            .as_ref()
+            .expect("rpc error summary")
+            .category,
+        "rpcUnavailable"
+    );
+
+    let rpc_url = start_dropped_review_rpc_server("\"0x5\"", "null".into(), "null", "\"0x5\"", 1);
+    let mismatch_records = review_dropped_history_record(mismatch_hash.clone(), rpc_url, 1)
+        .await
+        .expect("review chain mismatch");
+    let mismatch_record = mismatch_records
+        .iter()
+        .find(|record| record.submission.tx_hash == mismatch_hash)
+        .expect("mismatch record");
+    assert_eq!(mismatch_record.outcome.state, ChainOutcomeState::Dropped);
+    assert_eq!(
+        mismatch_record.outcome.dropped_review_history[0].decision,
+        "rpcChainIdMismatch"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn dropped_review_rejects_incomplete_frozen_submission_identity() {
+    let _guard = test_lock().lock().expect("test lock");
+    let _app_dir = TestAppDirGuard::new("dropped-review-incomplete");
+    let tx_hash = full_hash('f');
+    let mut record = history_record(4, ChainOutcomeState::Dropped, &tx_hash);
+    record.submission.nonce = None;
+    fs::write(
+        history_path().expect("history path"),
+        serde_json::to_string_pretty(&vec![record]).expect("serialize history"),
+    )
+    .expect("write history");
+
+    let error = review_dropped_history_record(tx_hash, "http://127.0.0.1:1".into(), 1)
+        .await
+        .expect_err("review should reject incomplete identity");
+
+    assert!(error.contains("nonce"));
 }
 
 #[tokio::test(flavor = "current_thread")]

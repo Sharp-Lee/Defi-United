@@ -20,6 +20,7 @@ import {
   recoverBroadcastedHistoryRecord,
   reconcilePendingHistory,
   replacePendingTransfer,
+  reviewDroppedHistoryRecord,
   saveAccountSyncError,
   saveScannedAccount,
   unlockVault,
@@ -576,6 +577,39 @@ export function App() {
     }
   }
 
+  async function handleReviewDropped(txHash: string) {
+    setAppError(null);
+    setHistoryError(null);
+    const reviewRpcUrl = rpcUrl.trim();
+    if (!reviewRpcUrl) {
+      setAppError("Validate an RPC before reviewing a dropped transaction.");
+      return;
+    }
+    setBusy(true);
+    try {
+      const records = await reviewDroppedHistoryRecord(
+        txHash,
+        reviewRpcUrl,
+        Number(selectedChainId),
+      );
+      setHistory([...records].reverse());
+      setHistoryStorage(await inspectTransactionHistoryStorage());
+      void refreshAccountsFromDisk();
+    } catch (err) {
+      const message = errorMessage(err);
+      setAppError(message);
+      setHistoryError(message);
+      try {
+        await refreshHistoryFromDisk();
+      } catch {
+        // Keep the review error visible.
+      }
+      await inspectHistoryStorageGate(message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function handleTransferSubmitFailed(err: unknown) {
     await inspectHistoryStorageGate(errorMessage(err));
     try {
@@ -701,6 +735,9 @@ export function App() {
       historyRecoveryRpcDisabledReason={
         rpcUrl.trim() ? null : "Validate an RPC before recovering a broadcasted transaction."
       }
+      historyReviewRpcDisabledReason={
+        rpcUrl.trim() ? null : "Validate an RPC before reviewing a dropped transaction."
+      }
       historyStorage={historyStorage}
       lastHistoryQuarantine={lastHistoryQuarantine}
       onAddAccount={handleAddAccount}
@@ -712,6 +749,7 @@ export function App() {
       onQuarantineHistory={handleQuarantineHistory}
       onRecoverBroadcastedHistory={handleRecoverBroadcastedHistory}
       onDismissHistoryRecovery={handleDismissHistoryRecovery}
+      onReviewDropped={handleReviewDropped}
       onReplacePending={handleReplacePending}
       onRpcUrlChange={(value) => {
         setRpcUrl(value);

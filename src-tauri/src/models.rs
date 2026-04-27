@@ -227,6 +227,44 @@ impl Default for ReconcileSummary {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DroppedReviewSummary {
+    pub reviewed_at: String,
+    #[serde(default = "legacy_string")]
+    pub source: String,
+    pub tx_hash: String,
+    #[serde(default = "unknown_string")]
+    pub rpc_endpoint_summary: String,
+    #[serde(default)]
+    pub requested_chain_id: Option<u64>,
+    #[serde(default)]
+    pub rpc_chain_id: Option<u64>,
+    #[serde(default)]
+    pub latest_confirmed_nonce: Option<u64>,
+    #[serde(default)]
+    pub transaction_found: Option<bool>,
+    #[serde(default)]
+    pub local_same_nonce_tx_hash: Option<String>,
+    #[serde(default)]
+    pub local_same_nonce_state: Option<ChainOutcomeState>,
+    pub original_state: ChainOutcomeState,
+    #[serde(default)]
+    pub original_finalized_at: Option<String>,
+    #[serde(default)]
+    pub original_reconciled_at: Option<String>,
+    #[serde(default)]
+    pub original_reconcile_summary: Option<ReconcileSummary>,
+    pub result_state: ChainOutcomeState,
+    #[serde(default)]
+    pub receipt: Option<ReceiptSummary>,
+    #[serde(default = "unknown_string")]
+    pub decision: String,
+    #[serde(default = "unknown_string")]
+    pub recommendation: String,
+    #[serde(default)]
+    pub error_summary: Option<HistoryErrorSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HistoryErrorSummary {
     #[serde(default = "legacy_string")]
     pub source: String,
@@ -250,6 +288,8 @@ pub struct ChainOutcome {
     pub reconcile_summary: Option<ReconcileSummary>,
     #[serde(default)]
     pub error_summary: Option<HistoryErrorSummary>,
+    #[serde(default)]
+    pub dropped_review_history: Vec<DroppedReviewSummary>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

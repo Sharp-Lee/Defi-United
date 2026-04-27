@@ -33,12 +33,13 @@ function record({
   receipt = null,
   reconcileSummary = null,
   errorSummary = null,
+  droppedReviewHistory = [],
 }: {
   txHash: string;
   accountIndex?: number;
   from?: string;
   chainId?: number;
-  nonce?: number;
+  nonce?: number | null;
   state?: ChainOutcomeState;
   kind?: SubmissionKind;
   replacesTxHash?: string | null;
@@ -52,6 +53,7 @@ function record({
   receipt?: Record<string, unknown> | null;
   reconcileSummary?: Record<string, unknown> | null;
   errorSummary?: Record<string, unknown> | null;
+  droppedReviewHistory?: Record<string, unknown>[];
 }) {
   return {
     schema_version: 2,
@@ -96,6 +98,7 @@ function record({
       reconciled_at: reconcileSummary ? "1700000101" : null,
       reconcile_summary: reconcileSummary,
       error_summary: errorSummary,
+      dropped_review_history: droppedReviewHistory,
     },
     nonce_thread: {
       source: "derived",
@@ -1157,18 +1160,76 @@ describe("HistoryView", () => {
     expect(panel.getByText("The RPC endpoint failed, timed out, or returned an error while checking this transaction.")).toBeInTheDocument();
   });
 
-  it("shows only a P4 follow-up prompt for dropped records without a review action button", () => {
-    renderHistory([record({ txHash: "0xdropped", state: "Dropped" })]);
+  it("shows a dropped review action and audit details", () => {
+    const onReviewDropped = vi.fn();
+    renderHistory(
+      [
+        record({
+          txHash: "0xdropped",
+          state: "Dropped",
+          reconcileSummary: {
+            source: "rpcNonce",
+            checked_at: "1700000101",
+            rpc_chain_id: 1,
+            latest_confirmed_nonce: 8,
+            decision: "missingReceiptNonceAdvanced",
+          },
+          droppedReviewHistory: [
+            {
+              reviewed_at: "1700000200",
+              source: "droppedManualReview",
+              tx_hash: "0xdropped",
+              rpc_endpoint_summary: "https://mainnet.example",
+              requested_chain_id: 1,
+              rpc_chain_id: 1,
+              latest_confirmed_nonce: 8,
+              transaction_found: false,
+              original_state: "Dropped",
+              original_reconciled_at: "1700000101",
+              original_reconcile_summary: {
+                source: "rpcNonce",
+                checked_at: "1700000101",
+                rpc_chain_id: 1,
+                latest_confirmed_nonce: 8,
+                decision: "missingReceiptNonceAdvanced",
+              },
+              result_state: "Dropped",
+              decision: "stillMissingReceiptNonceAdvanced",
+              recommendation: "Outcome remains uncertain/still dropped, not failed.",
+            },
+          ],
+        }),
+      ],
+      { onReviewDropped },
+    );
 
-    expect(screen.queryByRole("button", { name: /review/i })).not.toBeInTheDocument();
-    expect(screen.getByText(/Dropped records can be reviewed or reconciled manually in P4/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Review dropped" }));
+    expect(onReviewDropped).toHaveBeenCalledWith("0xdropped");
 
     fireEvent.click(screen.getByRole("button", { name: "Details" }));
 
     const guidance = within(screen.getByLabelText("Action guidance"));
-    expect(guidance.getByText("P4 Review")).toBeInTheDocument();
-    expect(guidance.getByText("Disabled")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /review/i })).not.toBeInTheDocument();
+    expect(guidance.getByText("Review dropped")).toBeInTheDocument();
+    expect(guidance.getByText("Available")).toBeInTheDocument();
+    expect(screen.getByText("Original dropped decision")).toBeInTheDocument();
+    expect(screen.getByText("Latest review RPC endpoint")).toBeInTheDocument();
+    expect(screen.getByText("https://mainnet.example")).toBeInTheDocument();
+    expect(screen.getByText("Latest review recommendation")).toBeInTheDocument();
+    expect(screen.getByText("Outcome remains uncertain/still dropped, not failed.")).toBeInTheDocument();
+  });
+
+  it("prioritizes incomplete dropped review fields over missing RPC guidance", () => {
+    renderHistory([record({ txHash: "0xdropped", state: "Dropped", nonce: null })], {
+      reviewRpcDisabledReason: "Validate an RPC before reviewing a dropped transaction.",
+    });
+
+    const reviewButton = screen.getByRole("button", { name: "Review dropped" });
+    expect(reviewButton).toBeDisabled();
+    expect(reviewButton).toHaveAttribute("title", "Missing frozen submission nonce.");
+    expect(screen.getByText(/Review dropped: Missing frozen submission nonce/)).toBeInTheDocument();
+    expect(
+      screen.queryByText(/Review dropped: Validate an RPC before reviewing/),
+    ).not.toBeInTheDocument();
   });
 
   it("describes refresh as global tracked history instead of a row-scoped reconcile", () => {
@@ -1199,8 +1260,8 @@ describe("HistoryView", () => {
 
     expect(screen.getByText("History storage recovery")).toBeInTheDocument();
     expect(screen.getByText("JSON parse failed")).toBeInTheDocument();
-    expect(screen.getByText("Submissions disabled")).toBeInTheDocument();
-    expect(screen.getByText(/submit, replace, and cancel actions stay blocked/)).toBeInTheDocument();
+    expect(screen.getByText("History actions disabled")).toBeInTheDocument();
+    expect(screen.getByText(/submit, replace, cancel, and dropped review actions stay blocked/)).toBeInTheDocument();
     expect(screen.getByText("/tmp/tx-history.json")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Retry read" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Quarantine and start empty history" })).toBeEnabled();
@@ -1224,7 +1285,7 @@ describe("HistoryView", () => {
 
     expect(screen.getByText("No local transaction history.")).toBeInTheDocument();
     expect(screen.queryByText("History storage recovery")).not.toBeInTheDocument();
-    expect(screen.queryByText("Submissions disabled")).not.toBeInTheDocument();
+    expect(screen.queryByText("History actions disabled")).not.toBeInTheDocument();
   });
 
   it("shows broadcast recovery parameters and calls recover by id", () => {
