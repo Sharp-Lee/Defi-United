@@ -1,14 +1,14 @@
 # EVM Wallet Workbench P3/P4 后续执行计划
 
-> 面向 subagent-driven-development：本计划只描述后续待执行任务，不表示这些能力已经完成。后续由 controller 按任务串行派发和收口。
+> 面向 subagent-driven-development：本文件同时保留 P3 与 P4-1 到 P4-7 的完成记录，以及 P4+ 探索 backlog。只有标记为未完成、探索或后续计划的条目表示待执行任务，不代表能力已经完成；后续任务仍由 controller 按任务串行派发和收口。
 
 ## 1. 基线与方向
 
-- 基线：从当前已合并到 `main` 的 EVM Wallet Workbench v1（Tauri 2 技术栈）开始推进；P3 已合并，P4-1 已在当前分支提交为 `85d5f10`。
+- 基线：从当前已合并到 `main` 的 EVM Wallet Workbench v1（Tauri 2 技术栈）开始推进；P3 已合并，P4-1 到 P4-7 已完成。
 - 主线：后续产品、测试、发布和技术债治理都以 Tauri desktop app 为准。
 - 非主线：浏览器版只作为历史参考或迁移来源，不继续投入功能补齐。
 - 已有 v1 能力：vault/mnemonic、账户派生与链上扫描、RPC 验证和 app-config、native transfer draft/submit、pending history/reconcile、replace/cancel、anvil smoke check。
-- 后续重点：P4-2 到 P4-7 继续围绕诊断、恢复、pending/reconcile 稳定性和 anvil smoke check 回归推进；P4-8+ 先做探索/设计，不写成当前承诺交付。
+- 后续重点：P4-8+ 先做探索/设计，不把 ERC-20、ABI 调用、批量策略或资产扫描写成当前承诺交付。
 
 ## 2. 执行规则
 
@@ -50,9 +50,9 @@
 7. 适用动作入口与 gating 测试
 8. P3 回归测试与文档收口
 
-### P4: Recovery, Observability, and Focused Extensions（进行中）
+### P4: Recovery, Observability, and Focused Extensions（P4-1 到 P4-7 已完成；P4-8+ 探索/设计）
 
-目标是在 P3 稳定历史体验之后，补强诊断、恢复和少量明确依赖 P3 的能力。P4-1 诊断事件与本地结构化日志已完成；剩余 P4-2 到 P4-7 按下方任务卡串行执行。P4-8+ 属于探索/设计优先，不提前把 ERC-20、ABI 调用、批量策略做成当前承诺。
+目标是在 P3 稳定历史体验之后，补强诊断、恢复和少量明确依赖 P3 的能力。P4-1 到 P4-7 已完成诊断事件、诊断导出、历史恢复、广播补录、dropped 复核、pending 老化和 anvil smoke 回归。P4-8+ 属于探索/设计优先，不提前把 ERC-20、ABI 调用、批量策略做成当前承诺。
 
 ## 5. P3 任务卡（历史记录，状态：已完成）
 
@@ -387,7 +387,7 @@
 - P4-1 不是完整诊断 UI，不提供导出入口。
 - 后续任务只能消费或扩展非敏感诊断事件，不能放宽敏感信息约束。
 
-### Task P4-2: 诊断面板/导出
+### Task P4-2: 诊断面板/导出（状态：已完成）
 
 **目标**
 
@@ -429,7 +429,7 @@
 - 大量日志可能影响 UI 性能，应限制默认读取窗口或分页。
 - 导出路径和文件权限错误要走用户可理解的错误路径。
 
-### Task P4-3: 历史文件损坏恢复
+### Task P4-3: 历史文件损坏恢复（状态：已完成）
 
 **目标**
 
@@ -474,7 +474,7 @@
 - 文件移动/复制在不同平台路径和权限下可能失败，应有可恢复错误。
 - 部分记录损坏时要避免静默丢弃有效记录，除非用户明确选择隔离或重建。
 
-### Task P4-4: 广播成功但历史写入失败补录
+### Task P4-4: 广播成功但历史写入失败补录（状态：已完成）
 
 **目标**
 
@@ -518,7 +518,7 @@
 - 补录字段不足时最容易误造审计信息，应沿用 unknown/legacy 契约。
 - 重复补录和 replacement/cancel thread 关系需要保持稳定。
 
-### Task P4-5: dropped 复核与重新 reconcile
+### Task P4-5: dropped 复核与重新 reconcile（状态：已完成）
 
 **目标**
 
@@ -560,7 +560,7 @@
 - 重新 reconcile 容易破坏终态历史，应采用追加式审计模型。
 - 同 nonce replacement/cancel 推断要和 P3 线程展示保持一致。
 
-### Task P4-6: pending 老化策略
+### Task P4-6: pending 老化策略（状态：已完成）
 
 **目标**
 
@@ -603,7 +603,7 @@
 - RPC 节点差异会影响 tx 可见性，提示文案要表达不确定性。
 - UI 容易把建议动作做得像自动修复，必须保持用户确认。
 
-### Task P4-7: anvil smoke check 诊断增强与 P4 回归
+### Task P4-7: anvil smoke check 诊断增强与 P4 回归（状态：已完成）
 
 **目标**
 
@@ -626,7 +626,7 @@
 
 **验收标准**
 
-- anvil smoke check 失败时能明确落到环境、RPC、chainId、签名/广播、history 或 reconcile 分类。
+- anvil smoke check 失败时能明确落到环境、RPC、chainId、vault/session、签名/广播、history 或 reconcile 分类。
 - 成功路径仍覆盖本地 native transfer 到 pending/reconcile 的闭环。
 - P4-2 到 P4-6 的安全不变量回归通过。
 - 诊断输出和导出不包含敏感材料。
