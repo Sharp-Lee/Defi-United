@@ -15,6 +15,14 @@ export interface StoredAccountRecord extends AccountRecord {
   }>;
 }
 
+export interface SessionSummary {
+  status: "ready";
+}
+
+export function unlockVault(password: string) {
+  return invoke<SessionSummary>("unlock_vault", { password });
+}
+
 export function deriveAccount(index: number) {
   return invoke<AccountRecord>("derive_account", { index });
 }

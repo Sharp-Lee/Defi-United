@@ -5,7 +5,14 @@ import { renderScreen } from "../test/render";
 
 describe("AppShell", () => {
   it("renders the locked workspace when no session is active", () => {
-    renderScreen(<AppShell session={{ status: "locked" }} />);
+    renderScreen(
+      <AppShell
+        activeTab="accounts"
+        onTabChange={() => {}}
+        onUnlock={async () => {}}
+        session={{ status: "locked" }}
+      />,
+    );
 
     expect(screen.getByRole("heading", { name: "EVM Wallet Workbench" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Unlock Vault" })).toBeInTheDocument();
@@ -13,9 +20,19 @@ describe("AppShell", () => {
   });
 
   it("renders the workspace tabs when a session is ready", () => {
-    renderScreen(<AppShell session={{ status: "ready" }} />);
+    renderScreen(
+      <AppShell
+        activeTab="accounts"
+        onTabChange={() => {}}
+        onUnlock={async () => {}}
+        session={{ status: "ready" }}
+      />,
+    );
 
     expect(screen.getByRole("tab", { name: "Accounts" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Transfer" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "History" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Settings" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Unlock Vault" })).not.toBeInTheDocument();
   });
 });

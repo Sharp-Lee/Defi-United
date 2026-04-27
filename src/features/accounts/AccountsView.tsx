@@ -3,7 +3,7 @@ import type { AccountChainState } from "../../lib/rpc";
 
 export interface AccountsViewProps {
   accounts: Array<AccountRecord & AccountChainState>;
-  onAddAccount: () => void;
+  onAddAccount: () => Promise<void> | void;
 }
 
 export function AccountsView({ accounts, onAddAccount }: AccountsViewProps) {
