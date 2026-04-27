@@ -16,6 +16,7 @@ pub fn run() {
             commands::transactions::replace_pending_transfer,
             commands::transactions::submit_native_transfer_command,
             commands::vault::create_vault,
+            commands::vault::lock_vault,
             commands::vault::unlock_vault,
         ])
         .run(tauri::generate_context!())

@@ -109,3 +109,46 @@ fn replace_and_cancel_mutations_keep_the_same_nonce_contract() {
     assert_eq!(request.nonce, 5);
     assert_eq!(request.from, "0x70997970C51812dc3A010C7d01b50e0d17dc79C8");
 }
+
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires anvil running on 127.0.0.1:8545"]
+async fn submit_native_transfer_roundtrip_against_anvil() {
+    let _guard = test_lock().lock().expect("test lock");
+    let dir = unique_test_dir("native-transfer-roundtrip");
+    let previous = std::env::var_os(APP_DIR_ENV);
+
+    if dir.exists() {
+        fs::remove_dir_all(&dir).expect("clean temp dir");
+    }
+    fs::create_dir_all(&dir).expect("create temp dir");
+    std::env::set_var(APP_DIR_ENV, &dir);
+    wallet_workbench_lib::session::clear_session_mnemonic();
+    wallet_workbench_lib::session::write_session_mnemonic(
+        "test test test test test test test test test test test junk".into(),
+    );
+
+    let intent = NativeTransferIntent {
+        rpc_url: "http://127.0.0.1:8545".into(),
+        account_index: 1,
+        chain_id: 31337,
+        from: "0x70997970C51812dc3A010C7d01b50e0d17dc79C8".into(),
+        to: "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC".into(),
+        value_wei: "1000000000000000".into(),
+        nonce: 0,
+        gas_limit: "21000".into(),
+        max_fee_per_gas: "2000000000".into(),
+        max_priority_fee_per_gas: "1500000000".into(),
+    };
+
+    let result = wallet_workbench_lib::transactions::submit_native_transfer(intent).await;
+
+    wallet_workbench_lib::session::clear_session_mnemonic();
+    if let Some(value) = previous {
+        std::env::set_var(APP_DIR_ENV, value);
+    } else {
+        std::env::remove_var(APP_DIR_ENV);
+    }
+    fs::remove_dir_all(&dir).expect("remove temp dir");
+
+    assert!(result.is_ok(), "submit failed: {result:?}");
+}

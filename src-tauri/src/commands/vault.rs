@@ -26,3 +26,9 @@ pub fn unlock_vault(password: String) -> Result<crate::models::SessionSummary, S
         status: "ready".to_string(),
     })
 }
+
+#[tauri::command]
+pub fn lock_vault() -> Result<(), String> {
+    crate::session::clear_session_mnemonic();
+    Ok(())
+}
