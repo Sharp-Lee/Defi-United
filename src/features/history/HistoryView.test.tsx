@@ -1,4 +1,4 @@
-import { fireEvent, screen, within } from "@testing-library/react";
+import { act, fireEvent, screen, within } from "@testing-library/react";
 import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -1245,6 +1245,75 @@ describe("HistoryView", () => {
     expect(guidance.getByText("Global refresh/reconcile")).toBeInTheDocument();
     expect(guidance.getByText(/currently selected chain\/RPC/)).toBeInTheDocument();
     expect(guidance.getByText(/not a single transaction/)).toBeInTheDocument();
+  });
+
+  it("shows pending age, latest reconcile check, and uncertain review guidance", () => {
+    renderHistory([
+      record({
+        txHash: "0xaging",
+        state: "Pending",
+        nonce: 7,
+        broadcastedAt: "1700000000",
+        reconcileSummary: {
+          source: "localReconcile",
+          checked_at: "1700000100",
+          rpc_chain_id: 1,
+          latest_confirmed_nonce: 9,
+          decision: "missingReceiptNonceAdvanced",
+        },
+      }),
+    ]);
+
+    expect(screen.getAllByText("Needs review").length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/Age .* checked/).length).toBeGreaterThan(0);
+    expect(
+      screen.getAllByText(/Chain nonce evidence suggests this pending transaction may need review\/reconcile/).length,
+    ).toBeGreaterThan(0);
+    expect(screen.queryByText(/pending transaction failed/i)).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Details" }));
+
+    const pendingGuidance = within(screen.getByLabelText("Pending age guidance"));
+    expect(pendingGuidance.getByText("Pending Age")).toBeInTheDocument();
+    expect(pendingGuidance.getByText("Latest confirmed nonce from reconcile: 9.")).toBeInTheDocument();
+    expect(pendingGuidance.getByText("Global refresh/reconcile")).toBeInTheDocument();
+    expect(pendingGuidance.getByText("View diagnostics")).toBeInTheDocument();
+  });
+
+  it("shows pending age action disabled reasons from existing gates", () => {
+    renderHistory([record({ txHash: "0xmissingnonce", state: "Pending", nonce: null })], {
+      onReplace: vi.fn(),
+      onCancelPending: vi.fn(),
+    });
+
+    expect(screen.getByText(/Replace: disabled - Missing frozen submission nonce/)).toBeInTheDocument();
+    expect(screen.getByText(/Cancel: disabled - Missing frozen submission nonce/)).toBeInTheDocument();
+  });
+
+  it("refreshes pending age guidance on the minute clock while the page stays open", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(1_700_001_740_000));
+    try {
+      renderHistory([
+        record({
+          txHash: "0xticking",
+          state: "Pending",
+          broadcastedAt: "1700000000",
+        }),
+      ]);
+
+      expect(screen.getAllByText("Normal pending").length).toBeGreaterThan(0);
+      expect(screen.queryByText("Needs attention")).not.toBeInTheDocument();
+
+      act(() => {
+        vi.advanceTimersByTime(2 * 60 * 1000);
+      });
+
+      expect(screen.getAllByText("Needs attention").length).toBeGreaterThan(0);
+      expect(screen.getAllByText(/Age 31m/).length).toBeGreaterThan(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("shows recovery actions and disables pending mutations when storage is corrupted", () => {

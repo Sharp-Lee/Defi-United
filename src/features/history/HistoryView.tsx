@@ -1,10 +1,15 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   getHistoryActionGates,
   isCurrentPendingActionTarget,
   type HistoryActionGate,
 } from "../../core/history/actions";
 import { getHistoryErrorDisplay, getRawHistoryErrorDisplay } from "../../core/history/errors";
+import {
+  getPendingAgeGuidance,
+  type PendingAgeGuidance,
+  type PendingAgeRecommendation,
+} from "../../core/history/pendingAge";
 import { HistoryErrorCard } from "./HistoryErrorCard";
 import {
   groupHistoryByNonce,
@@ -28,6 +33,7 @@ const UNKNOWN = "__unknown__";
 const ACCOUNT_KEY_PREFIX = "key:";
 const ACCOUNT_INDEX_PREFIX = "index:";
 const ACCOUNT_FROM_PREFIX = "from:";
+const HISTORY_CLOCK_INTERVAL_MS = 60 * 1000;
 
 type DetailSelection =
   | { type: "submission"; key: string }
@@ -300,6 +306,12 @@ export function HistoryView({
   const [detailSelection, setDetailSelection] = useState<DetailSelection>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [refreshError, setRefreshError] = useState<string | null>(null);
+  const [nowMs, setNowMs] = useState(() => Date.now());
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNowMs(Date.now()), HISTORY_CLOCK_INTERVAL_MS);
+    return () => window.clearInterval(timer);
+  }, []);
 
   const allEntries = useMemo(() => selectHistoryEntries(items), [items]);
   const allGroups = useMemo(() => groupHistoryByNonce(items), [items]);
@@ -405,6 +417,7 @@ export function HistoryView({
             record: entry.record,
             status: entry.status,
             identityIssues: entry.identityIssues,
+            nowMs,
           }),
         }))
         .filter(
@@ -421,7 +434,7 @@ export function HistoryView({
             (timestampMillis(timestampValue(left.entry)) ?? 0),
         )
         .slice(0, 3),
-    [allEntries],
+    [allEntries, nowMs],
   );
   const activeRecoveryIntents = useMemo(
     () => recoveryIntents.filter((intent) => intent.status === "active"),
@@ -470,6 +483,7 @@ export function HistoryView({
 
   function renderActions(entry: HistoryReadModel, threadEntries: HistoryReadModel[]) {
     const actionGates = getHistoryActionGates(entry, threadEntries);
+    const pendingGuidance = getPendingAgeGuidance(entry, threadEntries, nowMs);
     const reconcile = actionGates.find((action) => action.kind === "reconcile");
     const replace = actionGates.find((action) => action.kind === "replace");
     const cancel = actionGates.find((action) => action.kind === "cancel");
@@ -485,6 +499,7 @@ export function HistoryView({
     return (
       <div className="button-row history-actions">
         {renderDetailButton(entry)}
+        {pendingGuidance && <HistoryPendingActionSummary guidance={pendingGuidance} />}
         {reconcile && (
           <button
             className="secondary-button"
@@ -749,7 +764,18 @@ export function HistoryView({
             {viewMode === "submissions" &&
               visibleEntries.map((entry) => (
                 <tr key={`${entry.txHash}-${entry.originalIndex}`}>
-                  <td>{renderStatus(entry.status)}</td>
+                  <td>
+                    <div className="history-status-stack">
+                      {renderStatus(entry.status)}
+                      <HistoryPendingAgeBadge
+                        guidance={getPendingAgeGuidance(
+                          entry,
+                          allThreadEntriesByKey.get(entry.key) ?? [entry],
+                          nowMs,
+                        )}
+                      />
+                    </div>
+                  </td>
                   <td className="mono">chainId {formatMaybe(entry.chainId)}</td>
                   <td className="mono">{formatAccount(entry)}</td>
                   <td className="mono">{formatMaybe(entry.nonce)}</td>
@@ -795,6 +821,13 @@ export function HistoryView({
                           ) && (
                             <span className="history-thread-current"> current pending</span>
                           )}
+                          <HistoryPendingAgeBadge
+                            guidance={getPendingAgeGuidance(
+                              entry,
+                              allThreadEntriesByKey.get(group.key) ?? [],
+                              nowMs,
+                            )}
+                          />
                         </div>
                       ))}
                     </div>
@@ -835,6 +868,7 @@ export function HistoryView({
       {selectedDetail && (
         <HistoryDetails
           detail={selectedDetail}
+          nowMs={nowMs}
           onClose={() => setDetailSelection(null)}
           renderStatus={renderStatus}
         />
@@ -1131,12 +1165,14 @@ function HistoryStorageRecoveredCard({
 
 function HistoryDetails({
   detail,
+  nowMs,
   onClose,
   renderStatus,
 }: {
   detail:
     | { type: "submission"; entry: HistoryReadModel; threadEntries: HistoryReadModel[] }
     | { type: "thread"; group: HistoryNonceGroup; threadEntries: HistoryReadModel[] };
+  nowMs: number;
   onClose: () => void;
   renderStatus: (status: HistoryStatus) => JSX.Element;
 }) {
@@ -1171,6 +1207,7 @@ function HistoryDetails({
         {sortedThreadEntries(entries).map((entry) => (
           <HistorySubmissionDetails
             entry={entry}
+            nowMs={nowMs}
             threadEntries={threadEntries}
             key={`${entry.txHash}-${entry.originalIndex}-detail`}
             renderStatus={renderStatus}
@@ -1234,20 +1271,24 @@ function threadOutcomeSummary(entries: HistoryReadModel[]) {
 
 function HistorySubmissionDetails({
   entry,
+  nowMs,
   threadEntries,
   renderStatus,
 }: {
   entry: HistoryReadModel;
+  nowMs: number;
   threadEntries: HistoryReadModel[];
   renderStatus: (status: HistoryStatus) => JSX.Element;
 }) {
   const { record } = entry;
   const current = isCurrentPendingActionTarget(entry, threadEntries);
   const actionGates = getHistoryActionGates(entry, threadEntries);
+  const pendingGuidance = getPendingAgeGuidance(entry, threadEntries, nowMs);
   const errorDisplay = getHistoryErrorDisplay({
     record,
     status: entry.status,
     identityIssues: entry.identityIssues,
+    nowMs,
   });
   return (
     <article className="history-detail-record">
@@ -1268,6 +1309,7 @@ function HistorySubmissionDetails({
           Cancel model: same nonce, 0 wei, sent from the account to itself with a higher fee.
         </p>
       )}
+      {pendingGuidance && <HistoryPendingAgeGuidance guidance={pendingGuidance} />}
       {errorDisplay && (
         <HistoryErrorCard
           error={errorDisplay}
@@ -1395,6 +1437,91 @@ function outcomeTimeLabel(status: HistoryStatus) {
     case "unknown":
       return "Finalized at";
   }
+}
+
+function PendingRecommendationLine({ recommendation }: { recommendation: PendingAgeRecommendation }) {
+  return (
+    <li>
+      <strong>{recommendation.label}</strong>
+      <span>{recommendation.enabled ? "Available" : "Disabled"}</span>
+      <p>{recommendation.reason}</p>
+    </li>
+  );
+}
+
+function HistoryPendingAgeBadge({ guidance }: { guidance: PendingAgeGuidance | null }) {
+  if (!guidance) return null;
+  return (
+    <span
+      className={`history-pending-age history-pending-age-${guidance.state}`}
+      title={`${guidance.label}: ${guidance.summary}`}
+    >
+      Age {guidance.ageLabel} · checked {guidance.checkedLabel}
+    </span>
+  );
+}
+
+function HistoryPendingActionSummary({ guidance }: { guidance: PendingAgeGuidance }) {
+  const primary = guidance.recommendations.find((item) => item.kind === "reconcile");
+  const disabled = guidance.recommendations.filter((item) => !item.enabled).slice(0, 2);
+  return (
+    <div className={`history-pending-summary history-pending-summary-${guidance.state}`}>
+      <strong>{guidance.label}</strong>
+      <span>
+        Age {guidance.ageLabel}; last check {guidance.checkedLabel}.
+      </span>
+      <span>{guidance.summary}</span>
+      {primary && (
+        <span>
+          Suggested: {primary.label} ({primary.enabled ? "available" : `disabled: ${primary.reason}`})
+        </span>
+      )}
+      {disabled.map((item) => (
+        <span key={item.kind}>
+          {item.label}: disabled - {item.reason}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function HistoryPendingAgeGuidance({ guidance }: { guidance: PendingAgeGuidance }) {
+  return (
+    <section className="history-action-guidance history-pending-guidance" aria-label="Pending age guidance">
+      <h5>Pending Age</h5>
+      <p>{guidance.summary}</p>
+      <dl className="history-pending-guidance-facts">
+        <div>
+          <dt>Status</dt>
+          <dd>{guidance.label}</dd>
+        </div>
+        <div>
+          <dt>Pending age</dt>
+          <dd>{guidance.ageLabel}</dd>
+        </div>
+        <div>
+          <dt>Broadcasted at</dt>
+          <dd>{formatTimestamp(guidance.broadcastedAt)}</dd>
+        </div>
+        <div>
+          <dt>Last check</dt>
+          <dd>
+            {guidance.checkedAt ? `${formatTimestamp(guidance.checkedAt)} (${guidance.checkedLabel})` : "Unknown"}
+          </dd>
+        </div>
+      </dl>
+      <ul>
+        {guidance.recommendations.map((recommendation) => (
+          <PendingRecommendationLine key={recommendation.kind} recommendation={recommendation} />
+        ))}
+      </ul>
+      <div className="history-pending-evidence">
+        {guidance.evidence.map((item) => (
+          <span key={item}>{item}</span>
+        ))}
+      </div>
+    </section>
+  );
 }
 
 function HistoryActionGuidance({ actions }: { actions: HistoryActionGate[] }) {
