@@ -3,6 +3,7 @@ pub mod commands;
 pub mod models;
 pub mod session;
 pub mod storage;
+pub mod transactions;
 pub mod vault;
 
 pub fn run() {
@@ -10,6 +11,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::accounts::derive_account,
             commands::accounts::save_scanned_account,
+            commands::transactions::build_pending_history,
+            commands::transactions::submit_native_transfer_command,
             commands::vault::create_vault,
             commands::vault::unlock_vault,
         ])
