@@ -231,13 +231,54 @@ pub fn dropped_state_for_missing_receipt(
     record: &HistoryRecord,
     latest_confirmed_nonce: u64,
 ) -> Option<ChainOutcomeState> {
-    if record.outcome.state == ChainOutcomeState::Pending
-        && record.intent.nonce < latest_confirmed_nonce
+    let identity = history_identity_for_record(record);
+    if record.outcome.state == ChainOutcomeState::Pending && identity.nonce < latest_confirmed_nonce
     {
         Some(ChainOutcomeState::Dropped)
     } else {
         None
     }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct HistoryIdentity {
+    pub(crate) source: &'static str,
+    pub(crate) chain_id: u64,
+    pub(crate) account_index: u32,
+    pub(crate) from: String,
+    pub(crate) nonce: u64,
+}
+
+fn submission_identity(record: &HistoryRecord) -> Option<HistoryIdentity> {
+    Some(HistoryIdentity {
+        source: "submission",
+        chain_id: record.submission.chain_id?,
+        account_index: record.submission.account_index?,
+        from: record.submission.from.clone()?,
+        nonce: record.submission.nonce?,
+    })
+}
+
+fn nonce_thread_identity(record: &HistoryRecord) -> Option<HistoryIdentity> {
+    Some(HistoryIdentity {
+        source: "nonce_thread",
+        chain_id: record.nonce_thread.chain_id?,
+        account_index: record.nonce_thread.account_index?,
+        from: record.nonce_thread.from.clone()?,
+        nonce: record.nonce_thread.nonce?,
+    })
+}
+
+pub(crate) fn history_identity_for_record(record: &HistoryRecord) -> HistoryIdentity {
+    submission_identity(record)
+        .or_else(|| nonce_thread_identity(record))
+        .unwrap_or_else(|| HistoryIdentity {
+            source: "intent",
+            chain_id: record.intent.chain_id,
+            account_index: record.intent.account_index,
+            from: record.intent.from.clone(),
+            nonce: record.intent.nonce,
+        })
 }
 
 pub fn next_nonce_with_pending_history(
@@ -250,13 +291,15 @@ pub fn next_nonce_with_pending_history(
     records
         .iter()
         .filter(|record| {
+            let identity = history_identity_for_record(record);
             record.outcome.state == ChainOutcomeState::Pending
-                && record.intent.chain_id == chain_id
-                && record.intent.account_index == account_index
-                && record.intent.from.eq_ignore_ascii_case(from)
+                && identity.chain_id == chain_id
+                && identity.account_index == account_index
+                && identity.from.eq_ignore_ascii_case(from)
         })
         .fold(on_chain_nonce, |next_nonce, record| {
-            next_nonce.max(record.intent.nonce.saturating_add(1))
+            let identity = history_identity_for_record(record);
+            next_nonce.max(identity.nonce.saturating_add(1))
         })
 }
 
@@ -309,8 +352,8 @@ pub fn apply_pending_history_update_details(
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let mut records = load_history_records()?;
     for record in &mut records {
-        if record.intent.chain_id != chain_id || record.outcome.state != ChainOutcomeState::Pending
-        {
+        let identity = history_identity_for_record(record);
+        if identity.chain_id != chain_id || record.outcome.state != ChainOutcomeState::Pending {
             continue;
         }
         if let Some(update) = updates
@@ -367,7 +410,8 @@ pub async fn reconcile_pending_history(
     let pending_records = records
         .iter()
         .filter(|record| {
-            record.intent.chain_id == chain_id && record.outcome.state == ChainOutcomeState::Pending
+            let identity = history_identity_for_record(record);
+            identity.chain_id == chain_id && record.outcome.state == ChainOutcomeState::Pending
         })
         .cloned()
         .collect::<Vec<_>>();
@@ -410,8 +454,8 @@ pub async fn reconcile_pending_history(
             continue;
         }
 
-        let from = record
-            .intent
+        let identity = history_identity_for_record(&record);
+        let from = identity
             .from
             .parse::<Address>()
             .map_err(|e| format!("{e}"))?;

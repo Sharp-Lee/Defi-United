@@ -57,4 +57,72 @@ describe("nextNonceWithLocalPending", () => {
 
     expect(nextNonce).toBe(8);
   });
+
+  it("uses frozen submission identity before stale intent when recovering the next nonce", () => {
+    const nextNonce = nextNonceWithLocalPending(
+      7,
+      [
+        {
+          intent: {
+            account_index: 9,
+            chain_id: 99,
+            from: "0x9999999999999999999999999999999999999999",
+            nonce: 99,
+          },
+          submission: {
+            account_index: 1,
+            chain_id: 1,
+            from: "0x1111111111111111111111111111111111111111",
+            nonce: 8,
+          },
+          nonce_thread: {
+            account_index: 1,
+            chain_id: 1,
+            from: "0x1111111111111111111111111111111111111111",
+            nonce: 8,
+          },
+          outcome: { state: "Pending" },
+        },
+      ],
+      1,
+      1,
+      "0x1111111111111111111111111111111111111111",
+    );
+
+    expect(nextNonce).toBe(9);
+  });
+
+  it("falls back to nonce thread identity before stale intent when submission identity is incomplete", () => {
+    const nextNonce = nextNonceWithLocalPending(
+      3,
+      [
+        {
+          intent: {
+            account_index: 9,
+            chain_id: 99,
+            from: "0x9999999999999999999999999999999999999999",
+            nonce: 99,
+          },
+          submission: {
+            account_index: null,
+            chain_id: 1,
+            from: "0x1111111111111111111111111111111111111111",
+            nonce: 4,
+          },
+          nonce_thread: {
+            account_index: 1,
+            chain_id: 1,
+            from: "0x1111111111111111111111111111111111111111",
+            nonce: 4,
+          },
+          outcome: { state: "Pending" },
+        },
+      ],
+      1,
+      1,
+      "0x1111111111111111111111111111111111111111",
+    );
+
+    expect(nextNonce).toBe(5);
+  });
 });

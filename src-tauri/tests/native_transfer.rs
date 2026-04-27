@@ -653,8 +653,9 @@ fn pending_mutation_guard_rejects_same_nonce_key_until_released() {
 }
 
 #[test]
-fn pending_mutation_mark_failure_error_carries_recovery_record() {
-    let record = history_record(4, ChainOutcomeState::Pending, "0xaaa");
+fn pending_mutation_mark_failure_error_carries_safe_recovery_summary() {
+    let mut record = history_record(4, ChainOutcomeState::Pending, "0xaaa");
+    record.intent.rpc_url = "https://rpc.example.com/v1/raw-secret-api-key?apiKey=abc123".into();
 
     let error = wallet_workbench_lib::commands::transactions::pending_mutation_mark_failure_error(
         &record,
@@ -664,6 +665,11 @@ fn pending_mutation_mark_failure_error_carries_recovery_record() {
     assert!(error.contains("recovery_record="));
     assert!(error.contains("0xaaa"));
     assert!(error.contains("old record is not pending"));
+    assert!(error.contains("\"submission\""));
+    assert!(error.contains("\"nonce_thread\""));
+    assert!(!error.contains("rpc_url"));
+    assert!(!error.contains("raw-secret-api-key"));
+    assert!(!error.contains("apiKey"));
 }
 
 #[test]
@@ -710,6 +716,38 @@ fn reconcile_updates_are_scoped_to_the_requested_chain_id() {
 }
 
 #[test]
+fn reconcile_updates_use_frozen_chain_identity_when_intent_is_stale() {
+    with_test_app_dir("chain-scoped-frozen-reconcile-updates", |_| {
+        let mut record = history_record(4, ChainOutcomeState::Pending, "0xfrozenchain5");
+        record.intent.chain_id = 1;
+        record.submission.chain_id = Some(5);
+        record.nonce_thread.chain_id = Some(5);
+        let raw = serde_json::to_string_pretty(&vec![record]).expect("serialize history");
+        fs::write(history_path().expect("history path"), raw).expect("write history");
+
+        let chain_one_records = apply_pending_history_updates(
+            1,
+            &[("0xfrozenchain5".into(), ChainOutcomeState::Confirmed)],
+        )
+        .expect("apply chain one updates");
+        assert_eq!(
+            chain_one_records[0].outcome.state,
+            ChainOutcomeState::Pending
+        );
+
+        let chain_five_records = apply_pending_history_updates(
+            5,
+            &[("0xfrozenchain5".into(), ChainOutcomeState::Confirmed)],
+        )
+        .expect("apply chain five updates");
+        assert_eq!(
+            chain_five_records[0].outcome.state,
+            ChainOutcomeState::Confirmed
+        );
+    });
+}
+
+#[test]
 fn pending_history_reserves_next_nonce_for_matching_account_and_chain() {
     let mut records = Vec::new();
     records.push(history_record(4, ChainOutcomeState::Pending, "0xaaa"));
@@ -738,6 +776,62 @@ fn pending_history_reserves_next_nonce_for_matching_account_and_chain() {
 }
 
 #[test]
+fn pending_history_reserves_next_nonce_from_frozen_identity_before_stale_intent() {
+    let mut record = history_record(4, ChainOutcomeState::Pending, "0xaaa");
+    record.intent.chain_id = 99;
+    record.intent.account_index = 9;
+    record.intent.from = "0x9999999999999999999999999999999999999999".into();
+    record.intent.nonce = 99;
+    record.submission.chain_id = Some(1);
+    record.submission.account_index = Some(1);
+    record.submission.from = Some("0x1111111111111111111111111111111111111111".into());
+    record.submission.nonce = Some(8);
+    record.nonce_thread.chain_id = Some(1);
+    record.nonce_thread.account_index = Some(1);
+    record.nonce_thread.from = Some("0x1111111111111111111111111111111111111111".into());
+    record.nonce_thread.nonce = Some(8);
+
+    assert_eq!(
+        next_nonce_with_pending_history(
+            &[record],
+            1,
+            1,
+            "0x1111111111111111111111111111111111111111",
+            3,
+        ),
+        9
+    );
+}
+
+#[test]
+fn pending_history_uses_nonce_thread_identity_when_submission_is_incomplete() {
+    let mut record = history_record(4, ChainOutcomeState::Pending, "0xaaa");
+    record.intent.chain_id = 99;
+    record.intent.account_index = 9;
+    record.intent.from = "0x9999999999999999999999999999999999999999".into();
+    record.intent.nonce = 99;
+    record.submission.chain_id = None;
+    record.submission.account_index = None;
+    record.submission.from = None;
+    record.submission.nonce = None;
+    record.nonce_thread.chain_id = Some(1);
+    record.nonce_thread.account_index = Some(1);
+    record.nonce_thread.from = Some("0x1111111111111111111111111111111111111111".into());
+    record.nonce_thread.nonce = Some(8);
+
+    assert_eq!(
+        next_nonce_with_pending_history(
+            &[record],
+            1,
+            1,
+            "0x1111111111111111111111111111111111111111",
+            3,
+        ),
+        9
+    );
+}
+
+#[test]
 fn missing_receipt_can_mark_pending_as_dropped_after_nonce_advances() {
     let record = history_record(4, ChainOutcomeState::Pending, "0xaaa");
 
@@ -746,6 +840,20 @@ fn missing_receipt_can_mark_pending_as_dropped_after_nonce_advances() {
         Some(ChainOutcomeState::Dropped)
     );
     assert_eq!(dropped_state_for_missing_receipt(&record, 4), None);
+}
+
+#[test]
+fn missing_receipt_drop_uses_frozen_nonce_before_stale_intent_nonce() {
+    let mut record = history_record(4, ChainOutcomeState::Pending, "0xaaa");
+    record.intent.nonce = 1;
+    record.submission.nonce = Some(9);
+    record.nonce_thread.nonce = Some(9);
+
+    assert_eq!(dropped_state_for_missing_receipt(&record, 5), None);
+    assert_eq!(
+        dropped_state_for_missing_receipt(&record, 10),
+        Some(ChainOutcomeState::Dropped)
+    );
 }
 
 #[test]

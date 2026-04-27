@@ -80,9 +80,11 @@ export function sanitizeHistoryErrorMessage(message: string | null | undefined) 
   if (message == null) return null;
   const singleLine = message.replace(/\s+/g, " ").trim();
   if (singleLine.length === 0) return null;
-  const redacted = singleLine.replace(/\b0x[a-fA-F0-9]{80,}\b/g, (value) => {
-    return `${value.slice(0, 10)}...${value.slice(-8)}`;
-  });
+  const redacted = singleLine
+    .replace(/\bhttps?:\/\/[^\s"'<>;,]+/gi, "[redacted URL]")
+    .replace(/\b0x[a-fA-F0-9]{80,}\b/g, (value) => {
+      return `${value.slice(0, 10)}...${value.slice(-8)}`;
+    });
   return redacted.length > MAX_MESSAGE_LENGTH
     ? `${redacted.slice(0, MAX_MESSAGE_LENGTH - 3)}...`
     : redacted;

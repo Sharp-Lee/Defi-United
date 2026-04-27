@@ -271,8 +271,39 @@ pub fn pending_mutation_mark_failure_error(
     record: &crate::models::HistoryRecord,
     mark_error: &str,
 ) -> String {
-    let recovery_record = serde_json::to_string(record)
-        .unwrap_or_else(|_| "{\"error\":\"failed to serialize recovery record\"}".to_string());
+    let identity = crate::transactions::history_identity_for_record(record);
+    let recovery_record = serde_json::to_string(&serde_json::json!({
+        "schema_version": record.schema_version,
+        "identity": {
+            "source": identity.source,
+            "chain_id": identity.chain_id,
+            "account_index": identity.account_index,
+            "from": identity.from,
+            "nonce": identity.nonce,
+        },
+        "intent": {
+            "chain_id": record.intent.chain_id,
+            "account_index": record.intent.account_index,
+            "from": &record.intent.from,
+            "to": &record.intent.to,
+            "value_wei": &record.intent.value_wei,
+            "nonce": record.intent.nonce,
+            "gas_limit": &record.intent.gas_limit,
+            "max_fee_per_gas": &record.intent.max_fee_per_gas,
+            "max_priority_fee_per_gas": &record.intent.max_priority_fee_per_gas,
+        },
+        "submission": &record.submission,
+        "nonce_thread": &record.nonce_thread,
+        "outcome": {
+            "state": &record.outcome.state,
+            "tx_hash": &record.outcome.tx_hash,
+            "finalized_at": &record.outcome.finalized_at,
+            "reconciled_at": &record.outcome.reconciled_at,
+            "reconcile_summary": &record.outcome.reconcile_summary,
+            "error_summary": &record.outcome.error_summary,
+        },
+    }))
+    .unwrap_or_else(|_| "{\"error\":\"failed to serialize recovery summary\"}".to_string());
     format!(
         "pending mutation broadcast and persisted a new pending record, but failed to mark prior history state; recovery_record={recovery_record}; mark_error={mark_error}"
     )

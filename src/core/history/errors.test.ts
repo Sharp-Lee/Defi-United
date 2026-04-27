@@ -172,6 +172,17 @@ describe("history error display", () => {
     expect(message?.length).toBeLessThanOrEqual(180);
   });
 
+  it("redacts raw RPC URLs before displaying history errors", () => {
+    const message = sanitizeHistoryErrorMessage(
+      "reconcile failed for https://rpc.example.com/v1/super-secret-key?apiKey=abc123 and http://localhost:8545/path",
+    );
+
+    expect(message).toContain("[redacted URL]");
+    expect(message).not.toContain("super-secret-key");
+    expect(message).not.toContain("apiKey");
+    expect(message).not.toContain("localhost:8545/path");
+  });
+
   it("classifies raw refresh errors without a history record", () => {
     const display = getRawHistoryErrorDisplay({
       source: "manual history refresh",
