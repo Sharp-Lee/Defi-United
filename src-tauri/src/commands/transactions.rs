@@ -1,10 +1,10 @@
 use std::collections::HashSet;
 use std::sync::{Mutex, OnceLock};
 
-use crate::models::NativeTransferIntent;
+use crate::models::{NativeTransferIntent, SubmissionKind};
 use crate::transactions::{
     load_history_records, persist_pending_history, reconcile_pending_history,
-    submit_native_transfer,
+    submit_native_transfer, submit_native_transfer_with_history_kind,
 };
 use serde::{Deserialize, Serialize};
 
@@ -230,10 +230,16 @@ pub async fn replace_pending_transfer(request: PendingMutationRequest) -> Result
     let record = pending_record_for_mutation(&request)?;
     let intent = build_replace_intent_from_record(request, record)?;
 
-    let record = submit_native_transfer(intent).await?;
-    if let Err(error) = crate::transactions::mark_prior_history_state(
+    let record = submit_native_transfer_with_history_kind(
+        intent,
+        SubmissionKind::Replacement,
+        Some(tx_hash.clone()),
+    )
+    .await?;
+    if let Err(error) = crate::transactions::mark_prior_history_state_with_replacement(
         &tx_hash,
         crate::models::ChainOutcomeState::Replaced,
+        Some(record.submission.tx_hash.clone()),
     ) {
         return Err(pending_mutation_mark_failure_error(&record, &error));
     }
@@ -248,10 +254,16 @@ pub async fn cancel_pending_transfer(request: PendingMutationRequest) -> Result<
     let record = pending_record_for_mutation(&request)?;
     let intent = build_cancel_intent_from_record(request, record)?;
 
-    let record = submit_native_transfer(intent).await?;
-    if let Err(error) = crate::transactions::mark_prior_history_state(
+    let record = submit_native_transfer_with_history_kind(
+        intent,
+        SubmissionKind::Cancellation,
+        Some(tx_hash.clone()),
+    )
+    .await?;
+    if let Err(error) = crate::transactions::mark_prior_history_state_with_replacement(
         &tx_hash,
         crate::models::ChainOutcomeState::Cancelled,
+        Some(record.submission.tx_hash.clone()),
     ) {
         return Err(pending_mutation_mark_failure_error(&record, &error));
     }
