@@ -136,6 +136,21 @@ function firstMissingTraceField(entry: HistoryReadModel) {
   return null;
 }
 
+function firstMissingDroppedReviewField(entry: HistoryReadModel) {
+  const { submission } = entry.record;
+  if (hasHistoryStorageError(entry)) {
+    return "Disabled while local history storage is reporting read/write failures.";
+  }
+  if (!hasKnownTxHash(entry.txHash) || !hasKnownTxHash(submission.tx_hash)) {
+    return "Missing frozen submission transaction hash.";
+  }
+  if (!hasNumber(submission.chain_id)) return "Missing frozen submission chainId.";
+  if (!hasNumber(submission.account_index)) return "Missing frozen submission account.";
+  if (!hasText(submission.from)) return "Missing frozen submission from address.";
+  if (!hasNumber(submission.nonce)) return "Missing frozen submission nonce.";
+  return null;
+}
+
 function isSupersededInThread(entry: HistoryReadModel, entries: HistoryReadModel[]) {
   return (
     entry.replacedByTxHash !== null ||
@@ -157,6 +172,7 @@ export function getHistoryActionGates(entry: HistoryReadModel, threadEntries: Hi
   const currentPending = isCurrentPendingActionTarget(entry, threadEntries);
   const traceReason = firstMissingTraceField(entry);
   const mutationReason = firstMissingMutationField(entry);
+  const droppedReviewReason = firstMissingDroppedReviewField(entry);
   const terminalReason = `${entry.status} submissions are terminal and do not support replace/cancel actions.`;
   const reconcileReadyReason = hasRpcError(entry)
     ? "Global refresh/reconcile uses the app's currently selected chain/RPC; the RPC endpoint must be available and on the expected chainId."
@@ -193,10 +209,12 @@ export function getHistoryActionGates(entry: HistoryReadModel, threadEntries: Hi
     },
     {
       kind: "droppedReview",
-      label: "P4 Review",
+      label: "Review dropped",
       visible: entry.status === "dropped",
-      enabled: false,
-      reason: "Dropped records can be reviewed or reconciled manually in P4; P3 only shows this follow-up prompt.",
+      enabled: entry.status === "dropped" && droppedReviewReason === null,
+      reason:
+        droppedReviewReason ??
+        "Review uses the frozen submission chainId, account, nonce, and transaction hash against the selected RPC.",
     },
   ];
   return actions.filter((action) => action.visible);

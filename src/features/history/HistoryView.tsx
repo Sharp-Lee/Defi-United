@@ -1,10 +1,15 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   getHistoryActionGates,
   isCurrentPendingActionTarget,
   type HistoryActionGate,
 } from "../../core/history/actions";
 import { getHistoryErrorDisplay, getRawHistoryErrorDisplay } from "../../core/history/errors";
+import {
+  getPendingAgeGuidance,
+  type PendingAgeGuidance,
+  type PendingAgeRecommendation,
+} from "../../core/history/pendingAge";
 import { HistoryErrorCard } from "./HistoryErrorCard";
 import {
   groupHistoryByNonce,
@@ -14,13 +19,21 @@ import {
   type HistorySelectorFilters,
   type HistoryStatus,
 } from "../../core/history/selectors";
-import type { HistoryRecord, PendingMutationRequest } from "../../lib/tauri";
+import type {
+  HistoryCorruptionType,
+  HistoryRecoveryIntent,
+  HistoryRecord,
+  HistoryStorageInspection,
+  HistoryStorageQuarantineResult,
+  PendingMutationRequest,
+} from "../../lib/tauri";
 
 const ALL = "__all__";
 const UNKNOWN = "__unknown__";
 const ACCOUNT_KEY_PREFIX = "key:";
 const ACCOUNT_INDEX_PREFIX = "index:";
 const ACCOUNT_FROM_PREFIX = "from:";
+const HISTORY_CLOCK_INTERVAL_MS = 60 * 1000;
 
 type DetailSelection =
   | { type: "submission"; key: string }
@@ -57,6 +70,14 @@ const statusDescriptions: Record<HistoryStatus, string> = {
   unknown: "Outcome is not known yet.",
 };
 
+const corruptionLabels: Record<HistoryCorruptionType, string> = {
+  permissionDenied: "Permission denied",
+  ioError: "I/O error",
+  jsonParseFailed: "JSON parse failed",
+  schemaIncompatible: "Schema incompatible",
+  partialRecordsInvalid: "Partial records invalid",
+};
+
 function short(value: string) {
   return value.length > 14 ? `${value.slice(0, 10)}...${value.slice(-4)}` : value;
 }
@@ -67,6 +88,10 @@ function formatMaybe(value: string | number | null) {
 
 function formatOptional(value: string | number | null | undefined) {
   return value === null || value === undefined ? "Unknown" : value.toString();
+}
+
+function formatOptionalBoolean(value: boolean | null | undefined) {
+  return value === null || value === undefined ? null : value ? "Yes" : "No";
 }
 
 function formatAccount(entry: Pick<HistoryReadModel, "account">) {
@@ -218,11 +243,11 @@ function requireFrozenField<T>(value: T | null | undefined, label: string): T {
   return value;
 }
 
-function pendingRequestFromRecord(record: HistoryRecord): PendingMutationRequest {
+function pendingRequestFromRecord(record: HistoryRecord, rpcUrl: string): PendingMutationRequest {
   const { submission } = record;
   return {
     txHash: submission.tx_hash,
-    rpcUrl: record.intent.rpc_url,
+    rpcUrl,
     accountIndex: requireFrozenField(submission.account_index, "account_index"),
     chainId: requireFrozenField(submission.chain_id, "chain_id"),
     from: requireFrozenField(submission.from, "from"),
@@ -240,19 +265,41 @@ function pendingRequestFromRecord(record: HistoryRecord): PendingMutationRequest
 export function HistoryView({
   items,
   onRefresh,
+  onQuarantineHistory,
+  onRecoverBroadcastedHistory,
+  onDismissRecovery,
+  onReviewDropped,
   onReplace,
   onCancelPending,
   disabled = false,
   loading = false,
   error = null,
+  storage = null,
+  lastQuarantine = null,
+  recoveryIntents = [],
+  recoveryRpcDisabledReason = null,
+  reviewRpcDisabledReason = null,
+  rpcUrl = null,
+  chainReady = false,
 }: {
   items: HistoryRecord[];
   onRefresh: () => Promise<void> | void;
+  onQuarantineHistory?: () => Promise<void> | void;
+  onRecoverBroadcastedHistory?: (recoveryId: string) => Promise<void> | void;
+  onDismissRecovery?: (recoveryId: string) => Promise<void> | void;
+  onReviewDropped?: (txHash: string) => Promise<void> | void;
   onReplace?: (request: PendingMutationRequest) => Promise<void> | void;
   onCancelPending?: (request: PendingMutationRequest) => Promise<void> | void;
   disabled?: boolean;
   loading?: boolean;
   error?: string | null;
+  storage?: HistoryStorageInspection | null;
+  lastQuarantine?: HistoryStorageQuarantineResult | null;
+  recoveryIntents?: HistoryRecoveryIntent[];
+  recoveryRpcDisabledReason?: string | null;
+  reviewRpcDisabledReason?: string | null;
+  rpcUrl?: string | null;
+  chainReady?: boolean;
 }) {
   const [viewMode, setViewMode] = useState<"submissions" | "threads">("submissions");
   const [accountFilter, setAccountFilter] = useState(ALL);
@@ -263,6 +310,12 @@ export function HistoryView({
   const [detailSelection, setDetailSelection] = useState<DetailSelection>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [refreshError, setRefreshError] = useState<string | null>(null);
+  const [nowMs, setNowMs] = useState(() => Date.now());
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNowMs(Date.now()), HISTORY_CLOCK_INTERVAL_MS);
+    return () => window.clearInterval(timer);
+  }, []);
 
   const allEntries = useMemo(() => selectHistoryEntries(items), [items]);
   const allGroups = useMemo(() => groupHistoryByNonce(items), [items]);
@@ -343,6 +396,14 @@ export function HistoryView({
       : null;
   }, [allThreadEntriesByKey, detailSelection, visibleEntries, visibleGroups]);
   const isBusy = loading || refreshing;
+  const storageBlocked = storage?.status === "corrupted";
+  const storageBlockedReason = storageBlocked
+    ? "Disabled while local transaction history is unreadable. Retry the read or quarantine the damaged file before submitting, replacing, cancelling, or reviewing dropped records."
+    : null;
+  const pendingActionRpcUrl = chainReady ? (rpcUrl ?? "").trim() : "";
+  const pendingActionRpcDisabledReason = pendingActionRpcUrl
+    ? null
+    : "Validate an RPC endpoint before replacing or cancelling pending transactions.";
   const statusMessage = refreshError ?? error;
   const statusError = useMemo(
     () =>
@@ -364,6 +425,7 @@ export function HistoryView({
             record: entry.record,
             status: entry.status,
             identityIssues: entry.identityIssues,
+            nowMs,
           }),
         }))
         .filter(
@@ -380,7 +442,11 @@ export function HistoryView({
             (timestampMillis(timestampValue(left.entry)) ?? 0),
         )
         .slice(0, 3),
-    [allEntries],
+    [allEntries, nowMs],
+  );
+  const activeRecoveryIntents = useMemo(
+    () => recoveryIntents.filter((intent) => intent.status === "active"),
+    [recoveryIntents],
   );
 
   async function handleRefresh() {
@@ -425,12 +491,39 @@ export function HistoryView({
 
   function renderActions(entry: HistoryReadModel, threadEntries: HistoryReadModel[]) {
     const actionGates = getHistoryActionGates(entry, threadEntries);
+    const pendingGuidance = getPendingAgeGuidance(entry, threadEntries, nowMs);
     const reconcile = actionGates.find((action) => action.kind === "reconcile");
     const replace = actionGates.find((action) => action.kind === "replace");
     const cancel = actionGates.find((action) => action.kind === "cancel");
+    const droppedReview = actionGates.find((action) => action.kind === "droppedReview");
+    const droppedReviewBlockedReason = droppedReview
+      ? storageBlockedReason ??
+        (!droppedReview.enabled
+          ? droppedReview.reason
+          : !onReviewDropped
+            ? "Dropped review handler is not available in this view."
+            : reviewRpcDisabledReason)
+      : null;
+    const replaceBlockedReason = replace
+      ? storageBlockedReason ??
+        (!replace.enabled
+          ? replace.reason
+          : !onReplace
+            ? "Replace handler is not available in this view."
+            : pendingActionRpcDisabledReason)
+      : null;
+    const cancelBlockedReason = cancel
+      ? storageBlockedReason ??
+        (!cancel.enabled
+          ? cancel.reason
+          : !onCancelPending
+            ? "Cancel handler is not available in this view."
+            : pendingActionRpcDisabledReason)
+      : null;
     return (
       <div className="button-row history-actions">
         {renderDetailButton(entry)}
+        {pendingGuidance && <HistoryPendingActionSummary guidance={pendingGuidance} />}
         {reconcile && (
           <button
             className="secondary-button"
@@ -446,29 +539,82 @@ export function HistoryView({
           <>
             <button
               className="secondary-button"
-              disabled={disabled || !replace.enabled || !onReplace}
-              onClick={() => onReplace?.(pendingRequestFromRecord(entry.record))}
-              title={!onReplace ? "Replace handler is not available in this view." : replace.reason}
+              disabled={
+                disabled ||
+                storageBlocked ||
+                !replace.enabled ||
+                !onReplace ||
+                Boolean(pendingActionRpcDisabledReason)
+              }
+              onClick={() => {
+                if (pendingActionRpcUrl) {
+                  onReplace?.(pendingRequestFromRecord(entry.record, pendingActionRpcUrl));
+                }
+              }}
+              title={replaceBlockedReason ?? replace.reason}
               type="button"
             >
               Replace {short(entry.txHash)}
             </button>
             <button
               className="secondary-button"
-              disabled={disabled || !cancel.enabled || !onCancelPending}
-              onClick={() => onCancelPending?.(pendingRequestFromRecord(entry.record))}
-              title={!onCancelPending ? "Cancel handler is not available in this view." : cancel.reason}
+              disabled={
+                disabled ||
+                storageBlocked ||
+                !cancel.enabled ||
+                !onCancelPending ||
+                Boolean(pendingActionRpcDisabledReason)
+              }
+              onClick={() => {
+                if (pendingActionRpcUrl) {
+                  onCancelPending?.(pendingRequestFromRecord(entry.record, pendingActionRpcUrl));
+                }
+              }}
+              title={cancelBlockedReason ?? cancel.reason}
               type="button"
             >
               Cancel {short(entry.txHash)}
             </button>
           </>
         )}
+        {storageBlockedReason && (replace || cancel || droppedReview) && (
+          <span className="history-action-reason">
+            {replace || cancel ? "Submit/replace/cancel" : "History actions"}:{" "}
+            {storageBlockedReason}
+          </span>
+        )}
+        {droppedReview && (
+          <button
+            className="secondary-button"
+            disabled={
+              disabled ||
+              isBusy ||
+              storageBlocked ||
+              !droppedReview.enabled ||
+              !onReviewDropped ||
+              Boolean(reviewRpcDisabledReason)
+            }
+            onClick={() => void onReviewDropped?.(entry.txHash)}
+            title={
+              droppedReviewBlockedReason ?? droppedReview.reason
+            }
+            type="button"
+          >
+            Review dropped
+          </button>
+        )}
         {actionGates
-          .filter((action) => !action.enabled)
+          .filter(
+            (action) =>
+              !action.enabled ||
+              (action.kind === "droppedReview" && action.enabled && reviewRpcDisabledReason),
+          )
           .map((action) => (
             <span className="history-action-reason" key={action.kind}>
-              {action.label}: {action.reason}
+              {action.label}:{" "}
+              {action.kind === "droppedReview" && action.enabled && reviewRpcDisabledReason
+                ? reviewRpcDisabledReason
+                : action.reason}
             </span>
           ))}
       </div>
@@ -490,6 +636,28 @@ export function HistoryView({
       </header>
       {statusError && (
         <HistoryErrorCard error={statusError} meta="Manual refresh" role="alert" />
+      )}
+      {storage?.status === "corrupted" && (
+        <HistoryStorageRecoveryCard
+          disabled={disabled || isBusy}
+          lastQuarantine={lastQuarantine}
+          onQuarantineHistory={onQuarantineHistory}
+          onRetry={handleRefresh}
+          storage={storage}
+        />
+      )}
+      {lastQuarantine && storage?.status !== "corrupted" && (
+        <HistoryStorageRecoveredCard result={lastQuarantine} />
+      )}
+      {activeRecoveryIntents.length > 0 && (
+        <HistoryBroadcastRecoveryList
+          disabled={disabled || isBusy}
+          intents={activeRecoveryIntents}
+          onDismissRecovery={onDismissRecovery}
+          onRecoverBroadcastedHistory={onRecoverBroadcastedHistory}
+          recoveryRpcDisabledReason={recoveryRpcDisabledReason}
+          storageBlockedReason={storageBlockedReason}
+        />
       )}
       {isBusy && items.length === 0 && <div className="inline-warning">Loading transaction history...</div>}
       {recentFailureSummaries.length > 0 && (
@@ -634,7 +802,18 @@ export function HistoryView({
             {viewMode === "submissions" &&
               visibleEntries.map((entry) => (
                 <tr key={`${entry.txHash}-${entry.originalIndex}`}>
-                  <td>{renderStatus(entry.status)}</td>
+                  <td>
+                    <div className="history-status-stack">
+                      {renderStatus(entry.status)}
+                      <HistoryPendingAgeBadge
+                        guidance={getPendingAgeGuidance(
+                          entry,
+                          allThreadEntriesByKey.get(entry.key) ?? [entry],
+                          nowMs,
+                        )}
+                      />
+                    </div>
+                  </td>
                   <td className="mono">chainId {formatMaybe(entry.chainId)}</td>
                   <td className="mono">{formatAccount(entry)}</td>
                   <td className="mono">{formatMaybe(entry.nonce)}</td>
@@ -680,6 +859,13 @@ export function HistoryView({
                           ) && (
                             <span className="history-thread-current"> current pending</span>
                           )}
+                          <HistoryPendingAgeBadge
+                            guidance={getPendingAgeGuidance(
+                              entry,
+                              allThreadEntriesByKey.get(group.key) ?? [],
+                              nowMs,
+                            )}
+                          />
                         </div>
                       ))}
                     </div>
@@ -720,6 +906,7 @@ export function HistoryView({
       {selectedDetail && (
         <HistoryDetails
           detail={selectedDetail}
+          nowMs={nowMs}
           onClose={() => setDetailSelection(null)}
           renderStatus={renderStatus}
         />
@@ -728,14 +915,302 @@ export function HistoryView({
   );
 }
 
+function formatRawSummary(storage: HistoryStorageInspection) {
+  const summary = storage.rawSummary;
+  return [
+    `file ${summary.fileSizeBytes ?? "unknown"} bytes`,
+    `top ${summary.topLevel ?? "unknown"}`,
+    `array len ${summary.arrayLen ?? "unknown"}`,
+    `modified ${formatTimestamp(summary.modifiedAt)}`,
+  ].join(" · ");
+}
+
+function invalidRecordSummary(storage: HistoryStorageInspection) {
+  if (storage.invalidRecordCount === 0) return "No invalid record indices were reported.";
+  const indices = storage.invalidRecordIndices.length
+    ? storage.invalidRecordIndices.join(", ")
+    : "not available";
+  return `${storage.invalidRecordCount} invalid record(s); first indices: ${indices}.`;
+}
+
+function recoveryDisabledReason(
+  intent: HistoryRecoveryIntent,
+  storageBlockedReason: string | null,
+  recoveryRpcDisabledReason: string | null,
+  handlerAvailable: boolean,
+) {
+  if (storageBlockedReason) return storageBlockedReason;
+  if (recoveryRpcDisabledReason) return recoveryRpcDisabledReason;
+  if (!handlerAvailable) return "Recovery handler is not available in this view.";
+  if (intent.chainId === null || intent.chainId === undefined) {
+    return "Recovery is disabled because the frozen chainId is missing.";
+  }
+  if (intent.accountIndex === null || intent.accountIndex === undefined || !intent.from) {
+    return "Recovery is disabled because the frozen account/from is missing.";
+  }
+  if (intent.nonce === null || intent.nonce === undefined) {
+    return "Recovery is disabled because the frozen nonce is missing.";
+  }
+  if (!intent.txHash) return "Recovery is disabled because the tx hash is missing.";
+  return null;
+}
+
+function feeSummary(intent: HistoryRecoveryIntent) {
+  const gasLimit = intent.gasLimit ?? "unknown";
+  const maxFee = intent.maxFeePerGas ?? "unknown";
+  const priority = intent.maxPriorityFeePerGas ?? "unknown";
+  return `gas ${gasLimit} · max ${maxFee} wei · priority ${priority} wei`;
+}
+
+function sanitizeRecoveryDisplayText(value: string) {
+  return value
+    .replace(/https?:\/\/\S+/gi, "[redacted_url]")
+    .replace(/\b(?:wss?|ws):\/\/\S+/gi, "[redacted_url]")
+    .replace(/\b(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+/gi, "[redacted_auth]")
+    .replace(
+      /\b(mnemonic|seed(?:\s+phrase)?|recovery\s+phrase)\b\s+.*?(?=\s+[A-Za-z0-9_-]+\s*[:=]|$)/gi,
+      "$1 [redacted]",
+    )
+    .replace(
+      /\b(api\s+key|access\s+token|private\s+key|raw\s+tx|signed\s+tx|raw\s+transaction|signed\s+transaction|token|authorization|auth|password|passphrase|signature|secret)\b\s+("[^"]*"|'[^']*'|[^\s,;)]+)/gi,
+      "$1 [redacted]",
+    )
+    .replace(
+      /\b(api[_-]?key|access[_-]?token|token|authorization|auth|password|passphrase|mnemonic|seed|private[_-]?key|signature|signed[_-]?tx|raw[_-]?tx|secret)\s*[:=]\s*("[^"]*"|'[^']*'|[^\s,;)]+)/gi,
+      "$1=[redacted]",
+    )
+    .replace(/0x[a-f0-9]{64,}/gi, "[redacted_hex]");
+}
+
+function HistoryBroadcastRecoveryList({
+  intents,
+  disabled,
+  storageBlockedReason,
+  recoveryRpcDisabledReason,
+  onRecoverBroadcastedHistory,
+  onDismissRecovery,
+}: {
+  intents: HistoryRecoveryIntent[];
+  disabled: boolean;
+  storageBlockedReason: string | null;
+  recoveryRpcDisabledReason: string | null;
+  onRecoverBroadcastedHistory?: (recoveryId: string) => Promise<void> | void;
+  onDismissRecovery?: (recoveryId: string) => Promise<void> | void;
+}) {
+  return (
+    <section className="history-broadcast-recovery-list" aria-label="Broadcast recovery">
+      {intents.map((intent) => {
+        const reason = recoveryDisabledReason(
+          intent,
+          storageBlockedReason,
+          recoveryRpcDisabledReason,
+          Boolean(onRecoverBroadcastedHistory),
+        );
+        return (
+          <article className="history-recovery-card" key={intent.id} role="alert">
+            <header>
+              <div>
+                <span>Broadcast recovery</span>
+                <h3>{short(intent.txHash)}</h3>
+              </div>
+              <span className="pill danger-pill">History missing</span>
+            </header>
+            <p>
+              The transaction was broadcast, but the local history write failed. Recovery queries
+              the selected RPC for this tx hash and writes a local record without signing or
+              broadcasting again.
+            </p>
+            <dl>
+              <div>
+                <dt>chainId</dt>
+                <dd className="mono">{formatOptional(intent.chainId)}</dd>
+              </div>
+              <div>
+                <dt>Account/from</dt>
+                <dd className="mono">
+                  Account {formatOptional(intent.accountIndex)} · {short(formatOptional(intent.from))}
+                </dd>
+              </div>
+              <div>
+                <dt>Nonce</dt>
+                <dd className="mono">{formatOptional(intent.nonce)}</dd>
+              </div>
+              <div>
+                <dt>To/value</dt>
+                <dd className="mono">
+                  {short(formatOptional(intent.to))} · {formatOptional(intent.valueWei)} wei
+                </dd>
+              </div>
+              <div>
+                <dt>Fee summary</dt>
+                <dd className="mono">{feeSummary(intent)}</dd>
+              </div>
+              <div>
+                <dt>Broadcasted at</dt>
+                <dd>{formatTimestamp(intent.broadcastedAt)}</dd>
+              </div>
+              <div>
+                <dt>Write error</dt>
+                <dd>{sanitizeRecoveryDisplayText(intent.writeError)}</dd>
+              </div>
+              {intent.lastRecoveryError && (
+                <div>
+                  <dt>Last recovery error</dt>
+                  <dd>{sanitizeRecoveryDisplayText(intent.lastRecoveryError)}</dd>
+                </div>
+              )}
+            </dl>
+            <p className="history-thread-note">
+              Risk: only recover transactions you recognize. Unknown fields remain unknown; this
+              flow does not recreate an intent beyond the saved frozen submission.
+            </p>
+            <div className="button-row">
+              <button
+                className="secondary-button"
+                disabled={disabled || reason !== null}
+                onClick={() => void onRecoverBroadcastedHistory?.(intent.id)}
+                title={reason ?? "Recover local history from this broadcast tx hash."}
+                type="button"
+              >
+                Recover {short(intent.txHash)}
+              </button>
+              <button
+                className="secondary-button"
+                disabled={disabled || !onDismissRecovery}
+                onClick={() => void onDismissRecovery?.(intent.id)}
+                type="button"
+              >
+                Dismiss
+              </button>
+              {reason && <span className="history-action-reason">{reason}</span>}
+            </div>
+          </article>
+        );
+      })}
+    </section>
+  );
+}
+
+function HistoryStorageRecoveryCard({
+  storage,
+  lastQuarantine,
+  onRetry,
+  onQuarantineHistory,
+  disabled,
+}: {
+  storage: HistoryStorageInspection;
+  lastQuarantine: HistoryStorageQuarantineResult | null;
+  onRetry: () => Promise<void> | void;
+  onQuarantineHistory?: () => Promise<void> | void;
+  disabled: boolean;
+}) {
+  const corruptionType = storage.corruptionType ?? "ioError";
+  return (
+    <article className="history-recovery-card" role="alert">
+      <header>
+        <div>
+          <span>History storage recovery</span>
+          <h3>{corruptionLabels[corruptionType]}</h3>
+        </div>
+        <span className="pill danger-pill">History actions disabled</span>
+      </header>
+      <p>
+        Local transaction history cannot be trusted right now. New submit, replace, cancel, and
+        dropped review actions stay blocked so pending nonce recovery and review audit trails are
+        not bypassed.
+      </p>
+      <dl>
+        <div>
+          <dt>Impact</dt>
+          <dd>History list, pending nonce recovery, submit, replace, cancel, and dropped review.</dd>
+        </div>
+        <div>
+          <dt>Original file</dt>
+          <dd className="mono">{storage.path}</dd>
+        </div>
+        <div>
+          <dt>Error</dt>
+          <dd>{storage.errorSummary ?? "No OS or parser message was returned."}</dd>
+        </div>
+        <div>
+          <dt>Raw summary</dt>
+          <dd className="mono">{formatRawSummary(storage)}</dd>
+        </div>
+        <div>
+          <dt>Record scope</dt>
+          <dd>{invalidRecordSummary(storage)}</dd>
+        </div>
+        {lastQuarantine && (
+          <div>
+            <dt>Last quarantine copy</dt>
+            <dd className="mono">{lastQuarantine.quarantinedPath}</dd>
+          </div>
+        )}
+      </dl>
+      <div className="button-row">
+        <button className="secondary-button" disabled={disabled} onClick={() => void onRetry()} type="button">
+          Retry read
+        </button>
+        <button
+          className="secondary-button"
+          disabled={disabled || !onQuarantineHistory}
+          onClick={() => void onQuarantineHistory?.()}
+          type="button"
+        >
+          Quarantine and start empty history
+        </button>
+      </div>
+    </article>
+  );
+}
+
+function HistoryStorageRecoveredCard({
+  result,
+}: {
+  result: HistoryStorageQuarantineResult;
+}) {
+  const previousType = result.previous.corruptionType ?? "ioError";
+  return (
+    <article className="history-recovery-card history-recovery-card-ok" aria-label="History recovery result">
+      <header>
+        <div>
+          <span>History storage recovered</span>
+          <h3>Empty history started</h3>
+        </div>
+        <span className="pill">Audit copy retained</span>
+      </header>
+      <p>
+        The damaged history file was moved aside. The current history is empty; old records were not
+        recreated or inferred from chain data.
+      </p>
+      <dl>
+        <div>
+          <dt>Quarantine copy</dt>
+          <dd className="mono">{result.quarantinedPath}</dd>
+        </div>
+        <div>
+          <dt>Previous classification</dt>
+          <dd>{corruptionLabels[previousType]}</dd>
+        </div>
+        <div>
+          <dt>Previous summary</dt>
+          <dd className="mono">{formatRawSummary(result.previous)}</dd>
+        </div>
+      </dl>
+    </article>
+  );
+}
+
 function HistoryDetails({
   detail,
+  nowMs,
   onClose,
   renderStatus,
 }: {
   detail:
     | { type: "submission"; entry: HistoryReadModel; threadEntries: HistoryReadModel[] }
     | { type: "thread"; group: HistoryNonceGroup; threadEntries: HistoryReadModel[] };
+  nowMs: number;
   onClose: () => void;
   renderStatus: (status: HistoryStatus) => JSX.Element;
 }) {
@@ -770,6 +1245,7 @@ function HistoryDetails({
         {sortedThreadEntries(entries).map((entry) => (
           <HistorySubmissionDetails
             entry={entry}
+            nowMs={nowMs}
             threadEntries={threadEntries}
             key={`${entry.txHash}-${entry.originalIndex}-detail`}
             renderStatus={renderStatus}
@@ -833,20 +1309,24 @@ function threadOutcomeSummary(entries: HistoryReadModel[]) {
 
 function HistorySubmissionDetails({
   entry,
+  nowMs,
   threadEntries,
   renderStatus,
 }: {
   entry: HistoryReadModel;
+  nowMs: number;
   threadEntries: HistoryReadModel[];
   renderStatus: (status: HistoryStatus) => JSX.Element;
 }) {
   const { record } = entry;
   const current = isCurrentPendingActionTarget(entry, threadEntries);
   const actionGates = getHistoryActionGates(entry, threadEntries);
+  const pendingGuidance = getPendingAgeGuidance(entry, threadEntries, nowMs);
   const errorDisplay = getHistoryErrorDisplay({
     record,
     status: entry.status,
     identityIssues: entry.identityIssues,
+    nowMs,
   });
   return (
     <article className="history-detail-record">
@@ -867,6 +1347,7 @@ function HistorySubmissionDetails({
           Cancel model: same nonce, 0 wei, sent from the account to itself with a higher fee.
         </p>
       )}
+      {pendingGuidance && <HistoryPendingAgeGuidance guidance={pendingGuidance} />}
       {errorDisplay && (
         <HistoryErrorCard
           error={errorDisplay}
@@ -923,6 +1404,10 @@ function outcomeRows(entry: HistoryReadModel): Array<[string, string | number | 
   const receipt = outcome.receipt;
   const reconcile = outcome.reconcile_summary;
   const error = outcome.error_summary;
+  const latestReview =
+    outcome.dropped_review_history.length > 0
+      ? outcome.dropped_review_history[outcome.dropped_review_history.length - 1]
+      : null;
   const errorDisplay = getHistoryErrorDisplay({
     record: entry.record,
     status: entry.status,
@@ -944,6 +1429,25 @@ function outcomeRows(entry: HistoryReadModel): Array<[string, string | number | 
     ["Reconcile RPC chainId", reconcile?.rpc_chain_id],
     ["Reconcile latest confirmed nonce", reconcile?.latest_confirmed_nonce],
     ["Reconcile decision", reconcile?.decision],
+    ["Dropped review count", outcome.dropped_review_history.length || null],
+    ["Original dropped decision", latestReview?.original_reconcile_summary?.decision],
+    ["Original dropped source", latestReview?.original_reconcile_summary?.source],
+    ["Original dropped at", formatTimestamp(latestReview?.original_reconciled_at ?? null)],
+    ["Latest review at", formatTimestamp(latestReview?.reviewed_at ?? null)],
+    ["Latest review source", latestReview?.source],
+    ["Latest review RPC endpoint", latestReview?.rpc_endpoint_summary],
+    ["Latest review requested chainId", latestReview?.requested_chain_id],
+    ["Latest review RPC chainId", latestReview?.rpc_chain_id],
+    ["Latest review transaction found", formatOptionalBoolean(latestReview?.transaction_found)],
+    ["Latest review latest confirmed nonce", latestReview?.latest_confirmed_nonce],
+    ["Latest review local same nonce tx", latestReview?.local_same_nonce_tx_hash],
+    ["Latest review local same nonce state", latestReview?.local_same_nonce_state],
+    ["Latest review result", latestReview?.result_state],
+    ["Latest review decision", latestReview?.decision],
+    ["Latest review recommendation", latestReview?.recommendation],
+    ["Latest review error source", latestReview?.error_summary?.source],
+    ["Latest review error category", latestReview?.error_summary?.category],
+    ["Latest review error", latestReview?.error_summary?.message],
     ["Error class", errorDisplay?.label],
     ["Error title", errorDisplay?.title],
     ["Error source", errorDisplay?.source ?? error?.source],
@@ -971,6 +1475,91 @@ function outcomeTimeLabel(status: HistoryStatus) {
     case "unknown":
       return "Finalized at";
   }
+}
+
+function PendingRecommendationLine({ recommendation }: { recommendation: PendingAgeRecommendation }) {
+  return (
+    <li>
+      <strong>{recommendation.label}</strong>
+      <span>{recommendation.enabled ? "Available" : "Disabled"}</span>
+      <p>{recommendation.reason}</p>
+    </li>
+  );
+}
+
+function HistoryPendingAgeBadge({ guidance }: { guidance: PendingAgeGuidance | null }) {
+  if (!guidance) return null;
+  return (
+    <span
+      className={`history-pending-age history-pending-age-${guidance.state}`}
+      title={`${guidance.label}: ${guidance.summary}`}
+    >
+      Age {guidance.ageLabel} · checked {guidance.checkedLabel}
+    </span>
+  );
+}
+
+function HistoryPendingActionSummary({ guidance }: { guidance: PendingAgeGuidance }) {
+  const primary = guidance.recommendations.find((item) => item.kind === "reconcile");
+  const disabled = guidance.recommendations.filter((item) => !item.enabled).slice(0, 2);
+  return (
+    <div className={`history-pending-summary history-pending-summary-${guidance.state}`}>
+      <strong>{guidance.label}</strong>
+      <span>
+        Age {guidance.ageLabel}; last check {guidance.checkedLabel}.
+      </span>
+      <span>{guidance.summary}</span>
+      {primary && (
+        <span>
+          Suggested: {primary.label} ({primary.enabled ? "available" : `disabled: ${primary.reason}`})
+        </span>
+      )}
+      {disabled.map((item) => (
+        <span key={item.kind}>
+          {item.label}: disabled - {item.reason}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function HistoryPendingAgeGuidance({ guidance }: { guidance: PendingAgeGuidance }) {
+  return (
+    <section className="history-action-guidance history-pending-guidance" aria-label="Pending age guidance">
+      <h5>Pending Age</h5>
+      <p>{guidance.summary}</p>
+      <dl className="history-pending-guidance-facts">
+        <div>
+          <dt>Status</dt>
+          <dd>{guidance.label}</dd>
+        </div>
+        <div>
+          <dt>Pending age</dt>
+          <dd>{guidance.ageLabel}</dd>
+        </div>
+        <div>
+          <dt>Broadcasted at</dt>
+          <dd>{formatTimestamp(guidance.broadcastedAt)}</dd>
+        </div>
+        <div>
+          <dt>Last check</dt>
+          <dd>
+            {guidance.checkedAt ? `${formatTimestamp(guidance.checkedAt)} (${guidance.checkedLabel})` : "Unknown"}
+          </dd>
+        </div>
+      </dl>
+      <ul>
+        {guidance.recommendations.map((recommendation) => (
+          <PendingRecommendationLine key={recommendation.kind} recommendation={recommendation} />
+        ))}
+      </ul>
+      <div className="history-pending-evidence">
+        {guidance.evidence.map((item) => (
+          <span key={item}>{item}</span>
+        ))}
+      </div>
+    </section>
+  );
 }
 
 function HistoryActionGuidance({ actions }: { actions: HistoryActionGate[] }) {

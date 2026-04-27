@@ -1,12 +1,16 @@
 use std::collections::HashSet;
 use std::sync::{Mutex, OnceLock};
 
+use crate::diagnostics::{append_diagnostic_event, DiagnosticEventInput, DiagnosticLevel};
 use crate::models::{NativeTransferIntent, SubmissionKind, SubmissionRecord};
 use crate::transactions::{
-    load_history_records, persist_pending_history, reconcile_pending_history,
+    dismiss_history_recovery_intent, inspect_history_storage, load_history_records,
+    load_history_recovery_intents, persist_pending_history, quarantine_history_storage,
+    reconcile_pending_history, recover_broadcasted_history_record, review_dropped_history_record,
     submit_native_transfer, submit_native_transfer_with_history_kind,
 };
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -325,12 +329,56 @@ pub fn load_transaction_history() -> Result<String, String> {
 }
 
 #[tauri::command]
+pub fn inspect_transaction_history_storage() -> Result<String, String> {
+    let inspection = inspect_history_storage()?;
+    serde_json::to_string(&inspection).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn quarantine_transaction_history() -> Result<String, String> {
+    let result = quarantine_history_storage()?;
+    serde_json::to_string(&result).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub async fn reconcile_pending_history_command(
     rpc_url: String,
     chain_id: u64,
 ) -> Result<String, String> {
     let records = reconcile_pending_history(rpc_url, chain_id).await?;
     serde_json::to_string(&records).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn review_dropped_history_record_command(
+    tx_hash: String,
+    rpc_url: String,
+    chain_id: u64,
+) -> Result<String, String> {
+    let records = review_dropped_history_record(tx_hash, rpc_url, chain_id).await?;
+    serde_json::to_string(&records).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn load_history_recovery_intents_command() -> Result<String, String> {
+    let intents = load_history_recovery_intents()?;
+    serde_json::to_string(&intents).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn recover_broadcasted_history_record_command(
+    recovery_id: String,
+    rpc_url: String,
+    chain_id: u64,
+) -> Result<String, String> {
+    let result = recover_broadcasted_history_record(recovery_id, rpc_url, chain_id).await?;
+    serde_json::to_string(&result).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn dismiss_history_recovery_intent_command(recovery_id: String) -> Result<String, String> {
+    let intents = dismiss_history_recovery_intent(&recovery_id)?;
+    serde_json::to_string(&intents).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -360,6 +408,17 @@ pub async fn replace_pending_transfer(request: PendingMutationRequest) -> Result
         crate::models::ChainOutcomeState::Replaced,
         Some(record.submission.tx_hash.clone()),
     ) {
+        append_diagnostic_event(DiagnosticEventInput {
+            level: DiagnosticLevel::Error,
+            category: "transaction",
+            source: "transactions_command",
+            event: "replacePriorHistoryMarkFailed",
+            chain_id: record.submission.chain_id,
+            account_index: record.submission.account_index,
+            tx_hash: Some(tx_hash.clone()),
+            message: Some(error.clone()),
+            metadata: json!({ "replacementTxHash": record.submission.tx_hash }),
+        });
         return Err(pending_mutation_mark_failure_error(&record, &error));
     }
     serde_json::to_string(&record).map_err(|e| e.to_string())
@@ -384,6 +443,17 @@ pub async fn cancel_pending_transfer(request: PendingMutationRequest) -> Result<
         crate::models::ChainOutcomeState::Cancelled,
         Some(record.submission.tx_hash.clone()),
     ) {
+        append_diagnostic_event(DiagnosticEventInput {
+            level: DiagnosticLevel::Error,
+            category: "transaction",
+            source: "transactions_command",
+            event: "cancelPriorHistoryMarkFailed",
+            chain_id: record.submission.chain_id,
+            account_index: record.submission.account_index,
+            tx_hash: Some(tx_hash.clone()),
+            message: Some(error.clone()),
+            metadata: json!({ "cancellationTxHash": record.submission.tx_hash }),
+        });
         return Err(pending_mutation_mark_failure_error(&record, &error));
     }
     serde_json::to_string(&record).map_err(|e| e.to_string())

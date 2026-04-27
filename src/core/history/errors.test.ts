@@ -164,6 +164,24 @@ describe("history error display", () => {
     expect(display?.summary).toContain("not the same as an on-chain failed receipt");
   });
 
+  it("keeps the existing 30 minute stale pending fallback", () => {
+    const display = getHistoryErrorDisplay({
+      record: record({
+        state: "Pending",
+        broadcastedAt: "1700000000",
+      }),
+      status: "pending",
+      nowMs: 1_700_001_860_000,
+    });
+
+    expect(display).toMatchObject({
+      label: "Reconcile",
+      title: "Pending for an extended time",
+      category: "pending",
+    });
+    expect(display?.suggestion).toContain("Refresh history");
+  });
+
   it("sanitizes long hex payloads and truncates long messages", () => {
     const rawPayload = `rpc error ${"0x".padEnd(132, "a")} ${"x".repeat(300)}`;
     const message = sanitizeHistoryErrorMessage(rawPayload);

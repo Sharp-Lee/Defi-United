@@ -53,6 +53,13 @@ EVM Wallet Workbench 是一个面向本地桌面使用的 EVM 钱包工作台。
 - pending history 持久化和 reconcile。
 - pending 交易 replace/cancel。
 - anvil smoke check。
+- P4-1 诊断事件与本地结构化日志：RPC 探测、交易提交、历史写入、reconcile 等关键路径已具备本地非敏感诊断事件基线。
+- P4-2 诊断面板/导出：desktop UI 可查看、筛选和导出非敏感诊断事件。
+- P4-3 历史文件损坏恢复：不可读历史有分类摘要、隔离/重建入口，并继续阻止盲目广播。
+- P4-4 广播成功但历史写入失败补录：基于已知 tx hash 和冻结参数恢复本地记录，不重新签名或广播。
+- P4-5 dropped 复核与重新 reconcile：保留原 dropped 判定并追加复核结果。
+- P4-6 pending 老化策略：为长时间 pending 提供保守风险提示和适用动作建议。
+- P4-7 anvil smoke check 诊断增强与 P4 回归：smoke check 失败摘要按环境、RPC/chainId、前端、vault/session、签名/广播、history、reconcile 和 Rust 回归分类。
 
 v1 的交易能力仅覆盖原生币转账。ERC-20、合约调用、批处理、策略编排、交易解析、复杂资产组合展示均属于后续/计划能力。
 
@@ -114,6 +121,24 @@ P3 desktop 不提供明文助记词 import/export/backup UI。当前恢复边界
 - vault 数据必须保存在本地应用数据目录，不能与可重建缓存混存。
 - 应用不默认导出明文助记词、私钥或签名材料。
 
+### 8.7 诊断事件与本地结构化日志
+
+- 诊断事件只记录排查所需的非敏感元数据，例如事件类型、时间、chainId、account/address 摘要、nonce、tx hash、错误分类、阶段和可恢复提示。
+- 诊断事件不得包含助记词、私钥、seed、明文密码、签名原文、raw signed transaction、完整 RPC 认证凭据或其他签名材料。
+- RPC URL、文件路径和错误消息进入日志前必须经过最小化或脱敏处理；含 token、basic auth、query secret 的端点不能原样写入。
+- 诊断日志是本地排障材料，不是交易真相来源；交易状态仍以历史记录和链上 reconcile/receipt 为准。
+- 诊断导出必须默认排除敏感材料，并在 UI 中明确展示导出内容范围。
+- P4-1 已提供本地结构化日志基线；P4-2 已提供只含非敏感信息的诊断面板和导出入口。
+
+### 8.8 恢复与补录边界
+
+- 历史文件不可读或疑似损坏时，提交新交易前必须停止并给出明确恢复路径，不能为了保持 UI 可用而绕过本地历史读取。
+- 损坏恢复应优先隔离原文件、保留可审计副本、生成用户可理解的错误摘要，再允许用户选择修复或重建索引。
+- 广播成功但历史写入失败时，系统必须把 tx hash、chainId、account/from、nonce 和写入错误返回给用户；P4-4 已提供基于已知 tx hash 和冻结参数的补录入口，但不能假装已经自动补齐。
+- 手动补录不得重新签名或重新广播原交易；它只能基于已知 tx hash、冻结参数和链上查询结果恢复本地历史记录。
+- dropped 复核/重新 reconcile 必须保留 dropped 的原判定历史，并追加新的复核结果，不能静默改写成 confirmed/failed。
+- pending 老化策略只能提供风险提示和适用动作建议；是否 replace/cancel/reconcile 仍需遵守原 nonce、account、chainId 和 Rust command 约束。
+
 ## 9. 交易三层模型
 
 交易历史应按三层理解和展示：
@@ -122,9 +147,9 @@ P3 desktop 不提供明文助记词 import/export/backup UI。当前恢复边界
 - Submission：最终冻结并提交给 Rust 的参数，包括不可变 draft key、交易 hash 和实际广播参数。
 - ChainOutcome：链上或本地 reconcile 得到的结果，包括 pending、confirmed、failed、replaced、cancelled、dropped。
 
-v1 + P3 已将基础历史列表升级为可筛选、可分组、可审计的历史视图。当前 UI 能展示 Intent / Submission / ChainOutcome 三层、按 `account + chainId + nonce` 聚合 nonce thread、解释 replace/cancel/dropped 语义，并提供当前 P3 范围内的安全动作入口与禁用原因。
+v1 + P3/P4 已将基础历史列表升级为可筛选、可分组、可审计的历史视图。当前 UI 能展示 Intent / Submission / ChainOutcome 三层、按 `account + chainId + nonce` 聚合 nonce thread、解释 replace/cancel/dropped 语义，并提供安全动作入口、禁用原因、恢复入口和 pending 老化提示。
 
-## 10. P3 完成范围与后续 P4 方向
+## 10. P3/P4 已完成范围与后续 P4+ 方向
 
 ### 10.1 P3 History UX hardening 已完成
 
@@ -137,35 +162,51 @@ v1 + P3 已将基础历史列表升级为可筛选、可分组、可审计的历
 - pending 记录的 replace/cancel 入口只对当前 nonce thread 的可操作 submission 开启；禁用原因必须可见。
 - RPC、history storage、nonce、chain identity、reconcile/dropped 等常见错误会显示分类摘要和恢复提示。
 
-### 10.2 P3 仍不包含的恢复能力
+### 10.2 P4 诊断与恢复能力已完成
 
-P3 只提供安全入口、解释和禁用原因，不承诺完成以下 P4 能力：
+P4-1 到 P4-7 已完成以下诊断、恢复和回归能力：
 
-- dropped 记录的人工复核或手动重新 reconcile 操作。
+- 非敏感结构化诊断事件、诊断面板、筛选和导出。
+- 损坏 history storage 的检测、分类、隔离和空历史重建入口。
 - 广播成功但历史写入失败后的本地补录入口。
-- 损坏 history/app-config 的交互式修复工具。
-- 全量账户链上扫描来推导未知历史。
-- 结构化诊断导出面板。
+- dropped 记录的人工复核和重新 reconcile。
+- pending 老化提示、最近 reconcile 信息和动作建议。
+- anvil smoke check 的阶段化失败摘要和 P4 回归路径。
 
-### 10.3 后续 P4 错误恢复
+P4 不包含全量账户链上扫描来推导未知历史，也不包含 ERC-20、ABI 调用或批量发送能力。
+
+### 10.3 P4-1 到 P4-7 诊断、恢复与回归已完成
+
+P4-1 到 P4-7 已在当前分支完成，作为后续 P4+ 探索任务的诊断和恢复基线。当前完成范围是原生币转账、历史恢复、诊断导出、dropped 复核、pending 老化和 anvil smoke 回归，不等同于通用链测试平台或复杂合约交互工具。
+
+已完成：
+
+- 为 RPC 探测、交易提交、历史写入、reconcile 等关键路径记录本地诊断事件。
+- 诊断事件按错误来源或阶段保留可排查摘要。
+- 日志设计遵守敏感信息排除要求，不记录助记词、私钥、seed、明文密码或签名材料。
+- 诊断面板和诊断导出 UI。
+- 历史文件损坏的交互式恢复。
+- 广播成功但历史写入失败后的本地补录入口。
+- dropped 人工复核/重新 reconcile。
+- pending 老化策略和提示。
+- anvil smoke check 的诊断增强与 P4 回归。
+
+### 10.4 后续 P4+ 错误恢复
 
 后续/计划：
 
-- 历史文件损坏、app-config 损坏、RPC 不可用、chainId 不匹配时提供更明确的恢复路径。
-- 对广播成功但历史写入失败的情况提供本地补录或重新扫描入口。
-- 对 dropped 判定提供人工复核和重新 reconcile 能力。
-- 改善 nonce 冲突、replacement underpriced、insufficient funds 等常见错误的用户指导。
+- 对 app-config 损坏提供更完整的交互式恢复路径。
+- 对需要跨账户或跨链扫描的未知历史恢复先做设计，不在当前 P4-1 到 P4-7 范围内承诺。
+- 继续改善 nonce 冲突、replacement underpriced、insufficient funds 等常见错误的用户指导。
 
-### 10.4 后续 P4 可观测性
+### 10.5 后续 P4+ 可观测性
 
 后续/计划：
 
-- 增加本地结构化日志，但必须排除助记词、私钥和敏感签名材料。
-- 为 RPC 探测、交易提交、历史写入、reconcile 更新提供可诊断事件。
-- 在 UI 中提供只含非敏感信息的诊断面板或导出能力。
-- 为 anvil smoke check 和关键命令增加更稳定的失败摘要。
+- 在不引入远程监控服务的前提下，继续优化本地诊断事件的筛选、定位和说明。
+- 为关键命令增加更细的本地失败摘要，但仍不得输出敏感材料。
 
-### 10.5 后续 P4+ 能力扩展
+### 10.6 后续 P4+ 能力扩展
 
 后续/计划：
 

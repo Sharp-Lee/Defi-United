@@ -47,6 +47,7 @@ describe("history schema normalization", () => {
         reconciled_at: null,
         reconcile_summary: null,
         error_summary: null,
+        dropped_review_history: [],
       },
       nonce_thread: {
         source: "legacy",
@@ -190,5 +191,56 @@ describe("history schema normalization", () => {
 
     expect(records[0].submission.kind).toBe("legacy");
     expect(records[0].outcome.state).toBe("Unknown");
+  });
+
+  it("normalizes additive dropped review audit history", () => {
+    const records = normalizeHistoryRecords([
+      {
+        intent: legacyIntent,
+        submission: { frozen_key: "key", tx_hash: "0xreviewed" },
+        outcome: {
+          state: "Confirmed",
+          tx_hash: "0xreviewed",
+          dropped_review_history: [
+            {
+              reviewed_at: "1700000010",
+              source: "droppedManualReview",
+              tx_hash: "0xreviewed",
+              rpc_endpoint_summary: "https://mainnet.example",
+              requested_chain_id: 1,
+              rpc_chain_id: 1,
+              latest_confirmed_nonce: 9,
+              transaction_found: false,
+              local_same_nonce_tx_hash: "0xreplacement",
+              local_same_nonce_state: "Replaced",
+              original_state: "Dropped",
+              original_finalized_at: "1700000000",
+              original_reconciled_at: "1700000000",
+              original_reconcile_summary: {
+                source: "rpcNonce",
+                checked_at: "1700000000",
+                rpc_chain_id: 1,
+                latest_confirmed_nonce: 9,
+                decision: "missingReceiptNonceAdvanced",
+              },
+              result_state: "Confirmed",
+              receipt: { status: 1 },
+              decision: "receiptStatus1",
+              recommendation: "confirmed after review",
+              error_summary: null,
+            },
+          ],
+        },
+      },
+    ]);
+
+    expect(records[0].outcome.dropped_review_history[0]).toMatchObject({
+      reviewed_at: "1700000010",
+      rpc_endpoint_summary: "https://mainnet.example",
+      original_state: "Dropped",
+      result_state: "Confirmed",
+      transaction_found: false,
+      local_same_nonce_state: "Replaced",
+    });
   });
 });

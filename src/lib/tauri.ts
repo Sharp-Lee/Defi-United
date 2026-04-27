@@ -52,6 +52,110 @@ export interface AppConfig {
   };
 }
 
+export type DiagnosticLevel = "info" | "warn" | "error";
+
+export interface DiagnosticEvent {
+  timestamp: string;
+  level: DiagnosticLevel;
+  category: string;
+  source: string;
+  event: string;
+  chainId?: number;
+  accountIndex?: number;
+  txHash?: string;
+  message?: string;
+  metadata: Record<string, unknown>;
+}
+
+export interface DiagnosticEventQuery {
+  limit?: number;
+  category?: string;
+  sinceTimestamp?: number;
+  untilTimestamp?: number;
+  chainId?: number;
+  account?: string;
+  txHash?: string;
+  level?: DiagnosticLevel;
+  status?: string;
+}
+
+export interface DiagnosticExportResult {
+  path: string;
+  count: number;
+  scope: DiagnosticEventQuery & { limit: number };
+}
+
+export type HistoryStorageStatus = "notFound" | "healthy" | "corrupted";
+export type HistoryCorruptionType =
+  | "permissionDenied"
+  | "ioError"
+  | "jsonParseFailed"
+  | "schemaIncompatible"
+  | "partialRecordsInvalid";
+
+export interface HistoryStorageRawSummary {
+  fileSizeBytes: number | null;
+  modifiedAt: string | null;
+  topLevel: string | null;
+  arrayLen: number | null;
+}
+
+export interface HistoryStorageInspection {
+  status: HistoryStorageStatus;
+  path: string;
+  corruptionType?: HistoryCorruptionType;
+  readable: boolean;
+  recordCount: number;
+  invalidRecordCount: number;
+  invalidRecordIndices: number[];
+  errorSummary?: string;
+  rawSummary: HistoryStorageRawSummary;
+}
+
+export interface HistoryStorageQuarantineResult {
+  quarantinedPath: string;
+  previous: HistoryStorageInspection;
+  current: HistoryStorageInspection;
+}
+
+export type HistoryRecoveryIntentStatus = "active" | "recovered" | "dismissed";
+export type HistoryRecoveryResultStatus =
+  | "recovered"
+  | "pendingRecovered"
+  | "alreadyRecovered";
+
+export interface HistoryRecoveryIntent {
+  schemaVersion: number;
+  id: string;
+  status: HistoryRecoveryIntentStatus;
+  createdAt: string;
+  txHash: string;
+  kind: "legacy" | "nativeTransfer" | "replacement" | "cancellation";
+  chainId: number | null;
+  accountIndex: number | null;
+  from: string | null;
+  nonce: number | null;
+  to: string | null;
+  valueWei: string | null;
+  gasLimit: string | null;
+  maxFeePerGas: string | null;
+  maxPriorityFeePerGas: string | null;
+  replacesTxHash: string | null;
+  broadcastedAt: string;
+  writeError: string;
+  lastRecoveryError: string | null;
+  recoveredAt: string | null;
+  dismissedAt: string | null;
+}
+
+export interface HistoryRecoveryResult {
+  status: HistoryRecoveryResultStatus;
+  intent: HistoryRecoveryIntent;
+  record: NormalizedHistoryRecord;
+  history: NormalizedHistoryRecord[];
+  message: string;
+}
+
 export function createVault(password: string) {
   return invoke<void>("create_vault", { password });
 }
@@ -135,9 +239,59 @@ export async function loadTransactionHistory() {
   return parseHistory(raw);
 }
 
+export async function inspectTransactionHistoryStorage() {
+  const raw = await invoke<string>("inspect_transaction_history_storage");
+  return JSON.parse(raw) as HistoryStorageInspection;
+}
+
+export async function quarantineTransactionHistory() {
+  const raw = await invoke<string>("quarantine_transaction_history");
+  return JSON.parse(raw) as HistoryStorageQuarantineResult;
+}
+
 export async function reconcilePendingHistory(rpcUrl: string, chainId: number) {
   const raw = await invoke<string>("reconcile_pending_history_command", { rpcUrl, chainId });
   return parseHistory(raw);
+}
+
+export async function reviewDroppedHistoryRecord(txHash: string, rpcUrl: string, chainId: number) {
+  const raw = await invoke<string>("review_dropped_history_record_command", {
+    txHash,
+    rpcUrl,
+    chainId,
+  });
+  return parseHistory(raw);
+}
+
+export async function loadHistoryRecoveryIntents() {
+  const raw = await invoke<string>("load_history_recovery_intents_command");
+  return JSON.parse(raw) as HistoryRecoveryIntent[];
+}
+
+export async function recoverBroadcastedHistoryRecord(
+  recoveryId: string,
+  rpcUrl: string,
+  chainId: number,
+) {
+  const raw = await invoke<string>("recover_broadcasted_history_record_command", {
+    recoveryId,
+    rpcUrl,
+    chainId,
+  });
+  const parsed = JSON.parse(raw) as Omit<HistoryRecoveryResult, "record" | "history"> & {
+    record: unknown;
+    history: unknown[];
+  };
+  return {
+    ...parsed,
+    record: normalizeHistoryRecord(parsed.record),
+    history: parseHistory(JSON.stringify(parsed.history)),
+  };
+}
+
+export async function dismissHistoryRecoveryIntent(recoveryId: string) {
+  const raw = await invoke<string>("dismiss_history_recovery_intent_command", { recoveryId });
+  return JSON.parse(raw) as HistoryRecoveryIntent[];
 }
 
 export async function submitNativeTransfer(intent: NormalizedNativeTransferIntent) {
@@ -167,4 +321,12 @@ export async function replacePendingTransfer(request: PendingMutationRequest) {
 export async function cancelPendingTransfer(request: PendingMutationRequest) {
   const raw = await invoke<string>("cancel_pending_transfer", { request });
   return normalizeHistoryRecord(JSON.parse(raw));
+}
+
+export function loadDiagnosticEvents(query: DiagnosticEventQuery = {}) {
+  return invoke<DiagnosticEvent[]>("load_diagnostic_events", { query });
+}
+
+export function exportDiagnosticEvents(query: DiagnosticEventQuery = {}) {
+  return invoke<DiagnosticExportResult>("export_diagnostic_events", { query });
 }

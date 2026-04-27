@@ -1,4 +1,4 @@
-import { fireEvent, screen, within } from "@testing-library/react";
+import { act, fireEvent, screen, within } from "@testing-library/react";
 import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -33,12 +33,13 @@ function record({
   receipt = null,
   reconcileSummary = null,
   errorSummary = null,
+  droppedReviewHistory = [],
 }: {
   txHash: string;
   accountIndex?: number;
   from?: string;
   chainId?: number;
-  nonce?: number;
+  nonce?: number | null;
   state?: ChainOutcomeState;
   kind?: SubmissionKind;
   replacesTxHash?: string | null;
@@ -52,6 +53,7 @@ function record({
   receipt?: Record<string, unknown> | null;
   reconcileSummary?: Record<string, unknown> | null;
   errorSummary?: Record<string, unknown> | null;
+  droppedReviewHistory?: Record<string, unknown>[];
 }) {
   return {
     schema_version: 2,
@@ -96,6 +98,7 @@ function record({
       reconciled_at: reconcileSummary ? "1700000101" : null,
       reconcile_summary: reconcileSummary,
       error_summary: errorSummary,
+      dropped_review_history: droppedReviewHistory,
     },
     nonce_thread: {
       source: "derived",
@@ -229,12 +232,58 @@ function incompleteAccountRecord({
 function renderHistory(rawRecords: unknown[], options = {}) {
   return renderScreen(
     <HistoryView
+      chainReady
       items={normalizeHistoryRecords(rawRecords)}
       onRefresh={vi.fn()}
+      rpcUrl="http://127.0.0.1:8545"
       {...options}
     />,
   );
 }
+
+function recoveryIntent(overrides = {}) {
+  return {
+    schemaVersion: 1,
+    id: "broadcast-1",
+    status: "active",
+    createdAt: "1700000002",
+    txHash: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    kind: "nativeTransfer",
+    chainId: 1,
+    accountIndex: 1,
+    from: accountA,
+    nonce: 7,
+    to: recipient,
+    valueWei: "100",
+    gasLimit: "21000",
+    maxFeePerGas: "40000000000",
+    maxPriorityFeePerGas: "1500000000",
+    replacesTxHash: null,
+    broadcastedAt: "1700000001",
+    writeError: "Is a directory",
+    lastRecoveryError: null,
+    recoveredAt: null,
+    dismissedAt: null,
+    ...overrides,
+  };
+}
+
+const damagedStorage = {
+  status: "corrupted" as const,
+  path: "/tmp/tx-history.json",
+  corruptionType: "jsonParseFailed" as const,
+  readable: true,
+  recordCount: 0,
+  invalidRecordCount: 0,
+  invalidRecordIndices: [],
+  errorSummary: "expected value at line 1 column 1",
+  rawSummary: {
+    fileSizeBytes: 12,
+    modifiedAt: "1700000000",
+    topLevel: null,
+    arrayLen: null,
+  },
+};
 
 describe("HistoryView", () => {
   it("shows scanner columns and all transaction outcome states", () => {
@@ -692,12 +741,13 @@ describe("HistoryView", () => {
     expect(screen.getByRole("button", { name: "Cancel 0xcancel" })).toBeInTheDocument();
   });
 
-  it("builds replace and cancel requests from the current pending frozen submission", () => {
+  it("builds replace and cancel requests from the current validated RPC and frozen submission", () => {
     const onReplace = vi.fn();
     const onCancelPending = vi.fn();
     const staleIntentAccount = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const frozenSubmissionAccount = "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
     const frozenRecipient = "0x4444444444444444444444444444444444444444";
+    const validatedRpcUrl = "https://validated-rpc.example";
     const staleIntentRecord = record({
       txHash: "0xaction",
       accountIndex: 1,
@@ -709,6 +759,7 @@ describe("HistoryView", () => {
       maxPriorityFeePerGas: "1500000000",
       intentValueWei: "100",
     });
+    staleIntentRecord.intent.rpc_url = "recovered://history-write-failed";
     staleIntentRecord.submission.chain_id = 5;
     staleIntentRecord.submission.account_index = 2;
     staleIntentRecord.submission.from = frozenSubmissionAccount;
@@ -728,6 +779,7 @@ describe("HistoryView", () => {
       {
         onReplace,
         onCancelPending,
+        rpcUrl: validatedRpcUrl,
       },
     );
 
@@ -736,7 +788,7 @@ describe("HistoryView", () => {
 
     const expectedRequest = {
       txHash: "0xaction",
-      rpcUrl: "http://127.0.0.1:8545",
+      rpcUrl: validatedRpcUrl,
       accountIndex: 2,
       chainId: 5,
       from: frozenSubmissionAccount,
@@ -749,6 +801,47 @@ describe("HistoryView", () => {
     };
     expect(onReplace).toHaveBeenCalledWith(expectedRequest);
     expect(onCancelPending).toHaveBeenCalledWith(expectedRequest);
+  });
+
+  it("disables replace and cancel when the current RPC has not been validated", () => {
+    const onReplace = vi.fn();
+    const onCancelPending = vi.fn();
+    const reason = "Validate an RPC endpoint before replacing or cancelling pending transactions.";
+    renderHistory([record({ txHash: "0xnotready", state: "Pending" })], {
+      chainReady: false,
+      onReplace,
+      onCancelPending,
+      rpcUrl: "http://127.0.0.1:8545",
+    });
+
+    const replace = screen.getByRole("button", { name: "Replace 0xnotready" });
+    const cancel = screen.getByRole("button", { name: "Cancel 0xnotready" });
+
+    expect(replace).toBeDisabled();
+    expect(cancel).toBeDisabled();
+    expect(replace).toHaveAttribute("title", reason);
+    expect(cancel).toHaveAttribute("title", reason);
+    fireEvent.click(replace);
+    fireEvent.click(cancel);
+    expect(onReplace).not.toHaveBeenCalled();
+    expect(onCancelPending).not.toHaveBeenCalled();
+  });
+
+  it("disables replace and cancel when no validated RPC URL is provided", () => {
+    const reason = "Validate an RPC endpoint before replacing or cancelling pending transactions.";
+    renderHistory([record({ txHash: "0xmissingrpc", state: "Pending" })], {
+      onReplace: vi.fn(),
+      onCancelPending: vi.fn(),
+      rpcUrl: undefined,
+    });
+
+    const replace = screen.getByRole("button", { name: "Replace 0xmissingrpc" });
+    const cancel = screen.getByRole("button", { name: "Cancel 0xmissingrpc" });
+
+    expect(replace).toBeDisabled();
+    expect(cancel).toBeDisabled();
+    expect(replace).toHaveAttribute("title", reason);
+    expect(cancel).toHaveAttribute("title", reason);
   });
 
   it("uses full nonce-thread context when marking single-submission details actionable", () => {
@@ -1113,18 +1206,76 @@ describe("HistoryView", () => {
     expect(panel.getByText("The RPC endpoint failed, timed out, or returned an error while checking this transaction.")).toBeInTheDocument();
   });
 
-  it("shows only a P4 follow-up prompt for dropped records without a review action button", () => {
-    renderHistory([record({ txHash: "0xdropped", state: "Dropped" })]);
+  it("shows a dropped review action and audit details", () => {
+    const onReviewDropped = vi.fn();
+    renderHistory(
+      [
+        record({
+          txHash: "0xdropped",
+          state: "Dropped",
+          reconcileSummary: {
+            source: "rpcNonce",
+            checked_at: "1700000101",
+            rpc_chain_id: 1,
+            latest_confirmed_nonce: 8,
+            decision: "missingReceiptNonceAdvanced",
+          },
+          droppedReviewHistory: [
+            {
+              reviewed_at: "1700000200",
+              source: "droppedManualReview",
+              tx_hash: "0xdropped",
+              rpc_endpoint_summary: "https://mainnet.example",
+              requested_chain_id: 1,
+              rpc_chain_id: 1,
+              latest_confirmed_nonce: 8,
+              transaction_found: false,
+              original_state: "Dropped",
+              original_reconciled_at: "1700000101",
+              original_reconcile_summary: {
+                source: "rpcNonce",
+                checked_at: "1700000101",
+                rpc_chain_id: 1,
+                latest_confirmed_nonce: 8,
+                decision: "missingReceiptNonceAdvanced",
+              },
+              result_state: "Dropped",
+              decision: "stillMissingReceiptNonceAdvanced",
+              recommendation: "Outcome remains uncertain/still dropped, not failed.",
+            },
+          ],
+        }),
+      ],
+      { onReviewDropped },
+    );
 
-    expect(screen.queryByRole("button", { name: /review/i })).not.toBeInTheDocument();
-    expect(screen.getByText(/Dropped records can be reviewed or reconciled manually in P4/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Review dropped" }));
+    expect(onReviewDropped).toHaveBeenCalledWith("0xdropped");
 
     fireEvent.click(screen.getByRole("button", { name: "Details" }));
 
     const guidance = within(screen.getByLabelText("Action guidance"));
-    expect(guidance.getByText("P4 Review")).toBeInTheDocument();
-    expect(guidance.getByText("Disabled")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /review/i })).not.toBeInTheDocument();
+    expect(guidance.getByText("Review dropped")).toBeInTheDocument();
+    expect(guidance.getByText("Available")).toBeInTheDocument();
+    expect(screen.getByText("Original dropped decision")).toBeInTheDocument();
+    expect(screen.getByText("Latest review RPC endpoint")).toBeInTheDocument();
+    expect(screen.getByText("https://mainnet.example")).toBeInTheDocument();
+    expect(screen.getByText("Latest review recommendation")).toBeInTheDocument();
+    expect(screen.getByText("Outcome remains uncertain/still dropped, not failed.")).toBeInTheDocument();
+  });
+
+  it("prioritizes incomplete dropped review fields over missing RPC guidance", () => {
+    renderHistory([record({ txHash: "0xdropped", state: "Dropped", nonce: null })], {
+      reviewRpcDisabledReason: "Validate an RPC before reviewing a dropped transaction.",
+    });
+
+    const reviewButton = screen.getByRole("button", { name: "Review dropped" });
+    expect(reviewButton).toBeDisabled();
+    expect(reviewButton).toHaveAttribute("title", "Missing frozen submission nonce.");
+    expect(screen.getByText(/Review dropped: Missing frozen submission nonce/)).toBeInTheDocument();
+    expect(
+      screen.queryByText(/Review dropped: Validate an RPC before reviewing/),
+    ).not.toBeInTheDocument();
   });
 
   it("describes refresh as global tracked history instead of a row-scoped reconcile", () => {
@@ -1140,5 +1291,185 @@ describe("HistoryView", () => {
     expect(guidance.getByText("Global refresh/reconcile")).toBeInTheDocument();
     expect(guidance.getByText(/currently selected chain\/RPC/)).toBeInTheDocument();
     expect(guidance.getByText(/not a single transaction/)).toBeInTheDocument();
+  });
+
+  it("shows pending age, latest reconcile check, and uncertain review guidance", () => {
+    renderHistory([
+      record({
+        txHash: "0xaging",
+        state: "Pending",
+        nonce: 7,
+        broadcastedAt: "1700000000",
+        reconcileSummary: {
+          source: "localReconcile",
+          checked_at: "1700000100",
+          rpc_chain_id: 1,
+          latest_confirmed_nonce: 9,
+          decision: "missingReceiptNonceAdvanced",
+        },
+      }),
+    ]);
+
+    expect(screen.getAllByText("Needs review").length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/Age .* checked/).length).toBeGreaterThan(0);
+    expect(
+      screen.getAllByText(/Chain nonce evidence suggests this pending transaction may need review\/reconcile/).length,
+    ).toBeGreaterThan(0);
+    expect(screen.queryByText(/pending transaction failed/i)).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Details" }));
+
+    const pendingGuidance = within(screen.getByLabelText("Pending age guidance"));
+    expect(pendingGuidance.getByText("Pending Age")).toBeInTheDocument();
+    expect(pendingGuidance.getByText("Latest confirmed nonce from reconcile: 9.")).toBeInTheDocument();
+    expect(pendingGuidance.getByText("Global refresh/reconcile")).toBeInTheDocument();
+    expect(pendingGuidance.getByText("View diagnostics")).toBeInTheDocument();
+  });
+
+  it("shows pending age action disabled reasons from existing gates", () => {
+    renderHistory([record({ txHash: "0xmissingnonce", state: "Pending", nonce: null })], {
+      onReplace: vi.fn(),
+      onCancelPending: vi.fn(),
+    });
+
+    expect(screen.getByText(/Replace: disabled - Missing frozen submission nonce/)).toBeInTheDocument();
+    expect(screen.getByText(/Cancel: disabled - Missing frozen submission nonce/)).toBeInTheDocument();
+  });
+
+  it("refreshes pending age guidance on the minute clock while the page stays open", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(1_700_001_740_000));
+    try {
+      renderHistory([
+        record({
+          txHash: "0xticking",
+          state: "Pending",
+          broadcastedAt: "1700000000",
+        }),
+      ]);
+
+      expect(screen.getAllByText("Normal pending").length).toBeGreaterThan(0);
+      expect(screen.queryByText("Needs attention")).not.toBeInTheDocument();
+
+      act(() => {
+        vi.advanceTimersByTime(2 * 60 * 1000);
+      });
+
+      expect(screen.getAllByText("Needs attention").length).toBeGreaterThan(0);
+      expect(screen.getAllByText(/Age 31m/).length).toBeGreaterThan(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("shows recovery actions and disables pending mutations when storage is corrupted", () => {
+    const onRefresh = vi.fn();
+    const onQuarantineHistory = vi.fn();
+    renderHistory([record({ txHash: "0xpending", state: "Pending" })], {
+      onRefresh,
+      onQuarantineHistory,
+      onReplace: vi.fn(),
+      onCancelPending: vi.fn(),
+      storage: damagedStorage,
+    });
+
+    expect(screen.getByText("History storage recovery")).toBeInTheDocument();
+    expect(screen.getByText("JSON parse failed")).toBeInTheDocument();
+    expect(screen.getByText("History actions disabled")).toBeInTheDocument();
+    expect(screen.getByText(/submit, replace, cancel, and dropped review actions stay blocked/)).toBeInTheDocument();
+    expect(screen.getByText("/tmp/tx-history.json")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Retry read" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Quarantine and start empty history" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Replace 0xpending" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Cancel 0xpending" })).toBeDisabled();
+    expect(screen.getByText(/Submit\/replace\/cancel: Disabled while local transaction history is unreadable/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Quarantine and start empty history" }));
+    expect(onQuarantineHistory).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not show damaged-history recovery for first run empty history", () => {
+    renderHistory([], {
+      storage: {
+        ...damagedStorage,
+        status: "notFound",
+        corruptionType: undefined,
+        errorSummary: undefined,
+      },
+    });
+
+    expect(screen.getByText("No local transaction history.")).toBeInTheDocument();
+    expect(screen.queryByText("History storage recovery")).not.toBeInTheDocument();
+    expect(screen.queryByText("History actions disabled")).not.toBeInTheDocument();
+  });
+
+  it("shows broadcast recovery parameters and calls recover by id", () => {
+    const onRecoverBroadcastedHistory = vi.fn();
+    const onDismissRecovery = vi.fn();
+    renderHistory([], {
+      recoveryIntents: [recoveryIntent()],
+      onRecoverBroadcastedHistory,
+      onDismissRecovery,
+    });
+
+    expect(screen.getByText("Broadcast recovery")).toBeInTheDocument();
+    expect(screen.getByText("History missing")).toBeInTheDocument();
+    expect(screen.getByText(/without signing or broadcasting again/)).toBeInTheDocument();
+    expect(screen.getByText("chainId")).toBeInTheDocument();
+    expect(screen.getByText("gas 21000 · max 40000000000 wei · priority 1500000000 wei")).toBeInTheDocument();
+    expect(screen.getByText("Is a directory")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /Recover 0xaaaaaaaa/i }));
+    expect(onRecoverBroadcastedHistory).toHaveBeenCalledWith("broadcast-1");
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+    expect(onDismissRecovery).toHaveBeenCalledWith("broadcast-1");
+  });
+
+  it("disables broadcast recovery when minimum frozen fields are missing", () => {
+    renderHistory([], {
+      recoveryIntents: [recoveryIntent({ nonce: null })],
+      onRecoverBroadcastedHistory: vi.fn(),
+    });
+
+    expect(screen.getByRole("button", { name: /Recover 0xaaaaaaaa/i })).toBeDisabled();
+    expect(screen.getByText(/frozen nonce is missing/)).toBeInTheDocument();
+  });
+
+  it("redacts sensitive recovery errors before display", () => {
+    renderHistory([], {
+      recoveryIntents: [
+        recoveryIntent({
+          writeError:
+            "failed at https://rpc.example/v1?apiKey=write-secret rawTx=0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa token token-secret password hunter2",
+          lastRecoveryError:
+            "Authorization Bearer bearer-secret mnemonic test test test test next=value privateKey=0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb signature sig-secret private key my-secret raw tx raw-secret",
+        }),
+      ],
+      onRecoverBroadcastedHistory: vi.fn(),
+    });
+
+    expect(screen.getByText(/\[redacted_url\]/)).toBeInTheDocument();
+    expect(screen.getAllByText(/\[redacted/).length).toBeGreaterThan(1);
+    expect(screen.queryByText(/rpc\.example/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/write-secret/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/token-secret/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/hunter2/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/bearer-secret/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/sig-secret/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/my-secret/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/raw-secret/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/test test test/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/)).not.toBeInTheDocument();
+  });
+
+  it("blocks broadcast recovery while history storage is corrupted", () => {
+    renderHistory([], {
+      recoveryIntents: [recoveryIntent()],
+      onRecoverBroadcastedHistory: vi.fn(),
+      storage: damagedStorage,
+    });
+
+    expect(screen.getByRole("button", { name: /Recover 0xaaaaaaaa/i })).toBeDisabled();
+    expect(screen.getByText(/Disabled while local transaction history is unreadable/)).toBeInTheDocument();
   });
 });

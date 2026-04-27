@@ -35,8 +35,8 @@ export interface RawHistoryErrorInput {
   category?: string;
 }
 
-const PENDING_STALE_MS = 30 * 60 * 1000;
 const MAX_MESSAGE_LENGTH = 180;
+const PENDING_STALE_MS = 30 * 60 * 1000;
 
 const KIND_LABELS: Record<HistoryErrorKind, string> = {
   rpc: "RPC",

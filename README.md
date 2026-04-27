@@ -12,10 +12,12 @@ The current product and test mainline is the Tauri desktop app. The older browse
 - Build and submit native-token transfers through Tauri commands.
 - Persist local transaction history with separate Intent, Submission, and ChainOutcome fields.
 - Reconcile pending history from RPC receipts/nonces.
-- Show history filters, nonce-thread grouping, replace/cancel relationships, categorized errors, and P3-safe recovery prompts.
+- Show history filters, nonce-thread grouping, replace/cancel relationships, categorized errors, pending-age guidance, and recovery prompts.
 - Replace or cancel an existing pending native transfer while preserving the original `chainId`, account/from, and nonce.
+- View and export non-sensitive diagnostics for RPC, chainId, history, broadcast, and reconcile troubleshooting.
+- Inspect damaged history storage, quarantine unreadable history, recover broadcasted-but-unwritten submissions, and manually review dropped records.
 
-ERC-20 transfers, ABI calls, raw calldata, batch strategies, manual dropped review, and broader diagnostics remain future P4-or-later work unless a later task explicitly implements them.
+ERC-20 transfers, ABI calls, raw calldata, batch strategies, asset/approval scanning, and broader contract interaction tooling remain future P4+ exploration unless a later task explicitly implements them.
 
 Plaintext mnemonic import/export and backup UX are not part of P3. Until a future native secure recovery workflow exists, preserve the encrypted vault file together with the password needed to unlock it. On macOS the default app data directory is `~/Library/Application Support/EVMWalletWorkbench/`; the encrypted vault is `vault.json` in that directory. Losing both that vault file or an app-data backup and the password means the generated wallet cannot be recovered by the P3 desktop app.
 
@@ -50,7 +52,7 @@ scripts/run-anvil-check.sh
 git diff --check
 ```
 
-`scripts/run-anvil-check.sh` starts anvil on `127.0.0.1:8545` with chainId `31337`, runs focused Vitest checks, runs the ignored native-transfer roundtrip test, then runs the Rust test suite. If anvil or the npm fallback cannot start in the local environment, record the exact command output as an environment failure rather than treating the smoke path as proven.
+`scripts/run-anvil-check.sh` starts anvil on `127.0.0.1:8545` with chainId `31337`, probes `eth_chainId`, runs focused P4 Vitest checks, runs the ignored native-transfer roundtrip test, then runs the Rust test suite. The native roundtrip test is currently hardcoded to port `8545`, so the script fails fast if `ANVIL_PORT` is set to another value. Failures print a `wallet_workbench_validation_failed` line with a category such as `environment_startup`, `rpc_chain_id`, `frontend_vitest`, `vault_session`, `signing_broadcast`, `history`, `reconcile`, or `rust_regression`, plus redacted log references such as `frontend_vitest.log` or `anvil.log`. The summary is intentionally non-sensitive and does not print absolute paths; set `WALLET_WORKBENCH_ANVIL_LOG_DIR` to a directory you control if you want stable local log files for diagnosis. If anvil or the npm fallback cannot start in the local environment, record the categorized output as an environment failure rather than treating the smoke path as proven.
 
 ## Safety Boundaries
 

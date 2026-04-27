@@ -1,4 +1,5 @@
 import { AccountsView } from "../features/accounts/AccountsView";
+import { DiagnosticsView } from "../features/diagnostics/DiagnosticsView";
 import { HistoryView } from "../features/history/HistoryView";
 import { SettingsView } from "../features/settings/SettingsView";
 import { TransferView } from "../features/transfer/TransferView";
@@ -6,10 +7,17 @@ import { UnlockView } from "../features/unlock/UnlockView";
 import { BUILT_IN_CHAINS } from "../core/chains/registry";
 import { getRawHistoryErrorDisplay } from "../core/history/errors";
 import type { ChainRecord } from "../core/chains/registry";
-import type { AccountRecord, HistoryRecord, PendingMutationRequest } from "../lib/tauri";
+import type {
+  AccountRecord,
+  HistoryRecord,
+  HistoryRecoveryIntent,
+  HistoryStorageInspection,
+  HistoryStorageQuarantineResult,
+  PendingMutationRequest,
+} from "../lib/tauri";
 import type { AccountChainState } from "../lib/rpc";
 
-export type WorkspaceTab = "accounts" | "transfer" | "history" | "settings";
+export type WorkspaceTab = "accounts" | "transfer" | "history" | "diagnostics" | "settings";
 
 export interface AppShellProps {
   session: { status: "locked" | "ready" };
@@ -20,6 +28,9 @@ export interface AppShellProps {
   onLock?: () => Promise<void> | void;
   accounts?: Array<AccountRecord & AccountChainState>;
   history?: HistoryRecord[];
+  historyRecoveryIntents?: HistoryRecoveryIntent[];
+  historyRecoveryRpcDisabledReason?: string | null;
+  historyReviewRpcDisabledReason?: string | null;
   chains?: ChainRecord[];
   selectedChainId?: bigint;
   rpcUrl?: string;
@@ -28,18 +39,25 @@ export interface AppShellProps {
   busy?: boolean;
   appError?: string | null;
   historyError?: string | null;
+  historyStorage?: HistoryStorageInspection | null;
+  lastHistoryQuarantine?: HistoryStorageQuarantineResult | null;
   onAddAccount?: () => Promise<void> | void;
   onRefreshAccounts?: () => Promise<void> | void;
   onRefreshHistory?: () => Promise<void> | void;
+  onQuarantineHistory?: () => Promise<void> | void;
+  onRecoverBroadcastedHistory?: (recoveryId: string) => Promise<void> | void;
+  onDismissHistoryRecovery?: (recoveryId: string) => Promise<void> | void;
+  onReviewDropped?: (txHash: string) => Promise<void> | void;
   onReplacePending?: (request: PendingMutationRequest) => Promise<void> | void;
   onCancelPending?: (request: PendingMutationRequest) => Promise<void> | void;
   onChainChange?: (chainId: bigint) => void;
   onRpcUrlChange?: (rpcUrl: string) => void;
   onValidateRpc?: () => Promise<void> | void;
+  onTransferSubmitFailed?: (error: unknown) => Promise<void> | void;
   onTransferSubmitted?: (record: HistoryRecord) => void;
 }
 
-const workspaceTabs: WorkspaceTab[] = ["accounts", "transfer", "history", "settings"];
+const workspaceTabs: WorkspaceTab[] = ["accounts", "transfer", "history", "diagnostics", "settings"];
 
 function tabLabel(tab: WorkspaceTab) {
   return tab[0].toUpperCase() + tab.slice(1);
@@ -54,6 +72,9 @@ export function AppShell({
   onLock = () => {},
   accounts = [],
   history = [],
+  historyRecoveryIntents = [],
+  historyRecoveryRpcDisabledReason = null,
+  historyReviewRpcDisabledReason = null,
   chains = BUILT_IN_CHAINS,
   selectedChainId = 1n,
   rpcUrl = "",
@@ -62,14 +83,21 @@ export function AppShell({
   busy = false,
   appError = null,
   historyError = null,
+  historyStorage = null,
+  lastHistoryQuarantine = null,
   onAddAccount = async () => {},
   onRefreshAccounts = async () => {},
   onRefreshHistory = async () => {},
+  onQuarantineHistory = async () => {},
+  onRecoverBroadcastedHistory = async () => {},
+  onDismissHistoryRecovery = async () => {},
+  onReviewDropped = async () => {},
   onReplacePending = async () => {},
   onCancelPending = async () => {},
   onChainChange = () => {},
   onRpcUrlChange = () => {},
   onValidateRpc = async () => {},
+  onTransferSubmitFailed = async () => {},
   onTransferSubmitted = () => {},
 }: AppShellProps) {
   const selectedChain = chains.find((chain) => chain.chainId === selectedChainId) ?? chains[0];
@@ -137,21 +165,39 @@ export function AppShell({
                 chainName={selectedChain?.name ?? "Unknown chain"}
                 draft={null}
                 history={history}
+                historyStorageIssue={
+                  historyStorage?.status === "corrupted"
+                    ? "Local transaction history is unreadable. Submission is disabled until history is retried or the damaged file is quarantined."
+                    : null
+                }
+                onSubmitFailed={onTransferSubmitFailed}
                 onSubmitted={onTransferSubmitted}
                 rpcUrl={rpcUrl}
               />
             )}
             {activeTab === "history" && (
               <HistoryView
+                chainReady={chainReady}
                 disabled={busy}
                 error={historyError}
                 items={history}
+                lastQuarantine={lastHistoryQuarantine}
                 loading={busy}
                 onCancelPending={onCancelPending}
+                onDismissRecovery={onDismissHistoryRecovery}
+                onQuarantineHistory={onQuarantineHistory}
                 onRefresh={onRefreshHistory}
+                onRecoverBroadcastedHistory={onRecoverBroadcastedHistory}
                 onReplace={onReplacePending}
+                onReviewDropped={onReviewDropped}
+                recoveryIntents={historyRecoveryIntents}
+                recoveryRpcDisabledReason={historyRecoveryRpcDisabledReason}
+                reviewRpcDisabledReason={historyReviewRpcDisabledReason}
+                rpcUrl={rpcUrl}
+                storage={historyStorage}
               />
             )}
+            {activeTab === "diagnostics" && <DiagnosticsView />}
             {activeTab === "settings" && (
               <SettingsView
                 busy={busy}

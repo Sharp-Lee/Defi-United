@@ -129,16 +129,25 @@ describe("history action gating", () => {
     }
   });
 
-  it("keeps dropped in P3 as a disabled P4 follow-up prompt", () => {
+  it("enables dropped review for complete dropped records", () => {
     const gates = gateMap([rawRecord({ txHash: "0xdropped", state: "Dropped" })], "0xdropped");
 
     expect(gates.get("droppedReview")).toMatchObject({
       visible: true,
-      enabled: false,
-      reason: expect.stringContaining("P4"),
+      enabled: true,
+      reason: expect.stringContaining("frozen submission"),
     });
     expect(gates.has("replace")).toBe(false);
     expect(gates.has("cancel")).toBe(false);
+  });
+
+  it("disables dropped review when frozen submission fields are incomplete", () => {
+    const raw = rawRecord({ txHash: "0xdroppedmissing", state: "Dropped", nonce: null });
+
+    expect(gateMap([raw], "0xdroppedmissing").get("droppedReview")).toMatchObject({
+      enabled: false,
+      reason: expect.stringContaining("frozen submission nonce"),
+    });
   });
 
   it("disables pending actions when trace or mutation identity fields are missing", () => {
