@@ -35,4 +35,19 @@ describe("AppShell", () => {
     expect(screen.getByRole("tab", { name: "Settings" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Unlock Vault" })).not.toBeInTheDocument();
   });
+
+  it("locks settings inputs while the workspace is busy", () => {
+    renderScreen(
+      <AppShell
+        activeTab="settings"
+        busy={true}
+        onTabChange={() => {}}
+        onUnlock={async () => {}}
+        session={{ status: "ready" }}
+      />,
+    );
+
+    expect(screen.getByRole("combobox", { name: "Chain" })).toBeDisabled();
+    expect(screen.getByRole("textbox", { name: "RPC URL" })).toBeDisabled();
+  });
 });

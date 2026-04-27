@@ -33,6 +33,10 @@ pub fn history_path() -> Result<PathBuf, String> {
     Ok(ensure_app_dir()?.join("tx-history.json"))
 }
 
+pub fn config_path() -> Result<PathBuf, String> {
+    Ok(ensure_app_dir()?.join("app-config.json"))
+}
+
 pub fn write_new_file_atomic(path: &Path, contents: &str) -> Result<(), String> {
     if path.exists() {
         return Err(format!("{} already exists", path.display()));

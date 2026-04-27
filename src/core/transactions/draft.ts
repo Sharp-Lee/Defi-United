@@ -10,6 +10,7 @@ export interface TransferDraftInput {
   maxFeePerGas: bigint;
   maxPriorityFeePerGas: bigint;
   liveMaxFeePerGas: bigint;
+  liveMaxPriorityFeePerGas: bigint;
   estimatedGasLimit: bigint;
 }
 
@@ -23,8 +24,8 @@ export interface TransferDraft {
 export function createTransferDraft(input: TransferDraftInput): TransferDraft {
   const highFee = input.maxFeePerGas > input.liveMaxFeePerGas * 3n;
   const highTip =
-    input.liveMaxFeePerGas > 0n &&
-    input.maxPriorityFeePerGas > input.liveMaxFeePerGas * 3n;
+    input.liveMaxPriorityFeePerGas > 0n &&
+    input.maxPriorityFeePerGas > input.liveMaxPriorityFeePerGas * 3n;
   const highGasLimit = input.gasLimit > input.estimatedGasLimit * 2n;
 
   return {

@@ -4,7 +4,9 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use wallet_workbench_lib::accounts::derive_account_address;
-use wallet_workbench_lib::commands::accounts::{save_scanned_account, StoredAccountRecord};
+use wallet_workbench_lib::commands::accounts::{
+    load_accounts, save_account_sync_error, save_scanned_account, StoredAccountRecord,
+};
 use wallet_workbench_lib::session::{clear_session_mnemonic, write_session_mnemonic};
 use wallet_workbench_lib::storage::accounts_path;
 
@@ -57,6 +59,13 @@ fn read_registry() -> Vec<StoredAccountRecord> {
     serde_json::from_str(&raw).expect("parse registry")
 }
 
+fn now_unix_seconds() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock")
+        .as_secs()
+}
+
 #[test]
 fn derives_expected_first_child_address() {
     let address = derive_account_address(TEST_MNEMONIC, 1).expect("derive");
@@ -67,19 +76,38 @@ fn derives_expected_first_child_address() {
 #[test]
 fn first_save_creates_the_registry() {
     with_test_app_dir("first-save-creates-registry", |_| {
+        let before = now_unix_seconds();
         let stored = save_scanned_account(1, 1, "123".to_string(), 7).expect("save");
+        let after = now_unix_seconds();
 
         assert_eq!(stored.index, 1);
         assert_eq!(stored.address, "0x70997970C51812dc3A010C7d01b50e0d17dc79C8");
         assert_eq!(stored.label, "Account 1");
         assert_eq!(stored.snapshots.len(), 1);
+        assert_eq!(
+            stored.snapshots[0].account_address,
+            "0x70997970C51812dc3A010C7d01b50e0d17dc79C8"
+        );
+        let synced_at = stored.snapshots[0]
+            .last_synced_at
+            .as_ref()
+            .expect("last synced")
+            .parse::<u64>()
+            .expect("timestamp");
+        assert!(synced_at >= before && synced_at <= after);
+        assert_eq!(stored.snapshots[0].last_sync_error, None);
 
         let registry = read_registry();
         assert_eq!(registry.len(), 1);
         assert_eq!(registry[0].snapshots.len(), 1);
         assert_eq!(registry[0].snapshots[0].chain_id, 1);
+        assert_eq!(
+            registry[0].snapshots[0].account_address,
+            "0x70997970C51812dc3A010C7d01b50e0d17dc79C8"
+        );
         assert_eq!(registry[0].snapshots[0].native_balance_wei, "123");
         assert_eq!(registry[0].snapshots[0].nonce, 7);
+        assert_eq!(registry[0].snapshots[0].last_sync_error, None);
     });
 }
 
@@ -98,6 +126,121 @@ fn second_save_same_account_same_chain_replaces_snapshot() {
         assert_eq!(registry[0].snapshots.len(), 1);
         assert_eq!(registry[0].snapshots[0].native_balance_wei, "456");
         assert_eq!(registry[0].snapshots[0].nonce, 8);
+    });
+}
+
+#[test]
+fn legacy_snapshot_missing_sync_metadata_loads_and_upserts_without_duplicate() {
+    with_test_app_dir("legacy-snapshot-migrates-on-upsert", |_| {
+        fs::write(
+            accounts_path().expect("accounts path"),
+            r#"[
+  {
+    "index": 1,
+    "address": "0x70997970C51812dc3A010C7d01b50e0d17dc79C8",
+    "label": "Account 1",
+    "snapshots": [
+      {
+        "chainId": 1,
+        "nativeBalanceWei": "123",
+        "nonce": 7
+      }
+    ]
+  }
+]"#,
+        )
+        .expect("write legacy registry");
+
+        let loaded = load_accounts().expect("load legacy registry");
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].snapshots.len(), 1);
+        assert_eq!(loaded[0].snapshots[0].account_address, "");
+        assert_eq!(loaded[0].snapshots[0].last_synced_at, None);
+        assert_eq!(loaded[0].snapshots[0].last_sync_error, None);
+
+        let stored = save_scanned_account(1, 1, "456".to_string(), 8).expect("upsert legacy");
+        assert_eq!(stored.snapshots.len(), 1);
+        assert_eq!(
+            stored.snapshots[0].account_address,
+            "0x70997970C51812dc3A010C7d01b50e0d17dc79C8"
+        );
+        assert_eq!(stored.snapshots[0].native_balance_wei, "456");
+        assert_eq!(stored.snapshots[0].nonce, 8);
+        assert!(stored.snapshots[0].last_synced_at.is_some());
+        assert_eq!(stored.snapshots[0].last_sync_error, None);
+
+        save_scanned_account(1, 1, "789".to_string(), 9).expect("second upsert");
+        let registry = read_registry();
+        assert_eq!(registry.len(), 1);
+        assert_eq!(registry[0].snapshots.len(), 1);
+        assert_eq!(registry[0].snapshots[0].native_balance_wei, "789");
+        assert_eq!(registry[0].snapshots[0].nonce, 9);
+    });
+}
+
+#[test]
+fn sync_error_preserves_existing_balance_and_nonce() {
+    with_test_app_dir("sync-error-preserves-existing-state", |_| {
+        save_scanned_account(1, 1, "123".to_string(), 7).expect("first save");
+
+        let stored =
+            save_account_sync_error(1, 1, "RPC request failed".to_string()).expect("save error");
+
+        assert_eq!(stored.snapshots.len(), 1);
+        assert_eq!(stored.snapshots[0].chain_id, 1);
+        assert_eq!(
+            stored.snapshots[0].account_address,
+            "0x70997970C51812dc3A010C7d01b50e0d17dc79C8"
+        );
+        assert_eq!(stored.snapshots[0].native_balance_wei, "123");
+        assert_eq!(stored.snapshots[0].nonce, 7);
+        assert_eq!(
+            stored.snapshots[0].last_sync_error.as_deref(),
+            Some("RPC request failed")
+        );
+        assert!(stored.snapshots[0].last_synced_at.is_some());
+
+        let registry = read_registry();
+        assert_eq!(registry.len(), 1);
+        assert_eq!(registry[0].snapshots.len(), 1);
+        assert_eq!(registry[0].snapshots[0].native_balance_wei, "123");
+        assert_eq!(registry[0].snapshots[0].nonce, 7);
+        assert_eq!(
+            registry[0].snapshots[0].last_sync_error.as_deref(),
+            Some("RPC request failed")
+        );
+    });
+}
+
+#[test]
+fn sync_error_without_existing_snapshot_creates_record() {
+    with_test_app_dir("sync-error-creates-record", |_| {
+        let stored =
+            save_account_sync_error(1, 1, "RPC unavailable".to_string()).expect("save error");
+
+        assert_eq!(stored.index, 1);
+        assert_eq!(stored.address, "0x70997970C51812dc3A010C7d01b50e0d17dc79C8");
+        assert_eq!(stored.snapshots.len(), 1);
+        assert_eq!(stored.snapshots[0].chain_id, 1);
+        assert_eq!(
+            stored.snapshots[0].account_address,
+            "0x70997970C51812dc3A010C7d01b50e0d17dc79C8"
+        );
+        assert_eq!(stored.snapshots[0].native_balance_wei, "0");
+        assert_eq!(stored.snapshots[0].nonce, 0);
+        assert_eq!(
+            stored.snapshots[0].last_sync_error.as_deref(),
+            Some("RPC unavailable")
+        );
+        assert!(stored.snapshots[0].last_synced_at.is_some());
+
+        let registry = read_registry();
+        assert_eq!(registry.len(), 1);
+        assert_eq!(registry[0].snapshots.len(), 1);
+        assert_eq!(
+            registry[0].snapshots[0].last_sync_error.as_deref(),
+            Some("RPC unavailable")
+        );
     });
 }
 

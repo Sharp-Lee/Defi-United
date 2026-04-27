@@ -1,8 +1,11 @@
 import { JsonRpcProvider } from "ethers";
 
 export interface AccountChainState {
-  nativeBalanceWei: bigint;
-  nonce: number;
+  accountAddress?: string | null;
+  nativeBalanceWei: bigint | null;
+  nonce: number | null;
+  lastSyncedAt?: string | null;
+  lastSyncError?: string | null;
 }
 
 export async function readAccountState(rpcUrl: string, address: string): Promise<AccountChainState> {
@@ -11,7 +14,13 @@ export async function readAccountState(rpcUrl: string, address: string): Promise
     provider.getBalance(address),
     provider.getTransactionCount(address),
   ]);
-  return { nativeBalanceWei, nonce };
+  return {
+    accountAddress: address,
+    nativeBalanceWei,
+    nonce,
+    lastSyncedAt: null,
+    lastSyncError: null,
+  };
 }
 
 export async function probeChainId(rpcUrl: string): Promise<bigint> {
