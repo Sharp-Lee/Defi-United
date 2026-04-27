@@ -22,6 +22,10 @@ function record({
   kind = "nativeTransfer",
   replacesTxHash = null,
   replacedByTxHash = null,
+  intentValueWei = "100",
+  submissionValueWei = "100",
+  receipt = null,
+  reconcileSummary = null,
 }: {
   txHash: string;
   accountIndex?: number;
@@ -32,6 +36,10 @@ function record({
   kind?: SubmissionKind;
   replacesTxHash?: string | null;
   replacedByTxHash?: string | null;
+  intentValueWei?: string;
+  submissionValueWei?: string;
+  receipt?: Record<string, unknown> | null;
+  reconcileSummary?: Record<string, unknown> | null;
 }) {
   return {
     schema_version: 2,
@@ -41,7 +49,7 @@ function record({
       chain_id: chainId,
       from,
       to: recipient,
-      value_wei: "100",
+      value_wei: intentValueWei,
       nonce,
       gas_limit: "21000",
       max_fee_per_gas: "40000000000",
@@ -52,7 +60,7 @@ function record({
       captured_at: "1700000000",
     },
     submission: {
-      frozen_key: `${chainId}:${from}:${recipient}:100:${nonce}`,
+      frozen_key: `${chainId}:${from}:${recipient}:${submissionValueWei}:${nonce}`,
       tx_hash: txHash,
       kind,
       source: "submission",
@@ -60,7 +68,7 @@ function record({
       account_index: accountIndex,
       from,
       to: recipient,
-      value_wei: "100",
+      value_wei: submissionValueWei,
       nonce,
       gas_limit: "21000",
       max_fee_per_gas: "40000000000",
@@ -72,6 +80,9 @@ function record({
       state,
       tx_hash: txHash,
       finalized_at: state === "Pending" ? null : "1700000100",
+      receipt,
+      reconciled_at: reconcileSummary ? "1700000101" : null,
+      reconcile_summary: reconcileSummary,
     },
     nonce_thread: {
       source: "derived",
@@ -391,6 +402,178 @@ describe("HistoryView", () => {
     expect(table.getByText("replacement: 0xreplacement")).toBeInTheDocument();
     expect(table.getByText("cancellation: 0xcancel")).toBeInTheDocument();
     expect(table.queryByText("0xother")).not.toBeInTheDocument();
+  });
+
+  it("shows intent, frozen submission, and pending chain outcome as separate detail layers", () => {
+    renderHistory([
+      record({
+        txHash: "0xdetail",
+        state: "Pending",
+        intentValueWei: "100",
+        submissionValueWei: "250",
+        reconcileSummary: {
+          source: "localTracker",
+          checked_at: "1700000002",
+          rpc_chain_id: 1,
+          latest_confirmed_nonce: null,
+          decision: "broadcastTracked",
+        },
+      }),
+    ]);
+
+    fireEvent.click(screen.getByRole("button", { name: "Details" }));
+
+    const panel = within(screen.getByLabelText("History details"));
+    const intentSection = panel.getByText("Intent").closest("section");
+    const submissionSection = panel.getByText("Submission").closest("section");
+    const outcomeSection = panel.getByText("ChainOutcome").closest("section");
+
+    expect(intentSection).not.toBeNull();
+    expect(submissionSection).not.toBeNull();
+    expect(outcomeSection).not.toBeNull();
+    expect(within(intentSection as HTMLElement).getByText("100 wei")).toBeInTheDocument();
+    expect(within(submissionSection as HTMLElement).getByText("250 wei")).toBeInTheDocument();
+    expect(within(submissionSection as HTMLElement).getByText("0xdetail")).toBeInTheDocument();
+    expect(
+      within(outcomeSection as HTMLElement).getByText(
+        "Pending - Broadcasted and tracked locally.",
+      ),
+    ).toBeInTheDocument();
+    expect(within(outcomeSection as HTMLElement).getByText("broadcastTracked")).toBeInTheDocument();
+  });
+
+  it("explains terminal chain outcomes without treating dropped as a chain failure", () => {
+    renderHistory([
+      record({
+        txHash: "0xconfirmed",
+        state: "Confirmed",
+        nonce: 1,
+        receipt: {
+          status: 1,
+          block_number: 12,
+          block_hash: "0xblock",
+          transaction_index: 0,
+          gas_used: "21000",
+          effective_gas_price: "123",
+        },
+      }),
+      record({ txHash: "0xfailed", state: "Failed", nonce: 2 }),
+      record({ txHash: "0xreplaced", state: "Replaced", nonce: 3 }),
+      record({ txHash: "0xcancelled", state: "Cancelled", nonce: 4 }),
+      record({ txHash: "0xdropped", state: "Dropped", nonce: 5 }),
+    ]);
+
+    fireEvent.click(within(screen.getByText("0xconfirmed").closest("tr") as HTMLElement).getByText("Details"));
+    expect(screen.getByText("Confirmed - Confirmed on chain.")).toBeInTheDocument();
+    expect(screen.getByText("0xblock")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    fireEvent.click(within(screen.getByText("0xfailed").closest("tr") as HTMLElement).getByText("Details"));
+    expect(screen.getByText("Failed - Included on chain with a failed receipt.")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    fireEvent.click(within(screen.getByText("0xreplaced").closest("tr") as HTMLElement).getByText("Details"));
+    expect(
+      screen.getByText("Replaced - Superseded by another submission in the nonce thread."),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    fireEvent.click(within(screen.getByText("0xcancelled").closest("tr") as HTMLElement).getByText("Details"));
+    expect(
+      screen.getByText("Cancelled - Cancelled by a later nonce-thread submission."),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    fireEvent.click(within(screen.getByText("0xdropped").closest("tr") as HTMLElement).getByText("Details"));
+    expect(
+      screen.getByText("Dropped - Local reconcile marked this as dropped; it is not a chain failure."),
+    ).toBeInTheDocument();
+  });
+
+  it("shows nonce thread details with each submission in the thread", () => {
+    renderHistory([
+      record({
+        txHash: "0xoriginal",
+        nonce: 9,
+        state: "Replaced",
+        replacedByTxHash: "0xreplacement",
+      }),
+      record({
+        txHash: "0xreplacement",
+        nonce: 9,
+        state: "Pending",
+        kind: "replacement",
+        replacesTxHash: "0xoriginal",
+      }),
+    ]);
+
+    fireEvent.change(screen.getByLabelText("View"), { target: { value: "threads" } });
+    fireEvent.click(screen.getByRole("button", { name: "Thread details" }));
+
+    const panel = within(screen.getByLabelText("History details"));
+    expect(panel.getByText("Nonce thread details grouped by account, chainId, and nonce.")).toBeInTheDocument();
+    expect(panel.getAllByText("0xoriginal").length).toBeGreaterThan(0);
+    expect(panel.getAllByText("0xreplacement").length).toBeGreaterThan(0);
+    expect(panel.getAllByText("ChainOutcome")).toHaveLength(2);
+  });
+
+  it("hides an open submission detail when filters make that record invisible", () => {
+    renderHistory([
+      record({ txHash: "0xpending", state: "Pending", nonce: 1 }),
+      record({ txHash: "0xconfirmed", state: "Confirmed", nonce: 2 }),
+    ]);
+
+    fireEvent.click(within(screen.getByText("0xpending").closest("tr") as HTMLElement).getByText("Details"));
+    expect(screen.getByLabelText("History details")).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("Status"), { target: { value: "confirmed" } });
+
+    expect(screen.queryByLabelText("History details")).not.toBeInTheDocument();
+    expect(screen.queryByText("0xpending")).not.toBeInTheDocument();
+    expect(screen.getByText("0xconfirmed")).toBeInTheDocument();
+  });
+
+  it("keeps thread details limited to submissions allowed by active filters", () => {
+    renderHistory([
+      record({
+        txHash: "0xoriginal",
+        nonce: 9,
+        state: "Replaced",
+        replacedByTxHash: "0xreplacement",
+      }),
+      record({
+        txHash: "0xreplacement",
+        nonce: 9,
+        state: "Pending",
+        kind: "replacement",
+        replacesTxHash: "0xoriginal",
+      }),
+    ]);
+
+    fireEvent.change(screen.getByLabelText("Status"), { target: { value: "pending" } });
+    fireEvent.change(screen.getByLabelText("View"), { target: { value: "threads" } });
+    fireEvent.click(screen.getByRole("button", { name: "Thread details" }));
+
+    const panel = within(screen.getByLabelText("History details"));
+    expect(panel.getAllByText("0xreplacement").length).toBeGreaterThan(0);
+    expect(
+      panel.queryByText("Replaced - Superseded by another submission in the nonce thread."),
+    ).not.toBeInTheDocument();
+    expect(panel.getAllByText("ChainOutcome")).toHaveLength(1);
+  });
+
+  it("keeps legacy and missing fields explicit in details instead of inventing values", () => {
+    renderHistory([unknownAccountRecord()]);
+
+    fireEvent.click(screen.getByRole("button", { name: "Details" }));
+
+    const panel = within(screen.getByLabelText("History details"));
+    const intentSection = panel.getByText("Intent").closest("section");
+    const submissionSection = panel.getByText("Submission").closest("section");
+
+    expect(within(intentSection as HTMLElement).getByText("legacy")).toBeInTheDocument();
+    expect(within(submissionSection as HTMLElement).getAllByText("legacy")).toHaveLength(2);
+    expect(within(submissionSection as HTMLElement).getByText("Account Unknown · Unknown")).toBeInTheDocument();
   });
 
   it("shows empty, loading, and error states", () => {

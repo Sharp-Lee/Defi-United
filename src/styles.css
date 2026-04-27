@@ -287,6 +287,86 @@ td {
   flex-wrap: wrap;
 }
 
+.history-detail-panel {
+  display: grid;
+  gap: 14px;
+  margin-top: 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.history-detail-header,
+.history-detail-record-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: flex-start;
+}
+
+.history-detail-header h3,
+.history-detail-record-header h4,
+.history-detail-section h5 {
+  margin: 0;
+}
+
+.history-detail-header p,
+.history-detail-record-header p {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.history-detail-submissions {
+  display: grid;
+  gap: 12px;
+}
+
+.history-detail-record {
+  display: grid;
+  gap: 12px;
+  border-top: 1px solid var(--border);
+  padding-top: 14px;
+}
+
+.history-detail-record:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.history-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(220px, 1fr));
+  gap: 12px;
+}
+
+.history-detail-section {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+}
+
+.history-detail-section dl {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+}
+
+.history-detail-row {
+  display: grid;
+  gap: 3px;
+}
+
+.history-detail-row dt {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.history-detail-row dd {
+  margin: 0;
+}
+
 .mono {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   font-size: 12px;
@@ -388,6 +468,15 @@ td {
   }
 
   .history-controls {
+    grid-template-columns: 1fr;
+  }
+
+  .history-detail-header,
+  .history-detail-record-header {
+    display: grid;
+  }
+
+  .history-detail-grid {
     grid-template-columns: 1fr;
   }
 

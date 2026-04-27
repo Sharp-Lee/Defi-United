@@ -14,6 +14,12 @@ const UNKNOWN = "__unknown__";
 const ACCOUNT_KEY_PREFIX = "key:";
 const ACCOUNT_INDEX_PREFIX = "index:";
 const ACCOUNT_FROM_PREFIX = "from:";
+
+type DetailSelection =
+  | { type: "submission"; key: string }
+  | { type: "thread"; key: string }
+  | null;
+
 const historyStatuses: HistoryStatus[] = [
   "pending",
   "confirmed",
@@ -50,6 +56,10 @@ function short(value: string) {
 
 function formatMaybe(value: string | number | null) {
   return value === null ? "Unknown" : value.toString();
+}
+
+function formatOptional(value: string | number | null | undefined) {
+  return value === null || value === undefined ? "Unknown" : value.toString();
 }
 
 function formatAccount(entry: Pick<HistoryReadModel, "account">) {
@@ -143,6 +153,10 @@ function statusClass(status: HistoryStatus) {
   return `history-status history-status-${status}`;
 }
 
+function detailKey(entry: HistoryReadModel) {
+  return `${entry.txHash}-${entry.originalIndex}`;
+}
+
 function bumpWei(value: string) {
   const wei = BigInt(value);
   return ((wei * 125n) / 100n + 1n).toString();
@@ -187,6 +201,7 @@ export function HistoryView({
   const [statusFilter, setStatusFilter] = useState(ALL);
   const [nonceFilter, setNonceFilter] = useState(ALL);
   const [threadFilter, setThreadFilter] = useState(ALL);
+  const [detailSelection, setDetailSelection] = useState<DetailSelection>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [refreshError, setRefreshError] = useState<string | null>(null);
 
@@ -243,6 +258,15 @@ export function HistoryView({
         : visibleGroups.flatMap((group) => group.submissions),
     [filteredEntries, threadFilter, visibleGroups],
   );
+  const selectedDetail = useMemo(() => {
+    if (detailSelection === null) return null;
+    if (detailSelection.type === "thread") {
+      const group = visibleGroups.find((item) => item.key === detailSelection.key);
+      return group ? { type: "thread" as const, group } : null;
+    }
+    const entry = visibleEntries.find((item) => detailKey(item) === detailSelection.key);
+    return entry ? { type: "submission" as const, entry } : null;
+  }, [detailSelection, visibleEntries, visibleGroups]);
   const isBusy = loading || refreshing;
   const statusMessage = refreshError ?? error;
 
@@ -266,6 +290,18 @@ export function HistoryView({
     setThreadFilter(ALL);
   }
 
+  function renderDetailButton(entry: HistoryReadModel) {
+    return (
+      <button
+        className="secondary-button"
+        onClick={() => setDetailSelection({ type: "submission", key: detailKey(entry) })}
+        type="button"
+      >
+        Details
+      </button>
+    );
+  }
+
   function renderStatus(status: HistoryStatus) {
     return (
       <span className={statusClass(status)} title={statusDescriptions[status]}>
@@ -275,25 +311,29 @@ export function HistoryView({
   }
 
   function renderActions(entry: HistoryReadModel) {
-    if (entry.status !== "pending") return null;
     return (
       <div className="button-row history-actions">
-        <button
-          className="secondary-button"
-          disabled={disabled}
-          onClick={() => onReplace?.(pendingRequestFromRecord(entry.record))}
-          type="button"
-        >
-          Replace
-        </button>
-        <button
-          className="secondary-button"
-          disabled={disabled}
-          onClick={() => onCancelPending?.(pendingRequestFromRecord(entry.record))}
-          type="button"
-        >
-          Cancel
-        </button>
+        {renderDetailButton(entry)}
+        {entry.status === "pending" && (
+          <>
+            <button
+              className="secondary-button"
+              disabled={disabled}
+              onClick={() => onReplace?.(pendingRequestFromRecord(entry.record))}
+              type="button"
+            >
+              Replace
+            </button>
+            <button
+              className="secondary-button"
+              disabled={disabled}
+              onClick={() => onCancelPending?.(pendingRequestFromRecord(entry.record))}
+              type="button"
+            >
+              Cancel
+            </button>
+          </>
+        )}
       </div>
     );
   }
@@ -498,6 +538,13 @@ export function HistoryView({
                   <td>{formatTimestamp(latestTimestamp(group.submissions))}</td>
                   <td>
                     <div className="history-thread-list">
+                      <button
+                        className="secondary-button"
+                        onClick={() => setDetailSelection({ type: "thread", key: group.key })}
+                        type="button"
+                      >
+                        Thread details
+                      </button>
                       {group.submissions.map((entry) => (
                         <div key={`${entry.txHash}-${entry.originalIndex}-actions`}>
                           {renderActions(entry)}
@@ -510,6 +557,186 @@ export function HistoryView({
           </tbody>
         </table>
       </div>
+      {selectedDetail && (
+        <HistoryDetails
+          detail={selectedDetail}
+          onClose={() => setDetailSelection(null)}
+          renderStatus={renderStatus}
+        />
+      )}
+    </section>
+  );
+}
+
+function HistoryDetails({
+  detail,
+  onClose,
+  renderStatus,
+}: {
+  detail:
+    | { type: "submission"; entry: HistoryReadModel }
+    | { type: "thread"; group: HistoryNonceGroup };
+  onClose: () => void;
+  renderStatus: (status: HistoryStatus) => JSX.Element;
+}) {
+  const entries = detail.type === "submission" ? [detail.entry] : detail.group.submissions;
+  const title =
+    detail.type === "submission" ? `Submission ${short(detail.entry.txHash)}` : formatThread(detail.group);
+
+  return (
+    <section className="history-detail-panel" aria-label="History details">
+      <header className="history-detail-header">
+        <div>
+          <h3>{title}</h3>
+          <p>
+            {detail.type === "thread"
+              ? "Nonce thread details grouped by account, chainId, and nonce."
+              : "Transaction details separated by user intent, frozen submission, and chain outcome."}
+          </p>
+        </div>
+        <button className="secondary-button" onClick={onClose} type="button">
+          Close
+        </button>
+      </header>
+      <div className="history-detail-submissions">
+        {entries.map((entry) => (
+          <HistorySubmissionDetails
+            entry={entry}
+            key={`${entry.txHash}-${entry.originalIndex}-detail`}
+            renderStatus={renderStatus}
+          />
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function HistorySubmissionDetails({
+  entry,
+  renderStatus,
+}: {
+  entry: HistoryReadModel;
+  renderStatus: (status: HistoryStatus) => JSX.Element;
+}) {
+  const { record } = entry;
+  return (
+    <article className="history-detail-record">
+      <header className="history-detail-record-header">
+        <div>
+          <h4>
+            {entry.submissionRole} · <span className="mono">{short(entry.txHash)}</span>
+          </h4>
+          <p>{statusDescriptions[entry.status]}</p>
+        </div>
+        {renderStatus(entry.status)}
+      </header>
+      <div className="history-detail-grid">
+        <HistoryDetailSection
+          title="Intent"
+          rows={[
+            ["Snapshot source", record.intent_snapshot.source],
+            ["Captured at", formatTimestamp(record.intent_snapshot.captured_at)],
+            ["Account", `Account ${formatOptional(record.intent.account_index)} · ${short(formatOptional(record.intent.from))}`],
+            ["chainId", formatOptional(record.intent.chain_id)],
+            ["To", record.intent.to],
+            ["Value", `${formatOptional(record.intent.value_wei)} wei`],
+            ["Nonce input", formatOptional(record.intent.nonce)],
+            ["Gas limit input", formatOptional(record.intent.gas_limit)],
+            ["Max fee input", `${formatOptional(record.intent.max_fee_per_gas)} wei`],
+            ["Priority fee input", `${formatOptional(record.intent.max_priority_fee_per_gas)} wei`],
+          ]}
+        />
+        <HistoryDetailSection
+          title="Submission"
+          rows={[
+            ["Source", record.submission.source],
+            ["Kind", record.submission.kind],
+            ["Draft key", record.submission.frozen_key],
+            ["Tx hash", record.submission.tx_hash],
+            ["Broadcasted at", formatTimestamp(record.submission.broadcasted_at)],
+            ["Account", `Account ${formatOptional(record.submission.account_index)} · ${short(formatOptional(record.submission.from))}`],
+            ["chainId", formatOptional(record.submission.chain_id)],
+            ["To", record.submission.to],
+            ["Value", `${formatOptional(record.submission.value_wei)} wei`],
+            ["Nonce", formatOptional(record.submission.nonce)],
+            ["Gas limit", formatOptional(record.submission.gas_limit)],
+            ["Max fee", `${formatOptional(record.submission.max_fee_per_gas)} wei`],
+            ["Priority fee", `${formatOptional(record.submission.max_priority_fee_per_gas)} wei`],
+            ["Replaces tx", record.submission.replaces_tx_hash],
+          ]}
+        />
+        <HistoryDetailSection title="ChainOutcome" rows={outcomeRows(entry)} />
+      </div>
+    </article>
+  );
+}
+
+function outcomeRows(entry: HistoryReadModel): Array<[string, string | number | null | undefined]> {
+  const { outcome } = entry.record;
+  const receipt = outcome.receipt;
+  const reconcile = outcome.reconcile_summary;
+  const error = outcome.error_summary;
+  return [
+    ["State", `${outcome.state} - ${statusDescriptions[entry.status]}`],
+    ["Outcome tx hash", outcome.tx_hash],
+    [outcomeTimeLabel(entry.status), formatTimestamp(outcome.finalized_at)],
+    ["Reconciled at", formatTimestamp(outcome.reconciled_at)],
+    ["Receipt status", receipt?.status],
+    ["Receipt block", receipt?.block_number],
+    ["Receipt block hash", receipt?.block_hash],
+    ["Receipt index", receipt?.transaction_index],
+    ["Receipt gas used", receipt?.gas_used],
+    ["Receipt effective gas price", receipt?.effective_gas_price],
+    ["Reconcile source", reconcile?.source],
+    ["Reconcile checked at", formatTimestamp(reconcile?.checked_at ?? null)],
+    ["Reconcile RPC chainId", reconcile?.rpc_chain_id],
+    ["Reconcile latest confirmed nonce", reconcile?.latest_confirmed_nonce],
+    ["Reconcile decision", reconcile?.decision],
+    ["Error source", error?.source],
+    ["Error category", error?.category],
+    ["Error message", error?.message],
+    ["Thread key", entry.record.nonce_thread.key],
+    ["Thread replaced by", entry.record.nonce_thread.replaced_by_tx_hash],
+  ];
+}
+
+function outcomeTimeLabel(status: HistoryStatus) {
+  switch (status) {
+    case "confirmed":
+      return "Confirmed at";
+    case "failed":
+      return "Failed at";
+    case "replaced":
+      return "Replaced at";
+    case "cancelled":
+      return "Cancelled at";
+    case "dropped":
+      return "Dropped at";
+    case "pending":
+      return "Finalized at";
+    case "unknown":
+      return "Finalized at";
+  }
+}
+
+function HistoryDetailSection({
+  title,
+  rows,
+}: {
+  title: string;
+  rows: Array<[string, string | number | null | undefined]>;
+}) {
+  return (
+    <section className="history-detail-section">
+      <h5>{title}</h5>
+      <dl>
+        {rows.map(([label, value]) => (
+          <div className="history-detail-row" key={label}>
+            <dt>{label}</dt>
+            <dd className="mono">{formatOptional(value)}</dd>
+          </div>
+        ))}
+      </dl>
     </section>
   );
 }
