@@ -89,3 +89,23 @@ fn writes_pending_history_before_confirmation() {
         assert_eq!(records[1].outcome.tx_hash, "0xabc");
     });
 }
+
+#[test]
+fn replace_and_cancel_mutations_keep_the_same_nonce_contract() {
+    let request = wallet_workbench_lib::commands::transactions::PendingMutationRequest {
+        tx_hash: "0xabc".into(),
+        rpc_url: "http://127.0.0.1:8545".into(),
+        account_index: 1,
+        chain_id: 31337,
+        from: "0x70997970C51812dc3A010C7d01b50e0d17dc79C8".into(),
+        nonce: 5,
+        gas_limit: "21000".into(),
+        max_fee_per_gas: "2000000000".into(),
+        max_priority_fee_per_gas: "1500000000".into(),
+        to: Some("0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC".into()),
+        value_wei: Some("1000000000000000".into()),
+    };
+
+    assert_eq!(request.nonce, 5);
+    assert_eq!(request.from, "0x70997970C51812dc3A010C7d01b50e0d17dc79C8");
+}

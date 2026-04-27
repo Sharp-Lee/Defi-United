@@ -60,6 +60,26 @@ pub fn persist_pending_history(
     Ok(record)
 }
 
+pub fn mark_prior_history_state(
+    tx_hash: &str,
+    next_state: ChainOutcomeState,
+) -> Result<(), String> {
+    let _guard = history_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut records = load_history_records()?;
+
+    if let Some(record) = records
+        .iter_mut()
+        .find(|record| record.outcome.tx_hash == tx_hash)
+    {
+        record.outcome.state = next_state;
+    }
+
+    let raw = serde_json::to_string_pretty(&records).map_err(|e| e.to_string())?;
+    write_file_atomic(&history_path()?, &raw)
+}
+
 async fn preflight_native_transfer(
     intent: &NativeTransferIntent,
     signer_address: Address,

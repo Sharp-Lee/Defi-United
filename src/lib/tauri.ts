@@ -45,3 +45,25 @@ export async function createAndScanAccount(index: number, chainId: number, rpcUr
     nonce: snapshot.nonce,
   };
 }
+
+export interface PendingMutationRequest {
+  txHash: string;
+  rpcUrl: string;
+  accountIndex: number;
+  chainId: number;
+  from: string;
+  nonce: number;
+  gasLimit: string;
+  maxFeePerGas: string;
+  maxPriorityFeePerGas: string;
+  to?: string;
+  valueWei?: string;
+}
+
+export function replacePendingTransfer(request: PendingMutationRequest) {
+  return invoke<string>("replace_pending_transfer", { request });
+}
+
+export function cancelPendingTransfer(request: PendingMutationRequest) {
+  return invoke<string>("cancel_pending_transfer", { request });
+}

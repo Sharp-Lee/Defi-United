@@ -12,6 +12,8 @@ pub fn run() {
             commands::accounts::derive_account,
             commands::accounts::save_scanned_account,
             commands::transactions::build_pending_history,
+            commands::transactions::cancel_pending_transfer,
+            commands::transactions::replace_pending_transfer,
             commands::transactions::submit_native_transfer_command,
             commands::vault::create_vault,
             commands::vault::unlock_vault,
