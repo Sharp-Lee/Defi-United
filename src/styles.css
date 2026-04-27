@@ -493,6 +493,57 @@ td {
   margin: 0;
 }
 
+.history-recovery-card {
+  display: grid;
+  gap: 10px;
+  border: 1px solid rgba(224, 82, 82, 0.6);
+  border-radius: 8px;
+  padding: 14px;
+  color: #ffcece;
+  background: rgba(224, 82, 82, 0.12);
+}
+
+.history-recovery-card-ok {
+  border-color: rgba(53, 184, 111, 0.62);
+  color: #c4f3d7;
+  background: rgba(53, 184, 111, 0.12);
+}
+
+.history-recovery-card header {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.history-recovery-card h3,
+.history-recovery-card p,
+.history-recovery-card dl {
+  margin: 0;
+}
+
+.history-recovery-card header span:first-child {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.history-recovery-card dl {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(220px, 1fr));
+  gap: 8px 12px;
+}
+
+.history-recovery-card dt {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.history-recovery-card dd {
+  margin: 0;
+}
+
 .history-thread-timeline {
   display: grid;
   gap: 10px;
@@ -730,6 +781,14 @@ td {
   }
 
   .history-error-card dl {
+    grid-template-columns: 1fr;
+  }
+
+  .history-recovery-card header {
+    display: grid;
+  }
+
+  .history-recovery-card dl {
     grid-template-columns: 1fr;
   }
 

@@ -14,7 +14,13 @@ import {
   type HistorySelectorFilters,
   type HistoryStatus,
 } from "../../core/history/selectors";
-import type { HistoryRecord, PendingMutationRequest } from "../../lib/tauri";
+import type {
+  HistoryCorruptionType,
+  HistoryRecord,
+  HistoryStorageInspection,
+  HistoryStorageQuarantineResult,
+  PendingMutationRequest,
+} from "../../lib/tauri";
 
 const ALL = "__all__";
 const UNKNOWN = "__unknown__";
@@ -55,6 +61,14 @@ const statusDescriptions: Record<HistoryStatus, string> = {
   cancelled: "Cancelled by a later nonce-thread submission.",
   dropped: "Local reconcile marked this as dropped; it is not a chain failure.",
   unknown: "Outcome is not known yet.",
+};
+
+const corruptionLabels: Record<HistoryCorruptionType, string> = {
+  permissionDenied: "Permission denied",
+  ioError: "I/O error",
+  jsonParseFailed: "JSON parse failed",
+  schemaIncompatible: "Schema incompatible",
+  partialRecordsInvalid: "Partial records invalid",
 };
 
 function short(value: string) {
@@ -240,19 +254,25 @@ function pendingRequestFromRecord(record: HistoryRecord): PendingMutationRequest
 export function HistoryView({
   items,
   onRefresh,
+  onQuarantineHistory,
   onReplace,
   onCancelPending,
   disabled = false,
   loading = false,
   error = null,
+  storage = null,
+  lastQuarantine = null,
 }: {
   items: HistoryRecord[];
   onRefresh: () => Promise<void> | void;
+  onQuarantineHistory?: () => Promise<void> | void;
   onReplace?: (request: PendingMutationRequest) => Promise<void> | void;
   onCancelPending?: (request: PendingMutationRequest) => Promise<void> | void;
   disabled?: boolean;
   loading?: boolean;
   error?: string | null;
+  storage?: HistoryStorageInspection | null;
+  lastQuarantine?: HistoryStorageQuarantineResult | null;
 }) {
   const [viewMode, setViewMode] = useState<"submissions" | "threads">("submissions");
   const [accountFilter, setAccountFilter] = useState(ALL);
@@ -343,6 +363,10 @@ export function HistoryView({
       : null;
   }, [allThreadEntriesByKey, detailSelection, visibleEntries, visibleGroups]);
   const isBusy = loading || refreshing;
+  const storageBlocked = storage?.status === "corrupted";
+  const storageBlockedReason = storageBlocked
+    ? "Disabled while local transaction history is unreadable. Retry the read or quarantine the damaged file before submitting, replacing, or cancelling."
+    : null;
   const statusMessage = refreshError ?? error;
   const statusError = useMemo(
     () =>
@@ -446,23 +470,34 @@ export function HistoryView({
           <>
             <button
               className="secondary-button"
-              disabled={disabled || !replace.enabled || !onReplace}
+              disabled={disabled || storageBlocked || !replace.enabled || !onReplace}
               onClick={() => onReplace?.(pendingRequestFromRecord(entry.record))}
-              title={!onReplace ? "Replace handler is not available in this view." : replace.reason}
+              title={
+                storageBlockedReason ??
+                (!onReplace ? "Replace handler is not available in this view." : replace.reason)
+              }
               type="button"
             >
               Replace {short(entry.txHash)}
             </button>
             <button
               className="secondary-button"
-              disabled={disabled || !cancel.enabled || !onCancelPending}
+              disabled={disabled || storageBlocked || !cancel.enabled || !onCancelPending}
               onClick={() => onCancelPending?.(pendingRequestFromRecord(entry.record))}
-              title={!onCancelPending ? "Cancel handler is not available in this view." : cancel.reason}
+              title={
+                storageBlockedReason ??
+                (!onCancelPending ? "Cancel handler is not available in this view." : cancel.reason)
+              }
               type="button"
             >
               Cancel {short(entry.txHash)}
             </button>
           </>
+        )}
+        {storageBlockedReason && (replace || cancel) && (
+          <span className="history-action-reason">
+            Submit/replace/cancel: {storageBlockedReason}
+          </span>
         )}
         {actionGates
           .filter((action) => !action.enabled)
@@ -490,6 +525,18 @@ export function HistoryView({
       </header>
       {statusError && (
         <HistoryErrorCard error={statusError} meta="Manual refresh" role="alert" />
+      )}
+      {storage?.status === "corrupted" && (
+        <HistoryStorageRecoveryCard
+          disabled={disabled || isBusy}
+          lastQuarantine={lastQuarantine}
+          onQuarantineHistory={onQuarantineHistory}
+          onRetry={handleRefresh}
+          storage={storage}
+        />
+      )}
+      {lastQuarantine && storage?.status !== "corrupted" && (
+        <HistoryStorageRecoveredCard result={lastQuarantine} />
       )}
       {isBusy && items.length === 0 && <div className="inline-warning">Loading transaction history...</div>}
       {recentFailureSummaries.length > 0 && (
@@ -725,6 +772,133 @@ export function HistoryView({
         />
       )}
     </section>
+  );
+}
+
+function formatRawSummary(storage: HistoryStorageInspection) {
+  const summary = storage.rawSummary;
+  return [
+    `file ${summary.fileSizeBytes ?? "unknown"} bytes`,
+    `top ${summary.topLevel ?? "unknown"}`,
+    `array len ${summary.arrayLen ?? "unknown"}`,
+    `modified ${formatTimestamp(summary.modifiedAt)}`,
+  ].join(" · ");
+}
+
+function invalidRecordSummary(storage: HistoryStorageInspection) {
+  if (storage.invalidRecordCount === 0) return "No invalid record indices were reported.";
+  const indices = storage.invalidRecordIndices.length
+    ? storage.invalidRecordIndices.join(", ")
+    : "not available";
+  return `${storage.invalidRecordCount} invalid record(s); first indices: ${indices}.`;
+}
+
+function HistoryStorageRecoveryCard({
+  storage,
+  lastQuarantine,
+  onRetry,
+  onQuarantineHistory,
+  disabled,
+}: {
+  storage: HistoryStorageInspection;
+  lastQuarantine: HistoryStorageQuarantineResult | null;
+  onRetry: () => Promise<void> | void;
+  onQuarantineHistory?: () => Promise<void> | void;
+  disabled: boolean;
+}) {
+  const corruptionType = storage.corruptionType ?? "ioError";
+  return (
+    <article className="history-recovery-card" role="alert">
+      <header>
+        <div>
+          <span>History storage recovery</span>
+          <h3>{corruptionLabels[corruptionType]}</h3>
+        </div>
+        <span className="pill danger-pill">Submissions disabled</span>
+      </header>
+      <p>
+        Local transaction history cannot be trusted right now. New submit, replace, and cancel
+        actions stay blocked so pending nonce recovery is not bypassed.
+      </p>
+      <dl>
+        <div>
+          <dt>Impact</dt>
+          <dd>History list, pending nonce recovery, submit, replace, and cancel.</dd>
+        </div>
+        <div>
+          <dt>Original file</dt>
+          <dd className="mono">{storage.path}</dd>
+        </div>
+        <div>
+          <dt>Error</dt>
+          <dd>{storage.errorSummary ?? "No OS or parser message was returned."}</dd>
+        </div>
+        <div>
+          <dt>Raw summary</dt>
+          <dd className="mono">{formatRawSummary(storage)}</dd>
+        </div>
+        <div>
+          <dt>Record scope</dt>
+          <dd>{invalidRecordSummary(storage)}</dd>
+        </div>
+        {lastQuarantine && (
+          <div>
+            <dt>Last quarantine copy</dt>
+            <dd className="mono">{lastQuarantine.quarantinedPath}</dd>
+          </div>
+        )}
+      </dl>
+      <div className="button-row">
+        <button className="secondary-button" disabled={disabled} onClick={() => void onRetry()} type="button">
+          Retry read
+        </button>
+        <button
+          className="secondary-button"
+          disabled={disabled || !onQuarantineHistory}
+          onClick={() => void onQuarantineHistory?.()}
+          type="button"
+        >
+          Quarantine and start empty history
+        </button>
+      </div>
+    </article>
+  );
+}
+
+function HistoryStorageRecoveredCard({
+  result,
+}: {
+  result: HistoryStorageQuarantineResult;
+}) {
+  const previousType = result.previous.corruptionType ?? "ioError";
+  return (
+    <article className="history-recovery-card history-recovery-card-ok" aria-label="History recovery result">
+      <header>
+        <div>
+          <span>History storage recovered</span>
+          <h3>Empty history started</h3>
+        </div>
+        <span className="pill">Audit copy retained</span>
+      </header>
+      <p>
+        The damaged history file was moved aside. The current history is empty; old records were not
+        recreated or inferred from chain data.
+      </p>
+      <dl>
+        <div>
+          <dt>Quarantine copy</dt>
+          <dd className="mono">{result.quarantinedPath}</dd>
+        </div>
+        <div>
+          <dt>Previous classification</dt>
+          <dd>{corruptionLabels[previousType]}</dd>
+        </div>
+        <div>
+          <dt>Previous summary</dt>
+          <dd className="mono">{formatRawSummary(result.previous)}</dd>
+        </div>
+      </dl>
+    </article>
   );
 }
 

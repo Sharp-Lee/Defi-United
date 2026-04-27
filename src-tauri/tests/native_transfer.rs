@@ -2,19 +2,22 @@ use std::fs;
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use ethers::types::U64;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use wallet_workbench_lib::diagnostics::read_diagnostic_events_from_path;
 use wallet_workbench_lib::storage::{diagnostics_path, history_path};
 use wallet_workbench_lib::transactions::{
     apply_pending_history_updates, broadcast_history_write_error,
-    chain_outcome_from_receipt_status, dropped_state_for_missing_receipt, load_history_records,
-    mark_prior_history_state, mark_prior_history_state_with_replacement,
+    chain_outcome_from_receipt_status, dropped_state_for_missing_receipt, inspect_history_storage,
+    load_history_records, mark_prior_history_state, mark_prior_history_state_with_replacement,
     next_nonce_with_pending_history, nonce_thread_key, persist_pending_history,
-    persist_pending_history_with_kind, reconcile_pending_history, ChainOutcomeState, HistoryRecord,
+    persist_pending_history_with_kind, quarantine_history_storage, reconcile_pending_history,
+    ChainOutcomeState, HistoryCorruptionType, HistoryRecord, HistoryStorageStatus,
     NativeTransferIntent,
 };
 
@@ -198,6 +201,53 @@ fn start_preflight_rpc_server() -> String {
     format!("http://{address}")
 }
 
+fn start_submission_guard_rpc_server() -> (String, Arc<Mutex<Vec<String>>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind rpc server");
+    let address = listener.local_addr().expect("local addr");
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let seen = Arc::clone(&requests);
+    thread::spawn(move || {
+        for stream in listener.incoming().take(4) {
+            let mut stream = stream.expect("accept rpc request");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .expect("set read timeout");
+            let mut buffer = [0; 4096];
+            let bytes = stream.read(&mut buffer).expect("read rpc request");
+            let mut request = String::from_utf8_lossy(&buffer[..bytes]).to_string();
+            while !request.contains("eth_") {
+                match stream.read(&mut buffer) {
+                    Ok(0) => break,
+                    Ok(bytes) => request.push_str(&String::from_utf8_lossy(&buffer[..bytes])),
+                    Err(_) => break,
+                }
+            }
+            seen.lock().expect("request lock").push(request.clone());
+            let result = if request.contains("eth_chainId") {
+                "\"0x1\""
+            } else if request.contains("eth_getBalance") {
+                "\"0xffffffffffffffffffff\""
+            } else if request.contains("eth_getTransactionCount") {
+                "\"0x0\""
+            } else if request.contains("eth_sendRawTransaction") {
+                "\"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\""
+            } else {
+                "null"
+            };
+            let body = format!(r#"{{"jsonrpc":"2.0","id":1,"result":{result}}}"#);
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("write rpc response");
+        }
+    });
+    (format!("http://{address}"), requests)
+}
+
 #[test]
 fn writes_pending_history_before_confirmation() {
     with_test_app_dir("pending-history", |_| {
@@ -236,6 +286,241 @@ fn writes_pending_history_before_confirmation() {
         assert_eq!(records[0].outcome.tx_hash, first.outcome.tx_hash);
         assert_eq!(records[1].outcome.tx_hash, "0xabc");
     });
+}
+
+#[test]
+fn missing_history_file_is_empty_not_corrupt() {
+    with_test_app_dir("history-not-found", |_| {
+        let records = load_history_records().expect("missing history is empty");
+        let inspection = inspect_history_storage().expect("inspect missing history");
+
+        assert!(records.is_empty());
+        assert_eq!(inspection.status, HistoryStorageStatus::NotFound);
+        assert_eq!(inspection.corruption_type, None);
+    });
+}
+
+#[test]
+fn bad_json_history_is_classified_without_deleting_source() {
+    with_test_app_dir("history-bad-json", |_| {
+        let path = history_path().expect("history path");
+        fs::write(&path, "{ not json").expect("write bad history");
+
+        let error = load_history_records().expect_err("bad JSON must fail");
+        let inspection = inspect_history_storage().expect("inspect bad JSON");
+
+        assert!(error.contains("jsonParseFailed"));
+        assert_eq!(inspection.status, HistoryStorageStatus::Corrupted);
+        assert_eq!(
+            inspection.corruption_type,
+            Some(HistoryCorruptionType::JsonParseFailed)
+        );
+        assert!(path.exists(), "inspect must not remove original history");
+    });
+}
+
+#[test]
+fn incompatible_and_partial_history_schema_are_classified() {
+    with_test_app_dir("history-schema-health", |_| {
+        let path = history_path().expect("history path");
+        fs::write(&path, r#"{"records":[]}"#).expect("write incompatible history");
+        let incompatible = inspect_history_storage().expect("inspect incompatible history");
+        assert_eq!(incompatible.status, HistoryStorageStatus::Corrupted);
+        assert_eq!(
+            incompatible.corruption_type,
+            Some(HistoryCorruptionType::SchemaIncompatible)
+        );
+
+        let valid = history_record(1, ChainOutcomeState::Pending, "0xvalid");
+        fs::write(
+            &path,
+            serde_json::to_string_pretty(&serde_json::json!([valid, { "intent": null }]))
+                .expect("serialize partial history"),
+        )
+        .expect("write partial history");
+        let partial = inspect_history_storage().expect("inspect partial history");
+        assert_eq!(partial.status, HistoryStorageStatus::Corrupted);
+        assert_eq!(
+            partial.corruption_type,
+            Some(HistoryCorruptionType::PartialRecordsInvalid)
+        );
+        assert_eq!(partial.record_count, 1);
+        assert_eq!(partial.invalid_record_count, 1);
+        assert_eq!(partial.invalid_record_indices, vec![1]);
+    });
+}
+
+#[test]
+fn partial_history_reports_full_invalid_count_with_preview_indices() {
+    with_test_app_dir("history-partial-invalid-count", |_| {
+        let path = history_path().expect("history path");
+        let valid = history_record(1, ChainOutcomeState::Pending, "0xvalid");
+        let mut raw_records = vec![serde_json::to_value(valid).expect("serialize valid record")];
+        for index in 0..10 {
+            raw_records.push(serde_json::json!({ "invalid_record": index }));
+        }
+        fs::write(
+            &path,
+            serde_json::to_string_pretty(&raw_records).expect("serialize invalid history"),
+        )
+        .expect("write partial history");
+
+        let inspection = inspect_history_storage().expect("inspect partial history");
+        let events =
+            read_diagnostic_events_from_path(&diagnostics_path().expect("diagnostics path"))
+                .expect("read diagnostics");
+        let event = events
+            .iter()
+            .find(|event| event.event == "historyStorageCorruptionDetected")
+            .expect("corruption diagnostic");
+
+        assert_eq!(inspection.status, HistoryStorageStatus::Corrupted);
+        assert_eq!(
+            inspection.corruption_type,
+            Some(HistoryCorruptionType::PartialRecordsInvalid)
+        );
+        assert_eq!(inspection.record_count, 1);
+        assert_eq!(inspection.invalid_record_count, 10);
+        assert_eq!(
+            inspection.invalid_record_indices,
+            vec![1, 2, 3, 4, 5, 6, 7, 8]
+        );
+        assert!(inspection
+            .error_summary
+            .as_deref()
+            .expect("error summary")
+            .contains("10 transaction history record(s)"));
+        assert_eq!(
+            event
+                .metadata
+                .get("invalidRecordCount")
+                .and_then(|value| value.as_u64()),
+            Some(10)
+        );
+    });
+}
+
+#[test]
+fn quarantine_preserves_damaged_history_and_starts_empty_history() {
+    with_test_app_dir("history-quarantine", |_| {
+        let path = history_path().expect("history path");
+        fs::write(&path, "{ broken").expect("write damaged history");
+
+        let result = quarantine_history_storage().expect("quarantine damaged history");
+        let quarantined_path = PathBuf::from(&result.quarantined_path);
+        let records = load_history_records().expect("load empty history after quarantine");
+        let raw_current = fs::read_to_string(&path).expect("read new history");
+        let raw_quarantined = fs::read_to_string(&quarantined_path).expect("read quarantine");
+
+        assert_eq!(result.previous.status, HistoryStorageStatus::Corrupted);
+        assert_eq!(result.current.status, HistoryStorageStatus::Healthy);
+        assert!(records.is_empty());
+        assert_eq!(raw_current.trim(), "[]");
+        assert_eq!(raw_quarantined, "{ broken");
+        assert!(quarantined_path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .expect("quarantine file name")
+            .contains(".quarantine-"));
+    });
+}
+
+#[cfg(unix)]
+#[test]
+fn quarantine_prepare_failure_keeps_damaged_history_blocking() {
+    let _guard = test_lock().lock().expect("test lock");
+    let app_dir_guard = TestAppDirGuard::new("history-quarantine-prepare-failure");
+    let path = history_path().expect("history path");
+    fs::write(&path, "{ broken").expect("write damaged history");
+    let dir = path.parent().expect("history parent").to_path_buf();
+    let original_permissions = fs::metadata(&dir).expect("dir metadata").permissions();
+    let mut readonly_permissions = original_permissions.clone();
+    readonly_permissions.set_mode(0o500);
+    fs::set_permissions(&dir, readonly_permissions).expect("make app dir readonly");
+
+    let result = quarantine_history_storage();
+
+    fs::set_permissions(&dir, original_permissions).expect("restore app dir permissions");
+
+    let error = result.expect_err("quarantine must fail before moving damaged history");
+    assert!(error.contains("original damaged history remains in place"));
+    assert!(
+        path.exists(),
+        "damaged history must remain at original path"
+    );
+    let inspection = inspect_history_storage().expect("inspect history after failed quarantine");
+    assert_eq!(inspection.status, HistoryStorageStatus::Corrupted);
+    assert_eq!(
+        inspection.corruption_type,
+        Some(HistoryCorruptionType::JsonParseFailed)
+    );
+    let load_error = load_history_records().expect_err("history must remain blocking");
+    assert!(load_error.contains("jsonParseFailed"));
+    drop(app_dir_guard);
+}
+
+#[test]
+fn history_recovery_actions_are_recorded_without_sensitive_paths() {
+    with_test_app_dir("history-quarantine-diagnostics", |_| {
+        let path = history_path().expect("history path");
+        fs::write(&path, "{ broken").expect("write damaged history");
+
+        let result = quarantine_history_storage().expect("quarantine damaged history");
+        let events =
+            read_diagnostic_events_from_path(&diagnostics_path().expect("diagnostics path"))
+                .expect("read diagnostics");
+        let event = events
+            .iter()
+            .find(|event| event.event == "historyStorageQuarantined")
+            .expect("quarantine diagnostic");
+
+        assert_eq!(event.category, "transaction");
+        assert_eq!(
+            event
+                .metadata
+                .get("corruptionType")
+                .and_then(|value| value.as_str()),
+            Some("jsonParseFailed")
+        );
+        assert_eq!(
+            event
+                .metadata
+                .get("action")
+                .and_then(|value| value.as_str()),
+            Some("quarantineAndStartEmptyHistory")
+        );
+        assert!(!serde_json::to_string(event)
+            .expect("serialize event")
+            .contains(&result.quarantined_path));
+    });
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn submit_refuses_to_broadcast_when_history_is_unreadable() {
+    let _guard = test_lock().lock().expect("test lock");
+    let _app_dir_guard = TestAppDirGuard::new("submit-history-corrupt-preflight");
+    wallet_workbench_lib::session::write_session_mnemonic(
+        "test test test test test test test test test test test junk".into(),
+    );
+    fs::write(history_path().expect("history path"), "{ broken").expect("write damaged history");
+    let (rpc_url, requests) = start_submission_guard_rpc_server();
+
+    let mut intent = native_transfer_intent(0, "1");
+    intent.rpc_url = rpc_url;
+    intent.account_index = 1;
+    intent.chain_id = 1;
+    intent.from = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8".into();
+
+    let error = wallet_workbench_lib::transactions::submit_native_transfer(intent)
+        .await
+        .expect_err("corrupt history must stop submission");
+    let joined_requests = requests.lock().expect("requests lock").join("\n");
+
+    assert!(
+        error.contains("jsonParseFailed"),
+        "unexpected error: {error}; requests={joined_requests}"
+    );
+    assert!(!joined_requests.contains("eth_sendRawTransaction"));
 }
 
 #[test]
@@ -612,6 +897,41 @@ fn pending_mutation_request_must_match_local_pending_history() {
             )
             .is_err()
         );
+    });
+}
+
+#[test]
+fn replace_and_cancel_requests_refuse_unreadable_history() {
+    with_test_app_dir("pending-mutation-corrupt-history", |_| {
+        fs::write(history_path().expect("history path"), "{ broken")
+            .expect("write damaged history");
+        let request = wallet_workbench_lib::commands::transactions::PendingMutationRequest {
+            tx_hash: "0xabc".into(),
+            rpc_url: "http://127.0.0.1:8545".into(),
+            account_index: 1,
+            chain_id: 1,
+            from: "0x1111111111111111111111111111111111111111".into(),
+            nonce: 9,
+            gas_limit: "21000".into(),
+            max_fee_per_gas: "50000000000".into(),
+            max_priority_fee_per_gas: "2000000000".into(),
+            to: Some("0x3333333333333333333333333333333333333333".into()),
+            value_wei: Some("200".into()),
+        };
+
+        let replace_error =
+            wallet_workbench_lib::commands::transactions::build_replace_intent_from_pending_request(
+                request.clone(),
+            )
+            .expect_err("replace must refuse unreadable history");
+        let cancel_error =
+            wallet_workbench_lib::commands::transactions::build_cancel_intent_from_pending_request(
+                request,
+            )
+            .expect_err("cancel must refuse unreadable history");
+
+        assert!(replace_error.contains("jsonParseFailed"));
+        assert!(cancel_error.contains("jsonParseFailed"));
     });
 }
 

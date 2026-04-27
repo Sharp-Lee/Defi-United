@@ -107,4 +107,43 @@ describe("AppShell", () => {
     expect(historySection.getByText("Chain identity mismatch")).toBeInTheDocument();
     expect(historySection.getByText(/chainId is the stable chain identity/)).toBeInTheDocument();
   });
+
+  it("passes corrupted history storage into transfer gating", () => {
+    renderScreen(
+      <AppShell
+        activeTab="transfer"
+        accounts={[
+          {
+            address: "0x1111111111111111111111111111111111111111",
+            index: 1,
+            label: "Account 1",
+            nativeBalanceWei: 1n,
+            nonce: 0,
+          },
+        ]}
+        historyStorage={{
+          status: "corrupted",
+          path: "/tmp/tx-history.json",
+          corruptionType: "jsonParseFailed",
+          readable: true,
+          recordCount: 0,
+          invalidRecordCount: 0,
+          invalidRecordIndices: [],
+          errorSummary: "expected value",
+          rawSummary: {
+            fileSizeBytes: 12,
+            modifiedAt: null,
+            topLevel: null,
+            arrayLen: null,
+          },
+        }}
+        onTabChange={() => {}}
+        onUnlock={async () => {}}
+        session={{ status: "ready" }}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "Build Draft" })).toBeDisabled();
+    expect(screen.getByText(/Local transaction history is unreadable/)).toBeInTheDocument();
+  });
 });

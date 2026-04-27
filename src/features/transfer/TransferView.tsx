@@ -28,6 +28,8 @@ export interface TransferViewProps {
   chainName: string;
   rpcUrl: string;
   history?: HistoryRecord[];
+  historyStorageIssue?: string | null;
+  onSubmitFailed?: (error: unknown) => Promise<void> | void;
   onSubmitted: (record: HistoryRecord) => void;
 }
 
@@ -59,6 +61,8 @@ export function TransferView({
   chainName,
   rpcUrl,
   history = [],
+  historyStorageIssue = null,
+  onSubmitFailed,
   onSubmitted,
 }: TransferViewProps) {
   const [selectedIndex, setSelectedIndex] = useState("");
@@ -120,6 +124,10 @@ export function TransferView({
 
   async function buildDraft() {
     setError(null);
+    if (historyStorageIssue) {
+      setStageError("build", historyStorageIssue);
+      return;
+    }
     setBusy(true);
     try {
       if (!rpcUrl.trim()) throw new Error("RPC URL is required.");
@@ -194,6 +202,10 @@ export function TransferView({
   async function submitDraft() {
     setError(null);
     if (!draft || !selectedAccount) return;
+    if (historyStorageIssue) {
+      setStageError("submit", historyStorageIssue);
+      return;
+    }
     if (draft.requiresSecondConfirmation && !secondConfirm) {
       setStageError("build", "High-risk fee settings need the extra confirmation.");
       return;
@@ -219,6 +231,11 @@ export function TransferView({
       setDraft(null);
     } catch (err) {
       setStageError("submit", err);
+      try {
+        await onSubmitFailed?.(err);
+      } catch {
+        // The local submit error remains visible; parent recovery state can be retried separately.
+      }
     } finally {
       setBusy(false);
     }
@@ -317,10 +334,20 @@ export function TransferView({
         </label>
       </div>
       <div className="button-row">
-        <button disabled={busy || accounts.length === 0} onClick={() => void buildDraft()} type="button">
+        <button
+          disabled={busy || accounts.length === 0 || historyStorageIssue !== null}
+          onClick={() => void buildDraft()}
+          title={historyStorageIssue ?? undefined}
+          type="button"
+        >
           Build Draft
         </button>
       </div>
+      {historyStorageIssue && (
+        <div className="inline-warning" role="alert">
+          {historyStorageIssue}
+        </div>
+      )}
       {draft && (
         <section aria-label="Transfer confirmation" className="confirmation-panel">
           <header className="section-header">
@@ -374,8 +401,13 @@ export function TransferView({
           )}
           <div className="button-row">
             <button
-              disabled={busy || (draft.requiresSecondConfirmation && !secondConfirm)}
+              disabled={
+                busy ||
+                historyStorageIssue !== null ||
+                (draft.requiresSecondConfirmation && !secondConfirm)
+              }
               onClick={() => void submitDraft()}
+              title={historyStorageIssue ?? undefined}
               type="button"
             >
               Submit

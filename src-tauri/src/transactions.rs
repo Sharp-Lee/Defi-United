@@ -1,5 +1,6 @@
 use std::fs;
 use std::io::ErrorKind;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -10,7 +11,9 @@ use ethers::types::{
     transaction::{eip1559::Eip1559TransactionRequest, response::TransactionReceipt},
     Address, H256, U256, U64,
 };
-use serde_json::json;
+use rand::Rng;
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 
 use crate::accounts::derive_wallet;
 use crate::diagnostics::{append_diagnostic_event, DiagnosticEventInput, DiagnosticLevel};
@@ -19,7 +22,7 @@ use crate::models::{
     ReconcileSummary, SubmissionKind, SubmissionRecord,
 };
 use crate::session::with_session_mnemonic;
-use crate::storage::{history_path, write_file_atomic};
+use crate::storage::{history_path, write_file_atomic, write_new_file_atomic};
 
 pub use crate::models::{ChainOutcomeState, HistoryRecord, NativeTransferIntent};
 
@@ -28,12 +31,452 @@ fn history_lock() -> &'static Mutex<()> {
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum HistoryStorageStatus {
+    NotFound,
+    Healthy,
+    Corrupted,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum HistoryCorruptionType {
+    PermissionDenied,
+    IoError,
+    JsonParseFailed,
+    SchemaIncompatible,
+    PartialRecordsInvalid,
+}
+
+impl HistoryCorruptionType {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::PermissionDenied => "permissionDenied",
+            Self::IoError => "ioError",
+            Self::JsonParseFailed => "jsonParseFailed",
+            Self::SchemaIncompatible => "schemaIncompatible",
+            Self::PartialRecordsInvalid => "partialRecordsInvalid",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryStorageRawSummary {
+    pub file_size_bytes: Option<u64>,
+    pub modified_at: Option<String>,
+    pub top_level: Option<String>,
+    pub array_len: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryStorageInspection {
+    pub status: HistoryStorageStatus,
+    pub path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub corruption_type: Option<HistoryCorruptionType>,
+    pub readable: bool,
+    pub record_count: usize,
+    pub invalid_record_count: usize,
+    pub invalid_record_indices: Vec<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_summary: Option<String>,
+    pub raw_summary: HistoryStorageRawSummary,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryStorageQuarantineResult {
+    pub quarantined_path: String,
+    pub previous: HistoryStorageInspection,
+    pub current: HistoryStorageInspection,
+}
+
+impl HistoryStorageInspection {
+    fn healthy(path: &Path, records: usize, raw_summary: HistoryStorageRawSummary) -> Self {
+        Self {
+            status: HistoryStorageStatus::Healthy,
+            path: path.display().to_string(),
+            corruption_type: None,
+            readable: true,
+            record_count: records,
+            invalid_record_count: 0,
+            invalid_record_indices: Vec::new(),
+            error_summary: None,
+            raw_summary,
+        }
+    }
+
+    fn not_found(path: &Path) -> Self {
+        Self {
+            status: HistoryStorageStatus::NotFound,
+            path: path.display().to_string(),
+            corruption_type: None,
+            readable: false,
+            record_count: 0,
+            invalid_record_count: 0,
+            invalid_record_indices: Vec::new(),
+            error_summary: None,
+            raw_summary: HistoryStorageRawSummary {
+                file_size_bytes: None,
+                modified_at: None,
+                top_level: None,
+                array_len: None,
+            },
+        }
+    }
+
+    fn corrupted(
+        path: &Path,
+        corruption_type: HistoryCorruptionType,
+        readable: bool,
+        error_summary: String,
+        raw_summary: HistoryStorageRawSummary,
+        record_count: usize,
+        invalid_record_count: usize,
+        invalid_record_indices: Vec<usize>,
+    ) -> Self {
+        Self {
+            status: HistoryStorageStatus::Corrupted,
+            path: path.display().to_string(),
+            corruption_type: Some(corruption_type),
+            readable,
+            record_count,
+            invalid_record_count,
+            invalid_record_indices,
+            error_summary: Some(error_summary),
+            raw_summary,
+        }
+    }
+
+    fn failure_message(&self) -> String {
+        match &self.corruption_type {
+            Some(kind) => format!(
+                "transaction history storage is unreadable: type={}; records={}; invalidRecords={}; error={}",
+                kind.as_str(),
+                self.record_count,
+                self.invalid_record_count,
+                self.error_summary
+                    .as_deref()
+                    .unwrap_or("unknown history storage error")
+            ),
+            None => self
+                .error_summary
+                .clone()
+                .unwrap_or_else(|| "transaction history storage is unreadable".to_string()),
+        }
+    }
+}
+
+fn raw_summary_for_path(path: &Path, value: Option<&Value>) -> HistoryStorageRawSummary {
+    let metadata = fs::metadata(path).ok();
+    let modified_at = metadata
+        .as_ref()
+        .and_then(|metadata| metadata.modified().ok())
+        .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_secs().to_string());
+    let top_level = value.map(|value| match value {
+        Value::Array(_) => "array",
+        Value::Object(_) => "object",
+        Value::String(_) => "string",
+        Value::Number(_) => "number",
+        Value::Bool(_) => "boolean",
+        Value::Null => "null",
+    });
+    HistoryStorageRawSummary {
+        file_size_bytes: metadata.map(|metadata| metadata.len()),
+        modified_at,
+        top_level: top_level.map(str::to_string),
+        array_len: value.and_then(|value| value.as_array().map(Vec::len)),
+    }
+}
+
+fn inspect_history_storage_at_path(path: &Path) -> HistoryStorageInspection {
+    let raw = match fs::read_to_string(path) {
+        Ok(raw) => raw,
+        Err(error) if error.kind() == ErrorKind::NotFound => {
+            return HistoryStorageInspection::not_found(path)
+        }
+        Err(error) => {
+            let corruption_type = if error.kind() == ErrorKind::PermissionDenied {
+                HistoryCorruptionType::PermissionDenied
+            } else {
+                HistoryCorruptionType::IoError
+            };
+            return HistoryStorageInspection::corrupted(
+                path,
+                corruption_type,
+                false,
+                error.to_string(),
+                raw_summary_for_path(path, None),
+                0,
+                0,
+                Vec::new(),
+            );
+        }
+    };
+
+    let value = match serde_json::from_str::<Value>(&raw) {
+        Ok(value) => value,
+        Err(error) => {
+            return HistoryStorageInspection::corrupted(
+                path,
+                HistoryCorruptionType::JsonParseFailed,
+                true,
+                error.to_string(),
+                raw_summary_for_path(path, None),
+                0,
+                0,
+                Vec::new(),
+            )
+        }
+    };
+
+    let Some(array) = value.as_array() else {
+        return HistoryStorageInspection::corrupted(
+            path,
+            HistoryCorruptionType::SchemaIncompatible,
+            true,
+            "transaction history root must be a JSON array".to_string(),
+            raw_summary_for_path(path, Some(&value)),
+            0,
+            0,
+            Vec::new(),
+        );
+    };
+
+    let mut invalid_indices = Vec::new();
+    for (index, item) in array.iter().enumerate() {
+        if serde_json::from_value::<HistoryRecord>(item.clone()).is_err() {
+            invalid_indices.push(index);
+        }
+    }
+
+    let raw_summary = raw_summary_for_path(path, Some(&value));
+    if !invalid_indices.is_empty() {
+        let preview = invalid_indices.iter().take(8).copied().collect::<Vec<_>>();
+        return HistoryStorageInspection::corrupted(
+            path,
+            HistoryCorruptionType::PartialRecordsInvalid,
+            true,
+            format!(
+                "{} transaction history record(s) failed schema validation; first invalid indices: {:?}",
+                invalid_indices.len(),
+                preview
+            ),
+            raw_summary,
+            array.len().saturating_sub(invalid_indices.len()),
+            invalid_indices.len(),
+            preview,
+        );
+    }
+
+    HistoryStorageInspection::healthy(path, array.len(), raw_summary)
+}
+
+pub fn inspect_history_storage() -> Result<HistoryStorageInspection, String> {
+    let path = history_path()?;
+    let inspection = inspect_history_storage_at_path(&path);
+    if inspection.status == HistoryStorageStatus::Corrupted {
+        record_transaction_diagnostic(
+            DiagnosticLevel::Error,
+            "historyStorageCorruptionDetected",
+            None,
+            None,
+            None,
+            inspection.error_summary.clone(),
+            json!({
+                "corruptionType": inspection.corruption_type.as_ref().map(HistoryCorruptionType::as_str),
+                "recordCount": inspection.record_count,
+                "invalidRecordCount": inspection.invalid_record_count,
+                "fileSizeBytes": inspection.raw_summary.file_size_bytes,
+                "topLevel": inspection.raw_summary.top_level,
+                "arrayLen": inspection.raw_summary.array_len,
+            }),
+        );
+    }
+    Ok(inspection)
+}
+
+fn unique_quarantine_path(path: &Path) -> Result<PathBuf, String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("{} has no parent directory", path.display()))?;
+    let file_name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| format!("{} has an invalid file name", path.display()))?;
+    let timestamp = now_unix_seconds()?;
+    for _ in 0..16 {
+        let suffix = format!("{timestamp}-{:016x}", rand::thread_rng().gen::<u64>());
+        let candidate = parent.join(format!("{file_name}.quarantine-{suffix}"));
+        if !candidate.exists() {
+            return Ok(candidate);
+        }
+    }
+    Err("unable to allocate unique transaction history quarantine path".to_string())
+}
+
+fn unique_empty_history_replacement_path(path: &Path) -> Result<PathBuf, String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("{} has no parent directory", path.display()))?;
+    let file_name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| format!("{} has an invalid file name", path.display()))?;
+    let timestamp = now_unix_seconds()?;
+    for _ in 0..16 {
+        let suffix = format!("{timestamp}-{:016x}", rand::thread_rng().gen::<u64>());
+        let candidate = parent.join(format!(".{file_name}.empty-{suffix}"));
+        if !candidate.exists() {
+            return Ok(candidate);
+        }
+    }
+    Err("unable to allocate unique transaction history replacement path".to_string())
+}
+
+pub fn quarantine_history_storage() -> Result<HistoryStorageQuarantineResult, String> {
+    let _guard = history_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let path = history_path()?;
+    let previous = inspect_history_storage_at_path(&path);
+    if previous.status != HistoryStorageStatus::Corrupted {
+        return Err(match previous.status {
+            HistoryStorageStatus::NotFound => {
+                "transaction history file is not present; nothing to quarantine".to_string()
+            }
+            HistoryStorageStatus::Healthy => {
+                "transaction history is readable; quarantine is only available for damaged history"
+                    .to_string()
+            }
+            HistoryStorageStatus::Corrupted => unreachable!(),
+        });
+    }
+
+    let empty_history_path = unique_empty_history_replacement_path(&path)?;
+    write_new_file_atomic(&empty_history_path, "[]").map_err(|error| {
+        record_transaction_diagnostic(
+            DiagnosticLevel::Error,
+            "historyStorageQuarantineFailed",
+            None,
+            None,
+            None,
+            Some(error.clone()),
+            json!({
+                "corruptionType": previous.corruption_type.as_ref().map(HistoryCorruptionType::as_str),
+                "action": "prepareEmptyHistory",
+            }),
+        );
+        format!(
+            "failed to prepare empty transaction history; original damaged history remains in place: {error}"
+        )
+    })?;
+
+    let quarantined_path = unique_quarantine_path(&path)?;
+    fs::rename(&path, &quarantined_path).map_err(|error| {
+        let _ = fs::remove_file(&empty_history_path);
+        record_transaction_diagnostic(
+            DiagnosticLevel::Error,
+            "historyStorageQuarantineFailed",
+            None,
+            None,
+            None,
+            Some(error.to_string()),
+            json!({
+                "corruptionType": previous.corruption_type.as_ref().map(HistoryCorruptionType::as_str),
+                "action": "renameOriginalToQuarantine",
+            }),
+        );
+        error.to_string()
+    })?;
+
+    if let Err(error) = fs::rename(&empty_history_path, &path) {
+        let rollback_result = fs::rename(&quarantined_path, &path);
+        let rollback_succeeded = rollback_result.is_ok();
+        let rollback_error = rollback_result.err().map(|error| error.to_string());
+        record_transaction_diagnostic(
+            DiagnosticLevel::Error,
+            "historyStorageQuarantineFailed",
+            None,
+            None,
+            None,
+            Some(error.to_string()),
+            json!({
+                "corruptionType": previous.corruption_type.as_ref().map(HistoryCorruptionType::as_str),
+                "action": "installEmptyHistory",
+                "rollbackSucceeded": rollback_succeeded,
+                "rollbackError": rollback_error,
+                "quarantineFileName": quarantined_path.file_name().and_then(|value| value.to_str()),
+            }),
+        );
+        let _ = fs::remove_file(&empty_history_path);
+        return Err(if rollback_succeeded {
+            format!(
+                "failed to install empty transaction history; original damaged history was restored: {error}"
+            )
+        } else {
+            format!(
+                "failed to install empty transaction history and could not restore original damaged history; quarantine path retained: {}; error={error}",
+                quarantined_path.display()
+            )
+        });
+    }
+
+    let current = inspect_history_storage_at_path(&path);
+    if current.status != HistoryStorageStatus::Healthy {
+        record_transaction_diagnostic(
+            DiagnosticLevel::Error,
+            "historyStorageQuarantineFailed",
+            None,
+            None,
+            None,
+            current.error_summary.clone(),
+            json!({
+                "corruptionType": previous.corruption_type.as_ref().map(HistoryCorruptionType::as_str),
+                "action": "verifyEmptyHistory",
+                "quarantineFileName": quarantined_path.file_name().and_then(|value| value.to_str()),
+            }),
+        );
+        return Err("failed to verify empty transaction history after quarantine".to_string());
+    }
+
+    record_transaction_diagnostic(
+        DiagnosticLevel::Warn,
+        "historyStorageQuarantined",
+        None,
+        None,
+        None,
+        previous.error_summary.clone(),
+        json!({
+            "corruptionType": previous.corruption_type.as_ref().map(HistoryCorruptionType::as_str),
+            "action": "quarantineAndStartEmptyHistory",
+            "quarantineFileName": quarantined_path.file_name().and_then(|value| value.to_str()),
+            "previousRecordCount": previous.record_count,
+            "previousInvalidRecordCount": previous.invalid_record_count,
+        }),
+    );
+
+    Ok(HistoryStorageQuarantineResult {
+        quarantined_path: quarantined_path.display().to_string(),
+        previous,
+        current,
+    })
+}
+
 pub fn load_history_records() -> Result<Vec<HistoryRecord>, String> {
     let path = history_path()?;
-    match fs::read_to_string(&path) {
-        Ok(raw) => serde_json::from_str(&raw).map_err(|e| e.to_string()),
-        Err(error) if error.kind() == ErrorKind::NotFound => Ok(Vec::new()),
-        Err(error) => Err(error.to_string()),
+    let inspection = inspect_history_storage_at_path(&path);
+    match inspection.status {
+        HistoryStorageStatus::NotFound => Ok(Vec::new()),
+        HistoryStorageStatus::Healthy => {
+            let raw = fs::read_to_string(&path).map_err(|e| e.to_string())?;
+            serde_json::from_str(&raw).map_err(|e| e.to_string())
+        }
+        HistoryStorageStatus::Corrupted => Err(inspection.failure_message()),
     }
 }
 

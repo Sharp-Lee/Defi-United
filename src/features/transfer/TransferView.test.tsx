@@ -40,7 +40,13 @@ describe("TransferView", () => {
     provider.estimateGas.mockResolvedValue(21_000n);
   });
 
-  function renderTransfer(onSubmitted = vi.fn()) {
+  function renderTransfer(
+    onSubmitted = vi.fn(),
+    options: {
+      historyStorageIssue?: string | null;
+      onSubmitFailed?: (error: unknown) => Promise<void> | void;
+    } = {},
+  ) {
     renderScreen(
       <TransferView
         accounts={[
@@ -55,6 +61,8 @@ describe("TransferView", () => {
         chainId={1n}
         chainName="Ethereum"
         draft={null}
+        historyStorageIssue={options.historyStorageIssue}
+        onSubmitFailed={options.onSubmitFailed}
         onSubmitted={onSubmitted}
         rpcUrl="http://127.0.0.1:8545"
       />,
@@ -121,5 +129,30 @@ describe("TransferView", () => {
     expect(screen.getByText("Destination address is invalid.")).toBeInTheDocument();
     expect(screen.queryByText("Broadcast error")).not.toBeInTheDocument();
     expect(screen.queryByText(/Review the RPC error, account balance, nonce, and fee inputs/)).not.toBeInTheDocument();
+  });
+
+  it("disables draft building while local history is unreadable", () => {
+    renderTransfer(vi.fn(), {
+      historyStorageIssue:
+        "Local transaction history is unreadable. Submission is disabled until history is retried or the damaged file is quarantined.",
+    });
+
+    expect(screen.getByRole("button", { name: "Build Draft" })).toBeDisabled();
+    expect(screen.getByText(/Local transaction history is unreadable/)).toBeInTheDocument();
+  });
+
+  it("notifies the app shell when submit discovers unreadable history", async () => {
+    const error = new Error(
+      "transaction history storage is unreadable: type=jsonParseFailed; records=0; invalidRecords=0; error=expected value",
+    );
+    vi.mocked(submitNativeTransfer).mockRejectedValue(error);
+    const onSubmitFailed = vi.fn();
+    renderTransfer(vi.fn(), { onSubmitFailed });
+
+    await buildValidDraft();
+    fireEvent.click(screen.getByRole("button", { name: "Submit" }));
+
+    await waitFor(() => expect(onSubmitFailed).toHaveBeenCalledWith(error));
+    expect(screen.getByText(/transaction history storage is unreadable/)).toBeInTheDocument();
   });
 });

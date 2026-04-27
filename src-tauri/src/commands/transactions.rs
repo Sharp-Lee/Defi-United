@@ -4,8 +4,9 @@ use std::sync::{Mutex, OnceLock};
 use crate::diagnostics::{append_diagnostic_event, DiagnosticEventInput, DiagnosticLevel};
 use crate::models::{NativeTransferIntent, SubmissionKind, SubmissionRecord};
 use crate::transactions::{
-    load_history_records, persist_pending_history, reconcile_pending_history,
-    submit_native_transfer, submit_native_transfer_with_history_kind,
+    inspect_history_storage, load_history_records, persist_pending_history,
+    quarantine_history_storage, reconcile_pending_history, submit_native_transfer,
+    submit_native_transfer_with_history_kind,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -324,6 +325,18 @@ pub fn build_pending_history(
 pub fn load_transaction_history() -> Result<String, String> {
     let records = load_history_records()?;
     serde_json::to_string(&records).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn inspect_transaction_history_storage() -> Result<String, String> {
+    let inspection = inspect_history_storage()?;
+    serde_json::to_string(&inspection).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn quarantine_transaction_history() -> Result<String, String> {
+    let result = quarantine_history_storage()?;
+    serde_json::to_string(&result).map_err(|e| e.to_string())
 }
 
 #[tauri::command]

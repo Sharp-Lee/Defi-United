@@ -236,6 +236,23 @@ function renderHistory(rawRecords: unknown[], options = {}) {
   );
 }
 
+const damagedStorage = {
+  status: "corrupted" as const,
+  path: "/tmp/tx-history.json",
+  corruptionType: "jsonParseFailed" as const,
+  readable: true,
+  recordCount: 0,
+  invalidRecordCount: 0,
+  invalidRecordIndices: [],
+  errorSummary: "expected value at line 1 column 1",
+  rawSummary: {
+    fileSizeBytes: 12,
+    modifiedAt: "1700000000",
+    topLevel: null,
+    arrayLen: null,
+  },
+};
+
 describe("HistoryView", () => {
   it("shows scanner columns and all transaction outcome states", () => {
     renderHistory([
@@ -1140,5 +1157,46 @@ describe("HistoryView", () => {
     expect(guidance.getByText("Global refresh/reconcile")).toBeInTheDocument();
     expect(guidance.getByText(/currently selected chain\/RPC/)).toBeInTheDocument();
     expect(guidance.getByText(/not a single transaction/)).toBeInTheDocument();
+  });
+
+  it("shows recovery actions and disables pending mutations when storage is corrupted", () => {
+    const onRefresh = vi.fn();
+    const onQuarantineHistory = vi.fn();
+    renderHistory([record({ txHash: "0xpending", state: "Pending" })], {
+      onRefresh,
+      onQuarantineHistory,
+      onReplace: vi.fn(),
+      onCancelPending: vi.fn(),
+      storage: damagedStorage,
+    });
+
+    expect(screen.getByText("History storage recovery")).toBeInTheDocument();
+    expect(screen.getByText("JSON parse failed")).toBeInTheDocument();
+    expect(screen.getByText("Submissions disabled")).toBeInTheDocument();
+    expect(screen.getByText(/submit, replace, and cancel actions stay blocked/)).toBeInTheDocument();
+    expect(screen.getByText("/tmp/tx-history.json")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Retry read" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Quarantine and start empty history" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Replace 0xpending" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Cancel 0xpending" })).toBeDisabled();
+    expect(screen.getByText(/Submit\/replace\/cancel: Disabled while local transaction history is unreadable/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Quarantine and start empty history" }));
+    expect(onQuarantineHistory).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not show damaged-history recovery for first run empty history", () => {
+    renderHistory([], {
+      storage: {
+        ...damagedStorage,
+        status: "notFound",
+        corruptionType: undefined,
+        errorSummary: undefined,
+      },
+    });
+
+    expect(screen.getByText("No local transaction history.")).toBeInTheDocument();
+    expect(screen.queryByText("History storage recovery")).not.toBeInTheDocument();
+    expect(screen.queryByText("Submissions disabled")).not.toBeInTheDocument();
   });
 });

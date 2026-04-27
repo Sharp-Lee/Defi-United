@@ -7,7 +7,13 @@ import { UnlockView } from "../features/unlock/UnlockView";
 import { BUILT_IN_CHAINS } from "../core/chains/registry";
 import { getRawHistoryErrorDisplay } from "../core/history/errors";
 import type { ChainRecord } from "../core/chains/registry";
-import type { AccountRecord, HistoryRecord, PendingMutationRequest } from "../lib/tauri";
+import type {
+  AccountRecord,
+  HistoryRecord,
+  HistoryStorageInspection,
+  HistoryStorageQuarantineResult,
+  PendingMutationRequest,
+} from "../lib/tauri";
 import type { AccountChainState } from "../lib/rpc";
 
 export type WorkspaceTab = "accounts" | "transfer" | "history" | "diagnostics" | "settings";
@@ -29,14 +35,18 @@ export interface AppShellProps {
   busy?: boolean;
   appError?: string | null;
   historyError?: string | null;
+  historyStorage?: HistoryStorageInspection | null;
+  lastHistoryQuarantine?: HistoryStorageQuarantineResult | null;
   onAddAccount?: () => Promise<void> | void;
   onRefreshAccounts?: () => Promise<void> | void;
   onRefreshHistory?: () => Promise<void> | void;
+  onQuarantineHistory?: () => Promise<void> | void;
   onReplacePending?: (request: PendingMutationRequest) => Promise<void> | void;
   onCancelPending?: (request: PendingMutationRequest) => Promise<void> | void;
   onChainChange?: (chainId: bigint) => void;
   onRpcUrlChange?: (rpcUrl: string) => void;
   onValidateRpc?: () => Promise<void> | void;
+  onTransferSubmitFailed?: (error: unknown) => Promise<void> | void;
   onTransferSubmitted?: (record: HistoryRecord) => void;
 }
 
@@ -63,14 +73,18 @@ export function AppShell({
   busy = false,
   appError = null,
   historyError = null,
+  historyStorage = null,
+  lastHistoryQuarantine = null,
   onAddAccount = async () => {},
   onRefreshAccounts = async () => {},
   onRefreshHistory = async () => {},
+  onQuarantineHistory = async () => {},
   onReplacePending = async () => {},
   onCancelPending = async () => {},
   onChainChange = () => {},
   onRpcUrlChange = () => {},
   onValidateRpc = async () => {},
+  onTransferSubmitFailed = async () => {},
   onTransferSubmitted = () => {},
 }: AppShellProps) {
   const selectedChain = chains.find((chain) => chain.chainId === selectedChainId) ?? chains[0];
@@ -138,6 +152,12 @@ export function AppShell({
                 chainName={selectedChain?.name ?? "Unknown chain"}
                 draft={null}
                 history={history}
+                historyStorageIssue={
+                  historyStorage?.status === "corrupted"
+                    ? "Local transaction history is unreadable. Submission is disabled until history is retried or the damaged file is quarantined."
+                    : null
+                }
+                onSubmitFailed={onTransferSubmitFailed}
                 onSubmitted={onTransferSubmitted}
                 rpcUrl={rpcUrl}
               />
@@ -147,10 +167,13 @@ export function AppShell({
                 disabled={busy}
                 error={historyError}
                 items={history}
+                lastQuarantine={lastHistoryQuarantine}
                 loading={busy}
                 onCancelPending={onCancelPending}
+                onQuarantineHistory={onQuarantineHistory}
                 onRefresh={onRefreshHistory}
                 onReplace={onReplacePending}
+                storage={historyStorage}
               />
             )}
             {activeTab === "diagnostics" && <DiagnosticsView />}

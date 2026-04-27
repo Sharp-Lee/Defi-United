@@ -7,11 +7,13 @@ import type { AccountChainState } from "./lib/rpc";
 import {
   createAndScanAccount,
   createVault,
+  inspectTransactionHistoryStorage,
   loadAppConfig,
   loadAccounts,
   loadTransactionHistory,
   lockVault,
   cancelPendingTransfer,
+  quarantineTransactionHistory,
   rememberValidatedRpc,
   reconcilePendingHistory,
   replacePendingTransfer,
@@ -23,6 +25,8 @@ import type {
   AccountRecord,
   AppConfig,
   HistoryRecord,
+  HistoryStorageInspection,
+  HistoryStorageQuarantineResult,
   PendingMutationRequest,
   StoredAccountRecord,
 } from "./lib/tauri";
@@ -113,6 +117,9 @@ export function App() {
   const [busy, setBusy] = useState(false);
   const [appError, setAppError] = useState<string | null>(null);
   const [historyError, setHistoryError] = useState<string | null>(null);
+  const [historyStorage, setHistoryStorage] = useState<HistoryStorageInspection | null>(null);
+  const [lastHistoryQuarantine, setLastHistoryQuarantine] =
+    useState<HistoryStorageQuarantineResult | null>(null);
   const selectedChainIdRef = useRef<bigint>(1n);
   const diskAccountsRefreshRequestRef = useRef(0);
   const allowedDiskAccountsRefreshRequestRef = useRef(0);
@@ -199,28 +206,59 @@ export function App() {
   const refreshHistory = useCallback(async () => {
     setAppError(null);
     setHistoryError(null);
+    setLastHistoryQuarantine(null);
     try {
       const records = rpcUrl.trim()
         ? await reconcilePendingHistory(rpcUrl.trim(), Number(selectedChainId))
         : await loadTransactionHistory();
       setHistory([...records].reverse());
+      setHistoryStorage(await inspectTransactionHistoryStorage());
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       setAppError(message);
       setHistoryError(message);
+      try {
+        setHistoryStorage(await inspectTransactionHistoryStorage());
+      } catch {
+        // Keep the original history error visible.
+      }
     }
   }, [rpcUrl, selectedChainId]);
 
   const refreshHistoryFromDisk = useCallback(async () => {
     const records = await loadTransactionHistory();
     setHistory([...records].reverse());
+    setHistoryStorage(await inspectTransactionHistoryStorage());
+  }, []);
+
+  const inspectHistoryStorageGate = useCallback(async (fallbackMessage?: string | null) => {
+    try {
+      const storage = await inspectTransactionHistoryStorage();
+      setHistoryStorage(storage);
+      if (storage.status === "corrupted") {
+        setLastHistoryQuarantine(null);
+        setHistoryError(
+          fallbackMessage ??
+            storage.errorSummary ??
+            "transaction history storage is unreadable",
+        );
+      }
+      return storage;
+    } catch {
+      return null;
+    }
   }, []);
 
   const refreshWorkspace = useCallback(async (chainId = selectedChainIdRef.current) => {
     const accountsRequestId = ++diskAccountsRefreshRequestRef.current;
     const remoteRequestId = remoteAccountsRefreshRequestRef.current;
     const remoteWasInFlight = remoteAccountsRefreshInFlightRef.current > 0;
-    const [stored, records] = await Promise.all([loadAccounts(), loadTransactionHistory()]);
+    const [stored, historyResult] = await Promise.all([
+      loadAccounts(),
+      loadTransactionHistory()
+        .then((records) => ({ records, error: null as string | null }))
+        .catch((err) => ({ records: [] as HistoryRecord[], error: errorMessage(err) })),
+    ]);
     if (
       accountsRequestId === diskAccountsRefreshRequestRef.current &&
       remoteRequestId === remoteAccountsRefreshRequestRef.current &&
@@ -230,7 +268,16 @@ export function App() {
     ) {
       setAccounts(stored.map((account) => accountFromStored(account, chainId)));
     }
-    setHistory([...records].reverse());
+    setHistory([...historyResult.records].reverse());
+    setHistoryError(historyResult.error);
+    if (historyResult.error) {
+      setAppError(historyResult.error);
+    }
+    try {
+      setHistoryStorage(await inspectTransactionHistoryStorage());
+    } catch {
+      // Workspace restore still shows the load error; storage inspect can be retried from History.
+    }
   }, []);
 
   async function restoreWorkspaceAfterUnlock() {
@@ -464,6 +511,9 @@ export function App() {
 
   function handleTransferSubmitted(record: HistoryRecord) {
     setHistory((current) => [record, ...current]);
+    void inspectTransactionHistoryStorage()
+      .then(setHistoryStorage)
+      .catch(() => {});
     void refreshAccountsFromDisk();
   }
 
@@ -475,12 +525,16 @@ export function App() {
       await refreshHistoryFromDisk();
       void refreshAccountsFromDisk();
     } catch (err) {
+      const message = errorMessage(err);
       try {
         await refreshHistoryFromDisk();
-      } catch {
-        // Keep the original mutation error visible.
+      } catch (refreshErr) {
+        const refreshMessage = errorMessage(refreshErr);
+        setHistoryError(refreshMessage);
+        await inspectHistoryStorageGate(refreshMessage);
       }
-      setAppError(err instanceof Error ? err.message : String(err));
+      await inspectHistoryStorageGate(message);
+      setAppError(message);
     } finally {
       setBusy(false);
     }
@@ -494,12 +548,44 @@ export function App() {
       await refreshHistoryFromDisk();
       void refreshAccountsFromDisk();
     } catch (err) {
+      const message = errorMessage(err);
       try {
         await refreshHistoryFromDisk();
-      } catch {
-        // Keep the original mutation error visible.
+      } catch (refreshErr) {
+        const refreshMessage = errorMessage(refreshErr);
+        setHistoryError(refreshMessage);
+        await inspectHistoryStorageGate(refreshMessage);
       }
-      setAppError(err instanceof Error ? err.message : String(err));
+      await inspectHistoryStorageGate(message);
+      setAppError(message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleTransferSubmitFailed(err: unknown) {
+    await inspectHistoryStorageGate(errorMessage(err));
+  }
+
+  async function handleQuarantineHistory() {
+    setAppError(null);
+    setHistoryError(null);
+    setBusy(true);
+    try {
+      const result = await quarantineTransactionHistory();
+      setLastHistoryQuarantine(result);
+      setHistoryStorage(result.current);
+      setHistory([]);
+      void refreshAccountsFromDisk();
+    } catch (err) {
+      const message = errorMessage(err);
+      setAppError(message);
+      setHistoryError(message);
+      try {
+        setHistoryStorage(await inspectTransactionHistoryStorage());
+      } catch {
+        // Keep the quarantine error visible.
+      }
     } finally {
       setBusy(false);
     }
@@ -546,12 +632,15 @@ export function App() {
       chains={availableChains}
       history={history}
       historyError={historyError}
+      historyStorage={historyStorage}
+      lastHistoryQuarantine={lastHistoryQuarantine}
       onAddAccount={handleAddAccount}
       onChainChange={handleChainChange}
       onCreateVault={handleCreateVault}
       onLock={handleLock}
       onRefreshAccounts={handleRefreshAccounts}
       onRefreshHistory={refreshHistory}
+      onQuarantineHistory={handleQuarantineHistory}
       onReplacePending={handleReplacePending}
       onRpcUrlChange={(value) => {
         setRpcUrl(value);
@@ -559,6 +648,7 @@ export function App() {
       }}
       onCancelPending={handleCancelPending}
       onTabChange={setActiveTab}
+      onTransferSubmitFailed={handleTransferSubmitFailed}
       onTransferSubmitted={handleTransferSubmitted}
       onUnlock={handleUnlock}
       onValidateRpc={handleValidateRpc}

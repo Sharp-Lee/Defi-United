@@ -85,6 +85,39 @@ export interface DiagnosticExportResult {
   scope: DiagnosticEventQuery & { limit: number };
 }
 
+export type HistoryStorageStatus = "notFound" | "healthy" | "corrupted";
+export type HistoryCorruptionType =
+  | "permissionDenied"
+  | "ioError"
+  | "jsonParseFailed"
+  | "schemaIncompatible"
+  | "partialRecordsInvalid";
+
+export interface HistoryStorageRawSummary {
+  fileSizeBytes: number | null;
+  modifiedAt: string | null;
+  topLevel: string | null;
+  arrayLen: number | null;
+}
+
+export interface HistoryStorageInspection {
+  status: HistoryStorageStatus;
+  path: string;
+  corruptionType?: HistoryCorruptionType;
+  readable: boolean;
+  recordCount: number;
+  invalidRecordCount: number;
+  invalidRecordIndices: number[];
+  errorSummary?: string;
+  rawSummary: HistoryStorageRawSummary;
+}
+
+export interface HistoryStorageQuarantineResult {
+  quarantinedPath: string;
+  previous: HistoryStorageInspection;
+  current: HistoryStorageInspection;
+}
+
 export function createVault(password: string) {
   return invoke<void>("create_vault", { password });
 }
@@ -166,6 +199,16 @@ function parseHistory(raw: string): NormalizedHistoryRecord[] {
 export async function loadTransactionHistory() {
   const raw = await invoke<string>("load_transaction_history");
   return parseHistory(raw);
+}
+
+export async function inspectTransactionHistoryStorage() {
+  const raw = await invoke<string>("inspect_transaction_history_storage");
+  return JSON.parse(raw) as HistoryStorageInspection;
+}
+
+export async function quarantineTransactionHistory() {
+  const raw = await invoke<string>("quarantine_transaction_history");
+  return JSON.parse(raw) as HistoryStorageQuarantineResult;
 }
 
 export async function reconcilePendingHistory(rpcUrl: string, chainId: number) {
