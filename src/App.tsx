@@ -7,7 +7,6 @@ import type { AccountChainState } from "./lib/rpc";
 import {
   createAndScanAccount,
   createVault,
-  generateMnemonicPhrase,
   loadAppConfig,
   loadAccounts,
   loadTransactionHistory,
@@ -251,9 +250,9 @@ export function App() {
     await restoreWorkspaceAfterUnlock();
   }
 
-  async function handleCreateVault(mnemonic: string, password: string) {
+  async function handleCreateVault(password: string) {
     setAppError(null);
-    await createVault(mnemonic, password);
+    await createVault(password);
     await unlockVault(password);
     setSessionStatus("ready");
     await restoreWorkspaceAfterUnlock();
@@ -550,7 +549,6 @@ export function App() {
       onAddAccount={handleAddAccount}
       onChainChange={handleChainChange}
       onCreateVault={handleCreateVault}
-      onGenerateMnemonic={generateMnemonicPhrase}
       onLock={handleLock}
       onRefreshAccounts={handleRefreshAccounts}
       onRefreshHistory={refreshHistory}

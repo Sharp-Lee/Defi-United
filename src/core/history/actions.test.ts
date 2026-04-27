@@ -164,7 +164,25 @@ describe("history action gating", () => {
     expect(missingNonce.get("reconcile")?.enabled).toBe(true);
     expect(missingNonce.get("replace")?.enabled).toBe(false);
     expect(missingNonce.get("cancel")?.enabled).toBe(false);
-    expect(missingNonce.get("replace")?.reason).toContain("Missing nonce");
+    expect(missingNonce.get("replace")?.reason).toContain("Missing frozen submission nonce");
+  });
+
+  it("does not enable replace or cancel from stale intent fields when frozen submission fields are missing", () => {
+    const raw = rawRecord({ txHash: "0xfrozenmissing" });
+    raw.submission.account_index = null;
+    raw.submission.from = null;
+    raw.submission.nonce = null;
+
+    const gates = gateMap([raw], "0xfrozenmissing");
+
+    expect(gates.get("replace")).toMatchObject({
+      enabled: false,
+      reason: expect.stringContaining("frozen submission"),
+    });
+    expect(gates.get("cancel")).toMatchObject({
+      enabled: false,
+      reason: expect.stringContaining("frozen submission"),
+    });
   });
 
   it("disables actions for chainId mismatch and local history write failures", () => {

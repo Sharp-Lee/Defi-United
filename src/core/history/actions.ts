@@ -61,8 +61,26 @@ function hasIssue(issues: HistoryIdentityIssue[], field: HistoryIdentityIssue["f
   return issues.some((issue) => issue.field === field && (kind === undefined || issue.kind === kind));
 }
 
+function mismatchesFrozenSubmission(
+  entry: HistoryReadModel,
+  field: "chainId" | "accountIndex" | "from" | "nonce",
+) {
+  const { submission, nonce_thread: nonceThread } = entry.record;
+  if (nonceThread.source === "legacy") return false;
+  switch (field) {
+    case "chainId":
+      return nonceThread.chain_id !== null && submission.chain_id !== null && nonceThread.chain_id !== submission.chain_id;
+    case "accountIndex":
+      return nonceThread.account_index !== null && submission.account_index !== null && nonceThread.account_index !== submission.account_index;
+    case "from":
+      return nonceThread.from !== null && submission.from !== null && lower(nonceThread.from) !== lower(submission.from);
+    case "nonce":
+      return nonceThread.nonce !== null && submission.nonce !== null && nonceThread.nonce !== submission.nonce;
+  }
+}
+
 function firstMissingMutationField(entry: HistoryReadModel) {
-  const { intent } = entry.record;
+  const { intent, submission } = entry.record;
   if (
     entry.submissionKind === "legacy" ||
     entry.record.submission.source === "legacy" ||
@@ -78,24 +96,24 @@ function firstMissingMutationField(entry: HistoryReadModel) {
     return "Disabled because the RPC chainId does not match this record.";
   }
   if (!hasKnownTxHash(entry.txHash)) return "Missing transaction hash.";
-  if (hasIssue(entry.identityIssues, "chainId", "inconsistent")) {
-    return "Disabled because record identity has conflicting chainId values.";
+  if (mismatchesFrozenSubmission(entry, "chainId")) {
+    return "Disabled because frozen submission and nonce thread have conflicting chainId values.";
   }
-  if (hasIssue(entry.identityIssues, "accountIndex", "inconsistent") || hasIssue(entry.identityIssues, "from", "inconsistent")) {
-    return "Disabled because record identity has conflicting account values.";
+  if (mismatchesFrozenSubmission(entry, "accountIndex") || mismatchesFrozenSubmission(entry, "from")) {
+    return "Disabled because frozen submission and nonce thread have conflicting account values.";
   }
-  if (hasIssue(entry.identityIssues, "nonce", "inconsistent")) {
-    return "Disabled because record identity has conflicting nonce values.";
+  if (mismatchesFrozenSubmission(entry, "nonce")) {
+    return "Disabled because frozen submission and nonce thread have conflicting nonce values.";
   }
-  if (!hasNumber(intent.chain_id)) return "Missing chainId.";
-  if (!hasNumber(intent.account_index)) return "Missing account.";
-  if (!hasText(intent.from)) return "Missing from address.";
-  if (!hasNumber(intent.nonce)) return "Missing nonce.";
   if (!hasText(intent.rpc_url)) return "Missing RPC endpoint.";
-  if (!hasText(intent.gas_limit)) return "Missing gas limit.";
-  if (!hasText(intent.max_fee_per_gas) || !hasText(intent.max_priority_fee_per_gas)) {
-    return "Missing fee fields.";
-  }
+  if (!hasNumber(submission.chain_id)) return "Missing frozen submission chainId.";
+  if (!hasNumber(submission.account_index)) return "Missing frozen submission account.";
+  if (!hasText(submission.from)) return "Missing frozen submission from address.";
+  if (!hasNumber(submission.nonce)) return "Missing frozen submission nonce.";
+  if (!hasText(submission.gas_limit)) return "Missing frozen submission gas limit.";
+  if (!hasText(submission.max_fee_per_gas) || !hasText(submission.max_priority_fee_per_gas)) return "Missing frozen submission fee fields.";
+  if (!hasText(submission.to)) return "Missing frozen submission destination.";
+  if (!hasText(submission.value_wei)) return "Missing frozen submission value.";
   return null;
 }
 

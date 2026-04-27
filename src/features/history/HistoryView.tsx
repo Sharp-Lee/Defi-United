@@ -211,19 +211,29 @@ function bumpWei(value: string) {
   return ((wei * 125n) / 100n + 1n).toString();
 }
 
+function requireFrozenField<T>(value: T | null | undefined, label: string): T {
+  if (value === null || value === undefined || value === "") {
+    throw new Error(`Missing frozen submission field: ${label}`);
+  }
+  return value;
+}
+
 function pendingRequestFromRecord(record: HistoryRecord): PendingMutationRequest {
+  const { submission } = record;
   return {
-    txHash: record.submission.tx_hash,
+    txHash: submission.tx_hash,
     rpcUrl: record.intent.rpc_url,
-    accountIndex: record.intent.account_index,
-    chainId: record.intent.chain_id,
-    from: record.intent.from,
-    nonce: record.intent.nonce,
-    gasLimit: record.intent.gas_limit,
-    maxFeePerGas: bumpWei(record.intent.max_fee_per_gas),
-    maxPriorityFeePerGas: bumpWei(record.intent.max_priority_fee_per_gas),
-    to: record.intent.to,
-    valueWei: record.intent.value_wei,
+    accountIndex: requireFrozenField(submission.account_index, "account_index"),
+    chainId: requireFrozenField(submission.chain_id, "chain_id"),
+    from: requireFrozenField(submission.from, "from"),
+    nonce: requireFrozenField(submission.nonce, "nonce"),
+    gasLimit: requireFrozenField(submission.gas_limit, "gas_limit"),
+    maxFeePerGas: bumpWei(requireFrozenField(submission.max_fee_per_gas, "max_fee_per_gas")),
+    maxPriorityFeePerGas: bumpWei(
+      requireFrozenField(submission.max_priority_fee_per_gas, "max_priority_fee_per_gas"),
+    ),
+    to: requireFrozenField(submission.to, "to"),
+    valueWei: requireFrozenField(submission.value_wei, "value_wei"),
   };
 }
 

@@ -52,12 +52,8 @@ export interface AppConfig {
   };
 }
 
-export function generateMnemonicPhrase() {
-  return invoke<string>("generate_mnemonic");
-}
-
-export function createVault(mnemonic: string, password: string) {
-  return invoke<void>("create_vault", { mnemonic, password });
+export function createVault(password: string) {
+  return invoke<void>("create_vault", { password });
 }
 
 export function unlockVault(password: string) {

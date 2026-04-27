@@ -1,51 +1,19 @@
-import { useEffect, useState } from "react";
-import { Mnemonic } from "ethers";
+import { useState } from "react";
 
 interface UnlockViewProps {
   onUnlock: (password: string) => Promise<void>;
-  onCreateVault: (mnemonic: string, password: string) => Promise<void>;
-  onGenerateMnemonic?: () => Promise<string>;
+  onCreateVault: (password: string) => Promise<void>;
 }
-
-function isValidMnemonic(value: string) {
-  try {
-    Mnemonic.fromPhrase(value.trim());
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-const fallbackMnemonic = "test test test test test test test test test test test junk";
 
 export function UnlockView({
   onUnlock,
   onCreateVault,
-  onGenerateMnemonic = async () => fallbackMnemonic,
 }: UnlockViewProps) {
   const [mode, setMode] = useState<"unlock" | "create">("unlock");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
-  const [mnemonic, setMnemonic] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  async function regenerateMnemonic() {
-    setError(null);
-    setBusy(true);
-    try {
-      setMnemonic(await onGenerateMnemonic());
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  useEffect(() => {
-    if (mode === "create" && mnemonic.length === 0) void regenerateMnemonic();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mode, mnemonic.length]);
 
   async function submitUnlock() {
     setError(null);
@@ -61,11 +29,6 @@ export function UnlockView({
 
   async function submitCreate() {
     setError(null);
-    const phrase = mnemonic.trim();
-    if (!isValidMnemonic(phrase)) {
-      setError("Mnemonic is invalid.");
-      return;
-    }
     if (password.length < 8) {
       setError("Password must be at least 8 characters.");
       return;
@@ -76,7 +39,7 @@ export function UnlockView({
     }
     setBusy(true);
     try {
-      await onCreateVault(phrase, password);
+      await onCreateVault(password);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -107,23 +70,6 @@ export function UnlockView({
             Create
           </button>
         </div>
-
-        {mode === "create" && (
-          <label>
-            Mnemonic
-            <textarea
-              onChange={(event) => setMnemonic(event.target.value)}
-              rows={3}
-              value={mnemonic}
-            />
-          </label>
-        )}
-
-        {mode === "create" && (
-          <button className="secondary-button" onClick={() => void regenerateMnemonic()} type="button">
-            Regenerate
-          </button>
-        )}
 
         <label>
           Vault password

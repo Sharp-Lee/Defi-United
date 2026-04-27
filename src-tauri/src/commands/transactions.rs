@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::sync::{Mutex, OnceLock};
 
-use crate::models::{NativeTransferIntent, SubmissionKind};
+use crate::models::{NativeTransferIntent, SubmissionKind, SubmissionRecord};
 use crate::transactions::{
     load_history_records, persist_pending_history, reconcile_pending_history,
     submit_native_transfer, submit_native_transfer_with_history_kind,
@@ -58,10 +58,17 @@ pub fn acquire_pending_mutation_guard(key: &str) -> Result<PendingMutationGuard,
 
 pub fn pending_mutation_guard_key(record: &crate::models::HistoryRecord) -> String {
     pending_mutation_guard_key_parts(
-        record.intent.chain_id,
-        record.intent.account_index,
-        &record.intent.from,
-        record.intent.nonce,
+        record.submission.chain_id.unwrap_or(record.intent.chain_id),
+        record
+            .submission
+            .account_index
+            .unwrap_or(record.intent.account_index),
+        record
+            .submission
+            .from
+            .as_deref()
+            .unwrap_or(&record.intent.from),
+        record.submission.nonce.unwrap_or(record.intent.nonce),
     )
 }
 
@@ -109,20 +116,99 @@ fn pending_record_for_mutation(
             request.tx_hash
         ));
     }
-    if record.intent.chain_id != request.chain_id {
-        return Err("pending request chain_id does not match local history".to_string());
-    }
-    if record.intent.account_index != request.account_index {
-        return Err("pending request account_index does not match local history".to_string());
-    }
-    if !record.intent.from.eq_ignore_ascii_case(&request.from) {
-        return Err("pending request from does not match local history".to_string());
-    }
-    if record.intent.nonce != request.nonce {
-        return Err("pending request nonce does not match local history".to_string());
-    }
+    validate_pending_request_against_submission(request, &record.submission)?;
 
     Ok(record)
+}
+
+fn require_submission_u64(value: Option<u64>, field: &str) -> Result<u64, String> {
+    value.ok_or_else(|| format!("pending history submission missing frozen {field}"))
+}
+
+fn require_submission_u32(value: Option<u32>, field: &str) -> Result<u32, String> {
+    value.ok_or_else(|| format!("pending history submission missing frozen {field}"))
+}
+
+fn require_submission_string(value: &Option<String>, field: &str) -> Result<String, String> {
+    value
+        .as_ref()
+        .filter(|value| !value.trim().is_empty())
+        .cloned()
+        .ok_or_else(|| format!("pending history submission missing frozen {field}"))
+}
+
+fn frozen_submission_identity(
+    submission: &SubmissionRecord,
+) -> Result<(u64, u32, String, u64), String> {
+    Ok((
+        require_submission_u64(submission.chain_id, "chain_id")?,
+        require_submission_u32(submission.account_index, "account_index")?,
+        require_submission_string(&submission.from, "from")?,
+        require_submission_u64(submission.nonce, "nonce")?,
+    ))
+}
+
+fn validate_pending_request_against_submission(
+    request: &PendingMutationRequest,
+    submission: &SubmissionRecord,
+) -> Result<(), String> {
+    let (chain_id, account_index, from, nonce) = frozen_submission_identity(submission)?;
+    let gas_limit = require_submission_string(&submission.gas_limit, "gas_limit")?;
+    let max_fee_per_gas =
+        require_submission_string(&submission.max_fee_per_gas, "max_fee_per_gas")?;
+    let max_priority_fee_per_gas = require_submission_string(
+        &submission.max_priority_fee_per_gas,
+        "max_priority_fee_per_gas",
+    )?;
+
+    if submission.tx_hash != request.tx_hash {
+        return Err("pending request tx_hash does not match frozen submission".to_string());
+    }
+    if chain_id != request.chain_id {
+        return Err("pending request chain_id does not match frozen submission".to_string());
+    }
+    if account_index != request.account_index {
+        return Err("pending request account_index does not match frozen submission".to_string());
+    }
+    if !from.eq_ignore_ascii_case(&request.from) {
+        return Err("pending request from does not match frozen submission".to_string());
+    }
+    if nonce != request.nonce {
+        return Err("pending request nonce does not match frozen submission".to_string());
+    }
+    if gas_limit != request.gas_limit {
+        return Err("pending request gas_limit does not match frozen submission".to_string());
+    }
+
+    validate_fee_not_below_frozen(
+        &request.max_fee_per_gas,
+        &max_fee_per_gas,
+        "max_fee_per_gas",
+    )?;
+    validate_fee_not_below_frozen(
+        &request.max_priority_fee_per_gas,
+        &max_priority_fee_per_gas,
+        "max_priority_fee_per_gas",
+    )?;
+
+    Ok(())
+}
+
+fn validate_fee_not_below_frozen(
+    request_value: &str,
+    frozen_value: &str,
+    field: &str,
+) -> Result<(), String> {
+    let request_fee = ethers::types::U256::from_dec_str(request_value)
+        .map_err(|e| format!("pending request {field} is invalid: {e}"))?;
+    let frozen_fee = ethers::types::U256::from_dec_str(frozen_value)
+        .map_err(|e| format!("frozen submission {field} is invalid: {e}"))?;
+    if request_fee < frozen_fee {
+        return Err(format!(
+            "pending request {field} is below frozen submission {field}"
+        ));
+    }
+    Ok(())
 }
 
 pub fn build_replace_intent_from_pending_request(
@@ -136,18 +222,19 @@ fn build_replace_intent_from_record(
     request: PendingMutationRequest,
     record: crate::models::HistoryRecord,
 ) -> Result<NativeTransferIntent, String> {
+    let (chain_id, account_index, from, nonce) = frozen_submission_identity(&record.submission)?;
     Ok(NativeTransferIntent {
         rpc_url: request.rpc_url,
-        account_index: record.intent.account_index,
-        chain_id: record.intent.chain_id,
-        from: record.intent.from,
+        account_index,
+        chain_id,
+        from,
         to: request
             .to
             .ok_or_else(|| "replace requires a destination".to_string())?,
         value_wei: request
             .value_wei
             .ok_or_else(|| "replace requires a value".to_string())?,
-        nonce: record.intent.nonce,
+        nonce,
         gas_limit: request.gas_limit,
         max_fee_per_gas: request.max_fee_per_gas,
         max_priority_fee_per_gas: request.max_priority_fee_per_gas,
@@ -165,14 +252,15 @@ fn build_cancel_intent_from_record(
     request: PendingMutationRequest,
     record: crate::models::HistoryRecord,
 ) -> Result<NativeTransferIntent, String> {
+    let (chain_id, account_index, from, nonce) = frozen_submission_identity(&record.submission)?;
     Ok(NativeTransferIntent {
         rpc_url: request.rpc_url,
-        account_index: record.intent.account_index,
-        chain_id: record.intent.chain_id,
-        from: record.intent.from.clone(),
-        to: record.intent.from,
+        account_index,
+        chain_id,
+        from: from.clone(),
+        to: from,
         value_wei: "0".to_string(),
-        nonce: record.intent.nonce,
+        nonce,
         gas_limit: request.gas_limit,
         max_fee_per_gas: request.max_fee_per_gas,
         max_priority_fee_per_gas: request.max_priority_fee_per_gas,

@@ -4,25 +4,24 @@ use crate::models::VaultBlob;
 use crate::storage::{vault_path, write_new_file_atomic};
 use crate::vault::{decrypt_mnemonic, encrypt_mnemonic};
 
-#[tauri::command]
-pub fn generate_mnemonic() -> Result<String, String> {
-    let mnemonic =
-        bip39::Mnemonic::generate_in(bip39::Language::English, 12).map_err(|e| e.to_string())?;
-    Ok(mnemonic.to_string())
+fn generate_vault_mnemonic() -> Result<String, String> {
+    Ok(bip39::Mnemonic::generate_in(bip39::Language::English, 12)
+        .map_err(|e| e.to_string())?
+        .to_string())
 }
 
 #[tauri::command]
-pub fn create_vault(mnemonic: String, password: String) -> Result<(), String> {
-    let normalized_mnemonic = mnemonic.trim().to_string();
-    bip39::Mnemonic::parse_in_normalized(bip39::Language::English, &normalized_mnemonic)
-        .map_err(|e| e.to_string())?;
-
+pub fn create_vault(password: String) -> Result<(), String> {
     let path = vault_path()?;
     if path.exists() {
         return Err(format!("{} already exists", path.display()));
     }
 
-    let blob = encrypt_mnemonic(&normalized_mnemonic, &password)?;
+    let mnemonic = generate_vault_mnemonic()?;
+    bip39::Mnemonic::parse_in_normalized(bip39::Language::English, &mnemonic)
+        .map_err(|e| e.to_string())?;
+
+    let blob = encrypt_mnemonic(&mnemonic, &password)?;
     let raw = serde_json::to_string_pretty(&blob).map_err(|e| e.to_string())?;
     write_new_file_atomic(&path, &raw)
 }

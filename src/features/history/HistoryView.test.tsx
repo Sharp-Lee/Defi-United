@@ -26,6 +26,8 @@ function record({
   replacedByTxHash = null,
   intentValueWei = "100",
   submissionValueWei = "100",
+  maxFeePerGas = "40000000000",
+  maxPriorityFeePerGas = "1500000000",
   broadcastedAt = "1700000001",
   finalizedAt,
   receipt = null,
@@ -43,6 +45,8 @@ function record({
   replacedByTxHash?: string | null;
   intentValueWei?: string;
   submissionValueWei?: string;
+  maxFeePerGas?: string;
+  maxPriorityFeePerGas?: string;
   broadcastedAt?: string;
   finalizedAt?: string | null;
   receipt?: Record<string, unknown> | null;
@@ -60,8 +64,8 @@ function record({
       value_wei: intentValueWei,
       nonce,
       gas_limit: "21000",
-      max_fee_per_gas: "40000000000",
-      max_priority_fee_per_gas: "1500000000",
+      max_fee_per_gas: maxFeePerGas,
+      max_priority_fee_per_gas: maxPriorityFeePerGas,
     },
     intent_snapshot: {
       source: "nativeTransferIntent",
@@ -79,8 +83,8 @@ function record({
       value_wei: submissionValueWei,
       nonce,
       gas_limit: "21000",
-      max_fee_per_gas: "40000000000",
-      max_priority_fee_per_gas: "1500000000",
+      max_fee_per_gas: maxFeePerGas,
+      max_priority_fee_per_gas: maxPriorityFeePerGas,
       broadcasted_at: broadcastedAt,
       replaces_tx_hash: replacesTxHash,
     },
@@ -686,6 +690,65 @@ describe("HistoryView", () => {
     expect(screen.queryByRole("button", { name: "Cancel 0xreplace" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Replace 0xcancel" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Cancel 0xcancel" })).toBeInTheDocument();
+  });
+
+  it("builds replace and cancel requests from the current pending frozen submission", () => {
+    const onReplace = vi.fn();
+    const onCancelPending = vi.fn();
+    const staleIntentAccount = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const frozenSubmissionAccount = "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    const frozenRecipient = "0x4444444444444444444444444444444444444444";
+    const staleIntentRecord = record({
+      txHash: "0xaction",
+      accountIndex: 1,
+      from: staleIntentAccount,
+      chainId: 1,
+      nonce: 4,
+      state: "Pending",
+      maxFeePerGas: "40000000000",
+      maxPriorityFeePerGas: "1500000000",
+      intentValueWei: "100",
+    });
+    staleIntentRecord.submission.chain_id = 5;
+    staleIntentRecord.submission.account_index = 2;
+    staleIntentRecord.submission.from = frozenSubmissionAccount;
+    staleIntentRecord.submission.to = frozenRecipient;
+    staleIntentRecord.submission.value_wei = "250";
+    staleIntentRecord.submission.nonce = 9;
+    staleIntentRecord.submission.gas_limit = "22000";
+    staleIntentRecord.submission.max_fee_per_gas = "50000000000";
+    staleIntentRecord.submission.max_priority_fee_per_gas = "2000000000";
+    staleIntentRecord.nonce_thread.key = `5:2:${frozenSubmissionAccount}:9`;
+    staleIntentRecord.nonce_thread.chain_id = 5;
+    staleIntentRecord.nonce_thread.account_index = 2;
+    staleIntentRecord.nonce_thread.from = frozenSubmissionAccount;
+    staleIntentRecord.nonce_thread.nonce = 9;
+    renderHistory(
+      [staleIntentRecord],
+      {
+        onReplace,
+        onCancelPending,
+      },
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Replace 0xaction" }));
+    fireEvent.click(screen.getByRole("button", { name: "Cancel 0xaction" }));
+
+    const expectedRequest = {
+      txHash: "0xaction",
+      rpcUrl: "http://127.0.0.1:8545",
+      accountIndex: 2,
+      chainId: 5,
+      from: frozenSubmissionAccount,
+      nonce: 9,
+      gasLimit: "22000",
+      maxFeePerGas: "62500000001",
+      maxPriorityFeePerGas: "2500000001",
+      to: frozenRecipient,
+      valueWei: "250",
+    };
+    expect(onReplace).toHaveBeenCalledWith(expectedRequest);
+    expect(onCancelPending).toHaveBeenCalledWith(expectedRequest);
   });
 
   it("uses full nonce-thread context when marking single-submission details actionable", () => {

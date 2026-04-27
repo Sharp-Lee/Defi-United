@@ -16,8 +16,7 @@ export interface AppShellProps {
   activeTab: WorkspaceTab;
   onTabChange: (tab: WorkspaceTab) => void;
   onUnlock: (password: string) => Promise<void>;
-  onCreateVault?: (mnemonic: string, password: string) => Promise<void>;
-  onGenerateMnemonic?: () => Promise<string>;
+  onCreateVault?: (password: string) => Promise<void>;
   onLock?: () => Promise<void> | void;
   accounts?: Array<AccountRecord & AccountChainState>;
   history?: HistoryRecord[];
@@ -52,7 +51,6 @@ export function AppShell({
   onTabChange,
   onUnlock,
   onCreateVault = async () => {},
-  onGenerateMnemonic = async () => "test test test test test test test test test test test junk",
   onLock = () => {},
   accounts = [],
   history = [],
@@ -103,7 +101,6 @@ export function AppShell({
       {session.status === "locked" ? (
         <UnlockView
           onCreateVault={onCreateVault}
-          onGenerateMnemonic={onGenerateMnemonic}
           onUnlock={onUnlock}
         />
       ) : (

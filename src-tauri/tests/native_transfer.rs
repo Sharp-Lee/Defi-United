@@ -493,6 +493,101 @@ fn pending_mutation_request_must_match_local_pending_history() {
 }
 
 #[test]
+fn pending_mutation_request_uses_frozen_submission_when_intent_is_stale() {
+    with_test_app_dir("pending-mutation-frozen-submission", |_| {
+        persist_pending_history(native_transfer_intent(9, "100"), "0xabc".into())
+            .expect("persist pending");
+        let mut records = load_history_records().expect("load history");
+        let record = records.first_mut().expect("pending record");
+        record.intent.chain_id = 1;
+        record.intent.account_index = 1;
+        record.intent.from = "0x1111111111111111111111111111111111111111".into();
+        record.intent.nonce = 9;
+        record.intent.gas_limit = "21000".into();
+        record.intent.max_fee_per_gas = "40000000000".into();
+        record.intent.max_priority_fee_per_gas = "1500000000".into();
+        record.submission.chain_id = Some(5);
+        record.submission.account_index = Some(2);
+        record.submission.from = Some("0x2222222222222222222222222222222222222222".into());
+        record.submission.nonce = Some(12);
+        record.submission.gas_limit = Some("22000".into());
+        record.submission.max_fee_per_gas = Some("50000000000".into());
+        record.submission.max_priority_fee_per_gas = Some("2000000000".into());
+        fs::write(
+            history_path().expect("history path"),
+            serde_json::to_string_pretty(&records).expect("serialize history"),
+        )
+        .expect("write history");
+
+        let request = wallet_workbench_lib::commands::transactions::PendingMutationRequest {
+            tx_hash: "0xabc".into(),
+            rpc_url: "http://127.0.0.1:8545".into(),
+            account_index: 2,
+            chain_id: 5,
+            from: "0x2222222222222222222222222222222222222222".into(),
+            nonce: 12,
+            gas_limit: "22000".into(),
+            max_fee_per_gas: "62500000000".into(),
+            max_priority_fee_per_gas: "2500000000".into(),
+            to: Some("0x3333333333333333333333333333333333333333".into()),
+            value_wei: Some("200".into()),
+        };
+
+        let replace_intent =
+            wallet_workbench_lib::commands::transactions::build_replace_intent_from_pending_request(
+                request.clone(),
+            )
+            .expect("replace intent from frozen submission");
+        assert_eq!(replace_intent.chain_id, 5);
+        assert_eq!(replace_intent.account_index, 2);
+        assert_eq!(
+            replace_intent.from,
+            "0x2222222222222222222222222222222222222222"
+        );
+        assert_eq!(replace_intent.nonce, 12);
+        assert_eq!(replace_intent.gas_limit, "22000");
+        assert_eq!(replace_intent.max_fee_per_gas, "62500000000");
+        assert_eq!(replace_intent.max_priority_fee_per_gas, "2500000000");
+
+        let cancel_intent =
+            wallet_workbench_lib::commands::transactions::build_cancel_intent_from_pending_request(
+                request,
+            )
+            .expect("cancel intent from frozen submission");
+        assert_eq!(cancel_intent.chain_id, 5);
+        assert_eq!(cancel_intent.account_index, 2);
+        assert_eq!(
+            cancel_intent.from,
+            "0x2222222222222222222222222222222222222222"
+        );
+        assert_eq!(cancel_intent.to, cancel_intent.from);
+        assert_eq!(cancel_intent.value_wei, "0");
+        assert_eq!(cancel_intent.nonce, 12);
+
+        let stale_intent_request =
+            wallet_workbench_lib::commands::transactions::PendingMutationRequest {
+                tx_hash: "0xabc".into(),
+                rpc_url: "http://127.0.0.1:8545".into(),
+                account_index: 1,
+                chain_id: 1,
+                from: "0x1111111111111111111111111111111111111111".into(),
+                nonce: 9,
+                gas_limit: "21000".into(),
+                max_fee_per_gas: "62500000000".into(),
+                max_priority_fee_per_gas: "2500000000".into(),
+                to: Some("0x3333333333333333333333333333333333333333".into()),
+                value_wei: Some("200".into()),
+            };
+        let error =
+            wallet_workbench_lib::commands::transactions::build_replace_intent_from_pending_request(
+                stale_intent_request,
+            )
+            .expect_err("stale intent request must not validate");
+        assert!(error.contains("frozen submission"));
+    });
+}
+
+#[test]
 fn pending_mutation_guard_rejects_same_nonce_key_until_released() {
     let first = history_record(7, ChainOutcomeState::Pending, "0xaaa");
     let mut same_nonce_replacement = first.clone();
@@ -501,6 +596,7 @@ fn pending_mutation_guard_rejects_same_nonce_key_until_released() {
     same_nonce_replacement.intent.from = first.intent.from.to_uppercase();
     let mut different_nonce = first.clone();
     different_nonce.intent.nonce = 8;
+    different_nonce.submission.nonce = Some(8);
 
     let first_key =
         wallet_workbench_lib::commands::transactions::pending_mutation_guard_key(&first);
@@ -583,6 +679,33 @@ fn empty_reconcile_updates_return_latest_history_snapshot() {
         assert_eq!(records.len(), 2);
         assert_eq!(records[0].outcome.tx_hash, "0xaaa");
         assert_eq!(records[1].outcome.tx_hash, "0xbbb");
+    });
+}
+
+#[test]
+fn reconcile_updates_are_scoped_to_the_requested_chain_id() {
+    with_test_app_dir("chain-scoped-reconcile-updates", |_| {
+        persist_pending_history(native_transfer_intent(1, "1"), "0xchain1".into())
+            .expect("persist chain one");
+        let mut chain_five = native_transfer_intent(1, "1");
+        chain_five.chain_id = 5;
+        persist_pending_history(chain_five, "0xchain5".into()).expect("persist chain five");
+
+        let records =
+            apply_pending_history_updates(5, &[("0xchain5".into(), ChainOutcomeState::Confirmed)])
+                .expect("apply updates");
+
+        let chain_one = records
+            .iter()
+            .find(|record| record.outcome.tx_hash == "0xchain1")
+            .expect("chain one record");
+        let chain_five = records
+            .iter()
+            .find(|record| record.outcome.tx_hash == "0xchain5")
+            .expect("chain five record");
+
+        assert_eq!(chain_one.outcome.state, ChainOutcomeState::Pending);
+        assert_eq!(chain_five.outcome.state, ChainOutcomeState::Confirmed);
     });
 }
 
