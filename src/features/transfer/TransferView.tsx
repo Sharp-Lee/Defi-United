@@ -9,7 +9,9 @@ import {
 } from "ethers";
 import type { TransferDraft } from "../../core/transactions/draft";
 import { createTransferDraft } from "../../core/transactions/draft";
+import { getRawHistoryErrorDisplay } from "../../core/history/errors";
 import { nextNonceWithLocalPending } from "../../core/history/reconciler";
+import { HistoryErrorCard } from "../history/HistoryErrorCard";
 import type {
   AccountRecord,
   HistoryRecord,
@@ -69,7 +71,28 @@ export function TransferView({
   const [draft, setDraft] = useState<TransferDraft | null>(initialDraft);
   const [secondConfirm, setSecondConfirm] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<{
+    message: string;
+    stage: "build" | "submit";
+  } | null>(null);
+  const errorDisplay = useMemo(
+    () =>
+      error
+        ? getRawHistoryErrorDisplay({
+            message: error.message,
+            source: error.stage === "submit" ? "transfer submit" : "transfer draft",
+            category: error.stage === "submit" ? "submit" : "validation",
+          })
+        : null,
+    [error],
+  );
+
+  function setStageError(stage: "build" | "submit", err: unknown) {
+    setError({
+      stage,
+      message: err instanceof Error ? err.message : String(err),
+    });
+  }
 
   const selectedAccount = useMemo(
     () => accounts.find((account) => account.index.toString() === selectedIndex) ?? null,
@@ -162,7 +185,7 @@ export function TransferView({
         }),
       );
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setStageError("build", err);
     } finally {
       setBusy(false);
     }
@@ -172,7 +195,7 @@ export function TransferView({
     setError(null);
     if (!draft || !selectedAccount) return;
     if (draft.requiresSecondConfirmation && !secondConfirm) {
-      setError("High-risk fee settings need the extra confirmation.");
+      setStageError("build", "High-risk fee settings need the extra confirmation.");
       return;
     }
     const submission = draft.submission;
@@ -195,7 +218,7 @@ export function TransferView({
       onSubmitted(record);
       setDraft(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setStageError("submit", err);
     } finally {
       setBusy(false);
     }
@@ -360,7 +383,7 @@ export function TransferView({
           </div>
         </section>
       )}
-      {error && <div className="inline-error">{error}</div>}
+      {errorDisplay && <HistoryErrorCard error={errorDisplay} role="alert" />}
     </section>
   );
 }

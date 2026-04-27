@@ -1,4 +1,6 @@
 import { useMemo, useState } from "react";
+import { getHistoryErrorDisplay, getRawHistoryErrorDisplay } from "../../core/history/errors";
+import { HistoryErrorCard } from "./HistoryErrorCard";
 import {
   groupHistoryByNonce,
   selectHistoryEntries,
@@ -344,6 +346,44 @@ export function HistoryView({
   }, [allThreadEntriesByKey, detailSelection, visibleEntries, visibleGroups]);
   const isBusy = loading || refreshing;
   const statusMessage = refreshError ?? error;
+  const statusError = useMemo(
+    () =>
+      statusMessage
+        ? getRawHistoryErrorDisplay({
+            message: statusMessage,
+            source: "manual history refresh",
+            category: "refresh",
+          })
+        : null,
+    [statusMessage],
+  );
+  const recentFailureSummaries = useMemo(
+    () =>
+      allEntries
+        .map((entry) => ({
+          entry,
+          error: getHistoryErrorDisplay({
+            record: entry.record,
+            status: entry.status,
+            identityIssues: entry.identityIssues,
+          }),
+        }))
+        .filter(
+          (
+            item,
+          ): item is {
+            entry: HistoryReadModel;
+            error: NonNullable<ReturnType<typeof getHistoryErrorDisplay>>;
+          } => item.error !== null,
+        )
+        .sort(
+          (left, right) =>
+            (timestampMillis(timestampValue(right.entry)) ?? 0) -
+            (timestampMillis(timestampValue(left.entry)) ?? 0),
+        )
+        .slice(0, 3),
+    [allEntries],
+  );
 
   async function handleRefresh() {
     setRefreshing(true);
@@ -427,8 +467,24 @@ export function HistoryView({
           {isBusy ? "Refreshing" : "Refresh"}
         </button>
       </header>
-      {statusMessage && <div className="inline-error">{statusMessage}</div>}
+      {statusError && (
+        <HistoryErrorCard error={statusError} meta="Manual refresh" role="alert" />
+      )}
       {isBusy && items.length === 0 && <div className="inline-warning">Loading transaction history...</div>}
+      {recentFailureSummaries.length > 0 && (
+        <section className="history-error-summary" aria-label="Recent history issues">
+          <h3>Recent Issues</h3>
+          <div className="history-error-summary-list">
+            {recentFailureSummaries.map(({ entry, error }) => (
+              <HistoryErrorCard
+                error={error}
+                key={`${entry.txHash}-${entry.originalIndex}-issue`}
+                meta={`${statusLabels[entry.status]} · chainId ${formatMaybe(entry.chainId)} · nonce ${formatMaybe(entry.nonce)}`}
+              />
+            ))}
+          </div>
+        </section>
+      )}
       <div className="history-controls" aria-label="History filters">
         <label>
           Account
@@ -765,6 +821,11 @@ function HistorySubmissionDetails({
 }) {
   const { record } = entry;
   const current = isActionablePending(entry, threadEntries);
+  const errorDisplay = getHistoryErrorDisplay({
+    record,
+    status: entry.status,
+    identityIssues: entry.identityIssues,
+  });
   return (
     <article className="history-detail-record">
       <header className="history-detail-record-header">
@@ -783,6 +844,12 @@ function HistorySubmissionDetails({
         <p className="history-thread-note">
           Cancel model: same nonce, 0 wei, sent from the account to itself with a higher fee.
         </p>
+      )}
+      {errorDisplay && (
+        <HistoryErrorCard
+          error={errorDisplay}
+          meta={`${statusLabels[entry.status]} · chainId ${formatMaybe(entry.chainId)} · nonce ${formatMaybe(entry.nonce)}`}
+        />
       )}
       <div className="history-detail-grid">
         <HistoryDetailSection
@@ -833,6 +900,11 @@ function outcomeRows(entry: HistoryReadModel): Array<[string, string | number | 
   const receipt = outcome.receipt;
   const reconcile = outcome.reconcile_summary;
   const error = outcome.error_summary;
+  const errorDisplay = getHistoryErrorDisplay({
+    record: entry.record,
+    status: entry.status,
+    identityIssues: entry.identityIssues,
+  });
   return [
     ["State", `${outcome.state} - ${statusDescriptions[entry.status]}`],
     ["Outcome tx hash", outcome.tx_hash],
@@ -849,9 +921,11 @@ function outcomeRows(entry: HistoryReadModel): Array<[string, string | number | 
     ["Reconcile RPC chainId", reconcile?.rpc_chain_id],
     ["Reconcile latest confirmed nonce", reconcile?.latest_confirmed_nonce],
     ["Reconcile decision", reconcile?.decision],
-    ["Error source", error?.source],
-    ["Error category", error?.category],
-    ["Error message", error?.message],
+    ["Error class", errorDisplay?.label],
+    ["Error title", errorDisplay?.title],
+    ["Error source", errorDisplay?.source ?? error?.source],
+    ["Error category", errorDisplay?.category ?? error?.category],
+    ["Error message", errorDisplay?.message],
     ["Thread key", entry.record.nonce_thread.key],
     ["Thread replaced by", entry.record.nonce_thread.replaced_by_tx_hash],
   ];

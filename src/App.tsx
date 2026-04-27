@@ -113,6 +113,7 @@ export function App() {
   const [history, setHistory] = useState<HistoryRecord[]>([]);
   const [busy, setBusy] = useState(false);
   const [appError, setAppError] = useState<string | null>(null);
+  const [historyError, setHistoryError] = useState<string | null>(null);
   const selectedChainIdRef = useRef<bigint>(1n);
   const diskAccountsRefreshRequestRef = useRef(0);
   const allowedDiskAccountsRefreshRequestRef = useRef(0);
@@ -198,13 +199,16 @@ export function App() {
 
   const refreshHistory = useCallback(async () => {
     setAppError(null);
+    setHistoryError(null);
     try {
       const records = rpcUrl.trim()
         ? await reconcilePendingHistory(rpcUrl.trim(), Number(selectedChainId))
         : await loadTransactionHistory();
       setHistory([...records].reverse());
     } catch (err) {
-      setAppError(err instanceof Error ? err.message : String(err));
+      const message = err instanceof Error ? err.message : String(err);
+      setAppError(message);
+      setHistoryError(message);
     }
   }, [rpcUrl, selectedChainId]);
 
@@ -542,6 +546,7 @@ export function App() {
       busy={busy}
       chains={availableChains}
       history={history}
+      historyError={historyError}
       onAddAccount={handleAddAccount}
       onChainChange={handleChainChange}
       onCreateVault={handleCreateVault}

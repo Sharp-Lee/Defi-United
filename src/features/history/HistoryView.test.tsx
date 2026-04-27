@@ -30,6 +30,7 @@ function record({
   finalizedAt,
   receipt = null,
   reconcileSummary = null,
+  errorSummary = null,
 }: {
   txHash: string;
   accountIndex?: number;
@@ -46,6 +47,7 @@ function record({
   finalizedAt?: string | null;
   receipt?: Record<string, unknown> | null;
   reconcileSummary?: Record<string, unknown> | null;
+  errorSummary?: Record<string, unknown> | null;
 }) {
   return {
     schema_version: 2,
@@ -89,6 +91,7 @@ function record({
       receipt,
       reconciled_at: reconcileSummary ? "1700000101" : null,
       reconcile_summary: reconcileSummary,
+      error_summary: errorSummary,
     },
     nonce_thread: {
       source: "derived",
@@ -925,5 +928,125 @@ describe("HistoryView", () => {
 
     expect(screen.getByText("Loading transaction history...")).toBeInTheDocument();
     expect(screen.getByText("History refresh failed")).toBeInTheDocument();
+    expect(screen.getByText("Local history error")).toBeInTheDocument();
+  });
+
+  it("classifies manual refresh chainId mismatch errors in the history view", () => {
+    renderHistory([], {
+      error: "RPC returned chainId 8453; expected 1.",
+    });
+
+    expect(screen.getByText("Chain identity mismatch")).toBeInTheDocument();
+    expect(screen.getByText(/chainId is the stable chain identity/)).toBeInTheDocument();
+    expect(screen.getByText(/RPC URL is only an access endpoint/)).toBeInTheDocument();
+    expect(screen.getByText("manual history refresh")).toBeInTheDocument();
+  });
+
+  it("shows recent categorized error summaries without exposing full raw payloads", () => {
+    renderHistory([
+      record({
+        txHash: "0xnonce",
+        state: "Pending",
+        nonce: 1,
+        errorSummary: {
+          source: "rpc",
+          category: "nonce",
+          message: "replacement underpriced",
+        },
+      }),
+      record({
+        txHash: "0xfunds",
+        state: "Pending",
+        nonce: 2,
+        errorSummary: {
+          source: "broadcast",
+          category: "submit",
+          message: `insufficient funds for gas * price + value ${"0x".padEnd(132, "a")}`,
+        },
+      }),
+      record({
+        txHash: "0xchain",
+        state: "Unknown",
+        nonce: 3,
+        errorSummary: {
+          source: "rpc validation",
+          category: "chainId mismatch",
+          message: "Remote chainId 8453 does not match expected chainId 1",
+        },
+      }),
+    ]);
+
+    const issues = within(screen.getByLabelText("Recent history issues"));
+    expect(issues.getByText("Replacement fee too low")).toBeInTheDocument();
+    expect(issues.getByText("Insufficient funds")).toBeInTheDocument();
+    expect(issues.getByText("Chain identity mismatch")).toBeInTheDocument();
+    expect(issues.getByText(/chainId is the stable chain identity/)).toBeInTheDocument();
+    expect(issues.getByText(/0xaaaaaaaa\.\.\.aaaaaaaa/)).toBeInTheDocument();
+    expect(issues.queryByText(new RegExp("a{80}"))).not.toBeInTheDocument();
+  });
+
+  it("surfaces long pending records in recent issues without an error summary", () => {
+    renderHistory([
+      record({
+        txHash: "0xstuck",
+        state: "Pending",
+        nonce: 44,
+        broadcastedAt: "1700000000",
+      }),
+    ]);
+
+    const issues = within(screen.getByLabelText("Recent history issues"));
+    expect(issues.getByText("Pending for an extended time")).toBeInTheDocument();
+    expect(
+      issues.getByText(
+        "This transaction is still pending locally and no terminal receipt, replacement, cancellation, or dropped decision is recorded.",
+      ),
+    ).toBeInTheDocument();
+    expect(issues.getByText("Pending · chainId 1 · nonce 44")).toBeInTheDocument();
+  });
+
+  it("shows categorized error details and preserves dropped reconcile semantics", () => {
+    renderHistory([
+      record({
+        txHash: "0xdropped",
+        state: "Dropped",
+        reconcileSummary: {
+          source: "localReconcile",
+          checked_at: "1700000100",
+          rpc_chain_id: 1,
+          latest_confirmed_nonce: 8,
+          decision: "nonceAdvancedWithoutReceipt",
+        },
+      }),
+      record({
+        txHash: "0xrpc",
+        state: "Pending",
+        nonce: 8,
+        errorSummary: {
+          source: "rpc",
+          category: "provider",
+          message: "RPC endpoint unavailable",
+        },
+      }),
+    ]);
+
+    fireEvent.click(within(screen.getByText("0xdropped").closest("tr") as HTMLElement).getByText("Details"));
+
+    let panel = within(screen.getByLabelText("History details"));
+    expect(panel.getAllByText("Dropped by local reconcile").length).toBeGreaterThan(0);
+    expect(
+      panel.getByText(
+        "Local reconcile marked this transaction as a terminal dropped record. This is not the same as an on-chain failed receipt.",
+      ),
+    ).toBeInTheDocument();
+    expect(panel.getByText("Error class")).toBeInTheDocument();
+    expect(panel.getAllByText("Reconcile").length).toBeGreaterThan(0);
+
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    fireEvent.click(within(screen.getByText("0xrpc").closest("tr") as HTMLElement).getByText("Details"));
+
+    panel = within(screen.getByLabelText("History details"));
+    expect(panel.getAllByText("RPC unavailable or rejected").length).toBeGreaterThan(0);
+    expect(panel.getByText("The RPC endpoint failed, timed out, or returned an error while checking this transaction.")).toBeInTheDocument();
   });
 });

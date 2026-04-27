@@ -345,6 +345,76 @@ td {
   gap: 12px;
 }
 
+.history-error-summary {
+  display: grid;
+  gap: 10px;
+}
+
+.history-error-summary h3 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.history-error-summary-list {
+  display: grid;
+  gap: 10px;
+}
+
+.history-error-card {
+  display: grid;
+  gap: 8px;
+  border: 1px solid rgba(211, 154, 50, 0.62);
+  border-radius: 8px;
+  padding: 12px;
+  color: #ffd891;
+  background: rgba(211, 154, 50, 0.1);
+}
+
+.history-error-card-rpc,
+.history-error-card-history,
+.history-error-card-broadcast,
+.history-error-card-chainIdentity {
+  border-color: rgba(224, 82, 82, 0.6);
+  color: #ffb5b5;
+  background: rgba(224, 82, 82, 0.12);
+}
+
+.history-error-card-header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.history-error-card-header span {
+  border: 1px solid currentColor;
+  border-radius: 6px;
+  padding: 2px 6px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.history-error-card p {
+  margin: 0;
+}
+
+.history-error-card dl {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(180px, 1fr));
+  gap: 6px 12px;
+  margin: 0;
+}
+
+.history-error-card dt {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.history-error-card dd {
+  margin: 0;
+}
+
 .history-thread-timeline {
   display: grid;
   gap: 10px;
@@ -538,6 +608,10 @@ td {
   }
 
   .history-detail-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .history-error-card dl {
     grid-template-columns: 1fr;
   }
 

@@ -4,6 +4,7 @@ import { SettingsView } from "../features/settings/SettingsView";
 import { TransferView } from "../features/transfer/TransferView";
 import { UnlockView } from "../features/unlock/UnlockView";
 import { BUILT_IN_CHAINS } from "../core/chains/registry";
+import { getRawHistoryErrorDisplay } from "../core/history/errors";
 import type { ChainRecord } from "../core/chains/registry";
 import type { AccountRecord, HistoryRecord, PendingMutationRequest } from "../lib/tauri";
 import type { AccountChainState } from "../lib/rpc";
@@ -27,6 +28,7 @@ export interface AppShellProps {
   settingsStatusKind?: "idle" | "ok" | "error";
   busy?: boolean;
   appError?: string | null;
+  historyError?: string | null;
   onAddAccount?: () => Promise<void> | void;
   onRefreshAccounts?: () => Promise<void> | void;
   onRefreshHistory?: () => Promise<void> | void;
@@ -61,6 +63,7 @@ export function AppShell({
   settingsStatusKind = "idle",
   busy = false,
   appError = null,
+  historyError = null,
   onAddAccount = async () => {},
   onRefreshAccounts = async () => {},
   onRefreshHistory = async () => {},
@@ -73,6 +76,13 @@ export function AppShell({
 }: AppShellProps) {
   const selectedChain = chains.find((chain) => chain.chainId === selectedChainId) ?? chains[0];
   const chainReady = settingsStatusKind === "ok" && rpcUrl.trim().length > 0;
+  const globalErrorDisplay = appError
+    ? getRawHistoryErrorDisplay({
+        message: appError,
+        source: "app",
+        category: "global",
+      })
+    : null;
 
   return (
     <div className="workbench-shell">
@@ -84,7 +94,12 @@ export function AppShell({
           </button>
         )}
       </header>
-      {appError && <div className="inline-error">{appError}</div>}
+      {globalErrorDisplay && (
+        <div className="inline-error">
+          {globalErrorDisplay.title}
+          {globalErrorDisplay.message ? `: ${globalErrorDisplay.message}` : ""}
+        </div>
+      )}
       {session.status === "locked" ? (
         <UnlockView
           onCreateVault={onCreateVault}
@@ -132,6 +147,7 @@ export function AppShell({
             {activeTab === "history" && (
               <HistoryView
                 disabled={busy}
+                error={historyError}
                 items={history}
                 loading={busy}
                 onCancelPending={onCancelPending}
