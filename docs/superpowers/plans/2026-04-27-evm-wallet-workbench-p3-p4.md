@@ -4,16 +4,17 @@
 
 ## 1. 基线与方向
 
-- 基线：从当前已合并到 `main` 的 EVM Wallet Workbench v1（Tauri 2 技术栈）开始推进。
+- 基线：从当前已合并到 `main` 的 EVM Wallet Workbench v1（Tauri 2 技术栈）开始推进；P3 已合并，P4-1 已在当前分支提交为 `85d5f10`。
 - 主线：后续产品、测试、发布和技术债治理都以 Tauri desktop app 为准。
 - 非主线：浏览器版只作为历史参考或迁移来源，不继续投入功能补齐。
 - 已有 v1 能力：vault/mnemonic、账户派生与链上扫描、RPC 验证和 app-config、native transfer draft/submit、pending history/reconcile、replace/cancel、anvil smoke check。
-- 后续重点：P3 优先做 History UX hardening、交易三层展示、错误摘要/失败记录和恢复入口；P4 规划能力池，但避免提前实现大而全的交易/资产系统或日志系统。
+- 后续重点：P4-2 到 P4-7 继续围绕诊断、恢复、pending/reconcile 稳定性和 anvil smoke check 回归推进；P4-8+ 先做探索/设计，不写成当前承诺交付。
 
 ## 2. 执行规则
 
 - 每个任务按 `implementer -> spec reviewer -> code quality reviewer` 串行执行。
 - implementer 只完成当前任务范围内的文件修改，不顺手实现后续任务。
+- subagent 不提交 commit、不 push。
 - spec reviewer 检查实现是否符合 `docs/specs/evm-wallet-workbench.md`、本计划验收标准和非目标。
 - code quality reviewer 检查可维护性、测试覆盖、风险路径和是否误改无关代码。
 - 每个任务收口后由 controller 执行一次 commit + push。
@@ -34,7 +35,7 @@
 
 ## 4. 里程碑划分
 
-### P3: History UX Hardening
+### P3: History UX Hardening（已完成并合并）
 
 目标是把 v1 的基础历史列表升级为可审计、可解释、可恢复的交易历史工作流。P3 不扩展 ERC-20、ABI 调用、批量发送等大能力，优先把原生币转账、replace/cancel 和 reconcile 的用户体验做稳。
 
@@ -49,11 +50,11 @@
 7. 适用动作入口与 gating 测试
 8. P3 回归测试与文档收口
 
-### P4: Recovery, Observability, and Focused Extensions
+### P4: Recovery, Observability, and Focused Extensions（进行中）
 
-目标是在 P3 稳定历史体验之后，补强诊断、恢复和少量明确依赖 P3 的能力。P4 先维护任务池和优先级，不提前把 ERC-20、ABI 调用、批量策略做成当前承诺。
+目标是在 P3 稳定历史体验之后，补强诊断、恢复和少量明确依赖 P3 的能力。P4-1 诊断事件与本地结构化日志已完成；剩余 P4-2 到 P4-7 按下方任务卡串行执行。P4-8+ 属于探索/设计优先，不提前把 ERC-20、ABI 调用、批量策略做成当前承诺。
 
-## 5. P3 任务卡
+## 5. P3 任务卡（历史记录，状态：已完成）
 
 ### Task P3-0: 历史 schema 差距盘点与最小字段契约
 
@@ -367,25 +368,296 @@
 - 回归任务容易扩大范围，发现的非阻断问题应进入 P4 或 bug backlog。
 - anvil 环境依赖可能导致非代码失败，需要记录版本和启动方式。
 
-## 6. P4 后续任务池
+## 6. P4 任务卡
 
-P4 任务需在 P3 历史模型和详情视图稳定后再拆细。优先级越高越适合作为 P4 前半段任务。
+### Task P4-1: 诊断事件与本地结构化日志（状态：已完成，commit `85d5f10`）
 
-| ID | 优先级 | 方向 | 依赖 | 说明 |
+**目标**
+
+为 RPC 探测、交易提交、历史写入、reconcile 等关键路径产出本地非敏感诊断事件，作为后续诊断面板、导出和恢复任务的基础。
+
+**已完成范围**
+
+- 本地结构化诊断事件基线。
+- 关键路径的阶段、错误分类和排障摘要。
+- 敏感信息排除约束：不记录助记词、私钥、seed、明文密码、签名材料或 raw signed transaction。
+
+**后续注意**
+
+- P4-1 不是完整诊断 UI，不提供导出入口。
+- 后续任务只能消费或扩展非敏感诊断事件，不能放宽敏感信息约束。
+
+### Task P4-2: 诊断面板/导出
+
+**目标**
+
+基于 P4-1 的本地结构化日志，在 Tauri desktop UI 中提供诊断查看与导出能力，帮助用户排查 RPC、chainId、history、nonce、broadcast、reconcile 问题，同时确保导出内容只包含非敏感信息。
+
+**改动范围**
+
+- 新增或扩展诊断面板入口，展示近期诊断事件、事件分类、时间、chainId、account/address 摘要、nonce、tx hash、阶段和错误摘要。
+- 增加事件过滤：按类别、时间、chainId、account、tx hash 或状态筛选。
+- 提供本地导出功能，导出前展示导出范围和敏感信息排除说明。
+- Rust/Tauri command 只返回脱敏后的诊断事件；前端不自行读取原始日志文件。
+- 补充脱敏、导出、空状态、读取失败和权限失败测试。
+
+**非目标**
+
+- 不新增远程上报、云同步或自动上传。
+- 不导出 vault、app-config 原文、历史文件原文或完整 RPC URL secret。
+- 不实现历史损坏修复、补录或 dropped 复核；这些分别属于 P4-3、P4-4、P4-5。
+- 不让诊断日志成为交易状态真相来源。
+
+**验收标准**
+
+- 用户能在 UI 中查看近期非敏感诊断事件并按常见维度过滤。
+- 导出文件不包含助记词、私钥、seed、明文密码、签名材料、raw signed transaction 或完整认证凭据。
+- RPC URL 中的 token、basic auth、query secret 等在展示和导出前已脱敏。
+- 诊断面板能解释事件来源，但不会把日志事件显示为链上确认事实。
+- 读取或导出失败时有明确错误摘要，不崩溃、不吞错。
+
+**建议测试/验证命令**
+
+- `npm test -- src/features/diagnostics src/core/diagnostics`
+- `npm run typecheck`
+- `cargo test --manifest-path src-tauri/Cargo.toml diagnostics`
+- `git diff --check`
+
+**风险点**
+
+- 最大风险是误导出敏感信息；测试应包含带 token 的 RPC URL、长错误消息和伪签名材料样例。
+- 大量日志可能影响 UI 性能，应限制默认读取窗口或分页。
+- 导出路径和文件权限错误要走用户可理解的错误路径。
+
+### Task P4-3: 历史文件损坏恢复
+
+**目标**
+
+当已有 tx history 文件不可读、JSON 损坏、schema 不兼容、权限/IO 错误或部分记录异常时，提供可审计的检测、隔离和恢复路径；历史不可读时仍必须阻止新交易盲目广播。
+
+**改动范围**
+
+- 在 Rust history 读取层增加损坏类型分类：权限错误、IO 错误、JSON 解析失败、schema 不兼容、部分记录无效。
+- `NotFound` 仍应按首次运行/空历史处理，除非后续新增 sentinel/manifest 能证明历史文件缺失代表数据丢失。
+- 对损坏历史提供只读诊断摘要和隔离建议，必要时将原文件移动或复制为带时间戳的隔离副本。
+- UI 展示损坏状态、影响范围、可执行恢复动作和禁用原因。
+- 恢复动作至少覆盖：重新尝试读取、隔离损坏文件并启动空历史、从隔离副本查看诊断摘要。
+- 交易提交前继续强制读取历史；历史不可读时 submit/replace/cancel 必须被禁用或拒绝。
+- 补充 Rust storage 测试和前端状态/gating 测试。
+
+**非目标**
+
+- 不从链上全量重建未知历史。
+- 不自动删除用户原始历史文件。
+- 不修改 vault 格式或 app-config 格式。
+- 不绕过 pending nonce 恢复约束来允许提交。
+
+**验收标准**
+
+- 损坏历史文件不会导致应用崩溃，用户能看到明确错误分类和恢复建议。
+- tx-history 文件不存在时按 empty history 读取，不展示为损坏恢复流程。
+- 原损坏文件在任何破坏性恢复前被保留为可审计副本。
+- 历史不可读时，新普通转账、replace、cancel 不能广播。
+- 恢复为空历史后，UI 明确说明本地历史已重建且旧文件已隔离，不伪造旧记录。
+- 诊断事件记录损坏类型和恢复动作，但不记录敏感材料。
+
+**建议测试/验证命令**
+
+- `cargo test --manifest-path src-tauri/Cargo.toml history`
+- `npm test -- src/features/history src/core/history`
+- `npm run typecheck`
+- `git diff --check`
+
+**风险点**
+
+- 恢复为空历史会影响 nonce 预留，需要强提示并重新依赖链上 nonce。
+- 文件移动/复制在不同平台路径和权限下可能失败，应有可恢复错误。
+- 部分记录损坏时要避免静默丢弃有效记录，除非用户明确选择隔离或重建。
+
+### Task P4-4: 广播成功但历史写入失败补录
+
+**目标**
+
+为“交易已广播并返回 tx hash，但本地历史写入失败”的场景提供补录入口，使用户能把已知提交恢复进本地历史，而不是只靠错误消息手工记忆。
+
+**改动范围**
+
+- 扩展错误/诊断模型，确保广播成功但写入失败时保留 tx hash、chainId、account/from、nonce、to、value、fee 摘要、广播时间和写入错误。
+- 在 UI 中为该错误状态提供补录入口，展示待补录参数和风险提示。
+- Rust command 根据 tx hash 与 chainId 查询 receipt 或交易详情，并生成本地 history record。
+- 补录必须使用已知 frozen submission 参数；无法确认的字段显示 unknown/legacy，不能编造 Intent。
+- 补录后触发或提示 reconcile，更新 ChainOutcome。
+- 补充测试覆盖写入失败模拟、补录成功、链上查无交易、字段不足、重复补录。
+
+**非目标**
+
+- 不重新签名或重新广播交易。
+- 不做全链历史扫描。
+- 不允许前端构造签名材料或绕过 Rust submit 路径。
+- 不把补录入口用于普通手工导入任意历史，除非另开设计任务。
+
+**验收标准**
+
+- 广播成功但写入失败时，用户能看到 tx hash 和本地写入失败原因。
+- 补录入口只在具备 chainId、account/from、nonce、tx hash 等最低字段时开放，否则显示禁用原因。
+- 重复补录同一 `account + chainId + nonce + tx hash` 不会产生重复 submission。
+- 链上查无交易时不会写入 confirmed/failed，只保留可解释的 pending 或补录失败结果。
+- 补录流程产生诊断事件，并遵守敏感信息排除约束。
+
+**建议测试/验证命令**
+
+- `cargo test --manifest-path src-tauri/Cargo.toml`
+- `npm test -- src/features/history src/core/history`
+- `npm run typecheck`
+- `scripts/run-anvil-check.sh`
+- `git diff --check`
+
+**风险点**
+
+- 需要区分“历史没写成”和“交易没广播成”，不能把失败交易补录为 pending。
+- 补录字段不足时最容易误造审计信息，应沿用 unknown/legacy 契约。
+- 重复补录和 replacement/cancel thread 关系需要保持稳定。
+
+### Task P4-5: dropped 复核与重新 reconcile
+
+**目标**
+
+对已被本地判定为 dropped 的记录提供人工复核和重新 reconcile 能力，允许用户在 RPC 状态变化、节点切换或延迟 receipt 出现后重新确认结果，同时保留原 dropped 判定的审计轨迹。
+
+**改动范围**
+
+- 为 dropped 记录增加可用性判断和复核入口。
+- Rust command 基于原 submission 的 chainId、account/from、nonce、tx hash 重新查询 receipt、transaction、链上 nonce 和同 nonce 关系。
+- UI 展示原 dropped 判定原因、复核时间、使用的 RPC/chainId 摘要、新结果和下一步建议。
+- 复核结果以追加事件或追加 outcome 的方式保存，不能静默覆盖历史。
+- 覆盖 confirmed after dropped、still dropped、replaced/cancelled after dropped、RPC unavailable、chainId mismatch 等测试。
+
+**非目标**
+
+- 不把 dropped 等同于链上 failed。
+- 不自动循环 reconcile 所有 dropped 记录。
+- 不允许修改原 submission 的 chainId、from、nonce 或 tx hash。
+- 不实现 mempool 深度分析或第三方 explorer 查询。
+
+**验收标准**
+
+- dropped 记录出现真实复核入口，并且入口只对字段完整的记录开放。
+- 重新 reconcile 后，历史能保留原 dropped 判定和新复核结果。
+- 如果复核发现 receipt 成功/失败，ChainOutcome 更新清晰且可审计。
+- 如果仍无法确认，状态和提示说明“不确定/仍 dropped”的原因。
+- chainId mismatch 或 RPC 不可用不会导致错误改写 outcome。
+
+**建议测试/验证命令**
+
+- `cargo test --manifest-path src-tauri/Cargo.toml`
+- `npm test -- src/features/history src/core/history`
+- `npm run typecheck`
+- `git diff --check`
+
+**风险点**
+
+- 不同 RPC 对旧 tx 的可见性可能不同，复核结果必须记录使用的 chainId 和端点摘要。
+- 重新 reconcile 容易破坏终态历史，应采用追加式审计模型。
+- 同 nonce replacement/cancel 推断要和 P3 线程展示保持一致。
+
+### Task P4-6: pending 老化策略
+
+**目标**
+
+为长时间 pending 的交易提供本地老化判定、风险提示和适用动作建议，帮助用户决定 reconcile、replace 或 cancel，但不自动替用户执行交易动作。
+
+**改动范围**
+
+- 定义 pending 老化阈值和状态：正常 pending、需要关注、长期未确认、可能 dropped/需要复核。
+- 结合历史记录、最近 reconcile 结果、链上 nonce、tx hash 查询结果和诊断事件生成提示。
+- UI 在列表和详情中显示 pending age、最近检查时间、建议动作和禁用原因。
+- 对 replace/cancel/reconcile 入口复用 P3/P4 gating，不放宽 nonce 和 chainId 约束。
+- 支持用户手动触发 reconcile 或查看诊断事件。
+- 补充 selector/helper、组件和 Rust reconcile 测试。
+
+**非目标**
+
+- 不自动 replace/cancel。
+- 不根据单次 RPC 失败直接判定 dropped。
+- 不新增 gas 策略优化器。
+- 不改变现有 replace/cancel 交易模型。
+
+**验收标准**
+
+- pending 记录能显示可理解的等待时长和最近 reconcile 状态。
+- 老化提示不会把 pending 误称为 failed。
+- 建议动作与实际可执行状态一致；不可执行时展示禁用原因。
+- 老化策略跨重启仍基于持久化历史和时间戳计算。
+- 测试覆盖不同年龄、RPC 失败、链上 nonce 推进、同 nonce replacement/cancel 场景。
+
+**建议测试/验证命令**
+
+- `cargo test --manifest-path src-tauri/Cargo.toml`
+- `npm test -- src/features/history src/core/history`
+- `npm run typecheck`
+- `git diff --check`
+
+**风险点**
+
+- 时间阈值过激会误导用户取消正常 pending 交易，应先保守提示。
+- RPC 节点差异会影响 tx 可见性，提示文案要表达不确定性。
+- UI 容易把建议动作做得像自动修复，必须保持用户确认。
+
+### Task P4-7: anvil smoke check 诊断增强与 P4 回归
+
+**目标**
+
+增强 anvil smoke check 的失败摘要，并在 P4-2 到 P4-6 完成后做一次集中回归，确认诊断、恢复、补录、dropped 复核和 pending 老化不破坏核心交易安全不变量。
+
+**改动范围**
+
+- 扩展 anvil smoke check 输出，区分环境启动失败、RPC/chainId 失败、vault/session 失败、签名/广播失败、历史写入失败、reconcile 失败。
+- 将 smoke check 关键阶段接入非敏感诊断事件或读取已有事件摘要。
+- 增加失败时的最小复现信息和本地路径提示，但不输出敏感材料。
+- 执行 P4 回归清单，覆盖 P4-2 到 P4-6 的关键路径。
+- 更新必要的 spec/plan 状态说明，但不把 P4-8+ 写成已完成。
+
+**非目标**
+
+- 不把 anvil smoke check 做成通用链测试平台。
+- 不引入外部监控服务。
+- 不新增 ERC-20、ABI、批量发送功能。
+- 不改 README，除非 controller 明确要求或 smoke check 使用方式已经改变。
+
+**验收标准**
+
+- anvil smoke check 失败时能明确落到环境、RPC、chainId、签名/广播、history 或 reconcile 分类。
+- 成功路径仍覆盖本地 native transfer 到 pending/reconcile 的闭环。
+- P4-2 到 P4-6 的安全不变量回归通过。
+- 诊断输出和导出不包含敏感材料。
+- 文档状态准确：P4-1 到 P4-7 按实际完成情况标记，P4-8+ 仍为探索/设计。
+
+**建议测试/验证命令**
+
+- `npm test`
+- `npm run typecheck`
+- `cargo test --manifest-path src-tauri/Cargo.toml`
+- `scripts/run-anvil-check.sh`
+- `git diff --check`
+
+**风险点**
+
+- anvil 环境依赖本机工具和端口状态，失败摘要要区分环境问题与代码回归。
+- 回归任务容易扩大范围，非阻断问题应进入后续 backlog。
+- smoke check 可能读取真实本地路径，输出前仍需做路径和端点最小化。
+
+## 7. P4+ 探索/设计优先任务池
+
+以下任务不属于当前已承诺实现范围。controller 若要推进，先派发 spec/design 任务，经评审后再决定是否拆实现任务。
+
+| ID | 优先级 | 方向 | 依赖 | 当前状态 |
 | --- | --- | --- | --- | --- |
-| P4-1 | P0 | 诊断事件与本地结构化日志 | P3-5, P3-7 | 为 RPC 探测、提交、历史写入、reconcile 产出非敏感诊断事件；必须过滤助记词、私钥、签名材料。 |
-| P4-2 | P0 | 诊断面板/导出 | P4-1 | UI 提供只含非敏感信息的诊断查看与导出，用于排查 RPC、chainId、history、nonce 问题。 |
-| P4-3 | P1 | 历史文件损坏恢复 | P3-0, P3-5 | 支持检测、隔离损坏文件、生成可读错误和恢复建议；不能在历史不可读时盲目广播新交易。 |
-| P4-4 | P1 | 广播成功但历史写入失败补录 | P3-0, P3-3, P3-5 | 提供基于 tx hash、account、chainId、nonce 的本地补录或重新扫描入口。 |
-| P4-5 | P1 | dropped 复核与重新 reconcile | P3-4, P3-5, P3-6 | 对 dropped 提供真实手动复核/重新 reconcile，不把 dropped 等同于链上 failed。 |
-| P4-6 | P1 | pending 老化策略 | P3-5, P3-6 | 根据 pending 时长和最新 RPC 状态提示 reconcile、replace、cancel。 |
-| P4-7 | P2 | anvil smoke check 诊断增强 | P3-7 | 输出更稳定的失败摘要，帮助区分环境、RPC、签名、历史写入和 reconcile 问题。 |
-| P4-8 | P2 | ERC-20 转账探索 | P3-0, P3-3, P3-7 | 先写 spec/设计，再决定是否实现；需要复用 Intent/Submission/ChainOutcome。 |
-| P4-9 | P2 | 资产与授权扫描探索 | P3-7 | 先做只读诊断，不与交易提交混合。 |
-| P4-10 | P3 | 批量分发/策略编排探索 | P3-7, P4-8 | 高风险能力，不应在没有更强审计、模拟和恢复能力前实现；若先做原生币批量，也必须先另写设计任务。 |
-| P4-11 | P3 | ABI 调用器或 raw calldata | P4-1, P4-2, P4-5 | 需要额外安全确认和参数可读化，不作为近期主线。 |
+| P4-8 | P2 | ERC-20 转账探索 | P3-0, P3-3, P3-7, P4-2 | 先写 spec/设计，再决定是否实现；需要复用 Intent/Submission/ChainOutcome。 |
+| P4-9 | P2 | 资产与授权扫描探索 | P3-7, P4-2 | 先做只读诊断设计，不与交易提交混合。 |
+| P4-10 | P3 | 批量分发/策略编排探索 | P3-7, P4-8 | 高风险能力，不应在没有更强审计、模拟和恢复能力前实现。 |
+| P4-11 | P3 | ABI 调用器或 raw calldata 探索 | P4-1, P4-2, P4-5 | 需要额外安全确认和参数可读化，不作为近期主线。 |
 
-## 7. 全局验收清单
+## 8. 全局验收清单
 
 - 不破坏 RPC chainId 匹配：保存和提交前仍以远端 `chainId` 校验为准。
 - 不破坏 `account + chainId` 状态隔离：余额、nonce、同步错误和历史线程不能跨链混用。
