@@ -31,9 +31,53 @@ export interface PendingNonceHistoryRecord {
     from: string;
     nonce: number;
   };
+  submission?: {
+    account_index: number | null;
+    chain_id: number | null;
+    from: string | null;
+    nonce: number | null;
+  };
+  nonce_thread?: {
+    account_index: number | null;
+    chain_id: number | null;
+    from: string | null;
+    nonce: number | null;
+  };
   outcome: {
     state: string;
   };
+}
+
+function completeIdentity(
+  identity: PendingNonceHistoryRecord["submission"] | PendingNonceHistoryRecord["nonce_thread"],
+) {
+  if (
+    !identity ||
+    identity.account_index === null ||
+    identity.chain_id === null ||
+    identity.from === null ||
+    identity.nonce === null
+  ) {
+    return null;
+  }
+  return {
+    accountIndex: identity.account_index,
+    chainId: identity.chain_id,
+    from: identity.from,
+    nonce: identity.nonce,
+  };
+}
+
+function pendingNonceIdentity(record: PendingNonceHistoryRecord) {
+  return (
+    completeIdentity(record.submission) ??
+    completeIdentity(record.nonce_thread) ?? {
+      accountIndex: record.intent.account_index,
+      chainId: record.intent.chain_id,
+      from: record.intent.from,
+      nonce: record.intent.nonce,
+    }
+  );
 }
 
 export function nextNonceWithLocalPending(
@@ -44,14 +88,15 @@ export function nextNonceWithLocalPending(
   from: string,
 ) {
   return history.reduce((nextNonce, record) => {
+    const identity = pendingNonceIdentity(record);
     if (
       record.outcome.state !== "Pending" ||
-      record.intent.account_index !== accountIndex ||
-      record.intent.chain_id !== chainId ||
-      record.intent.from.toLowerCase() !== from.toLowerCase()
+      identity.accountIndex !== accountIndex ||
+      identity.chainId !== chainId ||
+      identity.from.toLowerCase() !== from.toLowerCase()
     ) {
       return nextNonce;
     }
-    return Math.max(nextNonce, record.intent.nonce + 1);
+    return Math.max(nextNonce, identity.nonce + 1);
   }, onChainNonce);
 }

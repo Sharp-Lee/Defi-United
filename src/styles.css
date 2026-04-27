@@ -216,6 +216,331 @@ td {
   border-radius: 8px;
 }
 
+.history-controls {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(130px, 1fr)) auto;
+  gap: 10px;
+  align-items: end;
+}
+
+.history-controls .secondary-button {
+  min-width: 72px;
+}
+
+.history-status,
+.history-status-stack {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.history-status {
+  min-height: 26px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 3px 7px;
+  background: var(--panel-soft);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.history-status-stack,
+.history-thread-list {
+  display: grid;
+  gap: 6px;
+}
+
+.history-status-pending {
+  border-color: rgba(211, 154, 50, 0.62);
+  color: #ffd891;
+  background: rgba(211, 154, 50, 0.12);
+}
+
+.history-status-confirmed {
+  border-color: rgba(53, 184, 111, 0.62);
+  color: #a7ebc4;
+  background: rgba(53, 184, 111, 0.12);
+}
+
+.history-status-failed {
+  border-color: rgba(224, 82, 82, 0.6);
+  color: #ffb5b5;
+  background: rgba(224, 82, 82, 0.12);
+}
+
+.history-status-dropped {
+  border-color: rgba(211, 154, 50, 0.62);
+  color: #ffd891;
+  background: rgba(211, 154, 50, 0.12);
+}
+
+.history-status-replaced {
+  border-color: rgba(80, 147, 255, 0.58);
+  color: #b9d3ff;
+  background: rgba(80, 147, 255, 0.12);
+}
+
+.history-status-cancelled {
+  border-color: rgba(186, 123, 255, 0.58);
+  color: #dec4ff;
+  background: rgba(186, 123, 255, 0.12);
+}
+
+.history-actions {
+  flex-wrap: wrap;
+  align-items: flex-start;
+}
+
+.history-action-reason {
+  max-width: 260px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.history-thread-relation {
+  color: var(--muted);
+}
+
+.history-thread-current {
+  display: inline-block;
+  margin-left: 6px;
+  border: 1px solid rgba(53, 184, 111, 0.55);
+  border-radius: 6px;
+  padding: 2px 6px;
+  color: #a7ebc4;
+  background: rgba(53, 184, 111, 0.12);
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.history-detail-panel {
+  display: grid;
+  gap: 14px;
+  margin-top: 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.history-detail-header,
+.history-detail-record-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: flex-start;
+}
+
+.history-detail-header h3,
+.history-detail-record-header h4,
+.history-detail-section h5 {
+  margin: 0;
+}
+
+.history-detail-header p,
+.history-detail-record-header p {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.history-detail-submissions {
+  display: grid;
+  gap: 12px;
+}
+
+.history-error-summary {
+  display: grid;
+  gap: 10px;
+}
+
+.history-error-summary h3 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.history-error-summary-list {
+  display: grid;
+  gap: 10px;
+}
+
+.history-error-card {
+  display: grid;
+  gap: 8px;
+  border: 1px solid rgba(211, 154, 50, 0.62);
+  border-radius: 8px;
+  padding: 12px;
+  color: #ffd891;
+  background: rgba(211, 154, 50, 0.1);
+}
+
+.history-error-card-rpc,
+.history-error-card-history,
+.history-error-card-broadcast,
+.history-error-card-chainIdentity {
+  border-color: rgba(224, 82, 82, 0.6);
+  color: #ffb5b5;
+  background: rgba(224, 82, 82, 0.12);
+}
+
+.history-error-card-header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.history-error-card-header span {
+  border: 1px solid currentColor;
+  border-radius: 6px;
+  padding: 2px 6px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.history-error-card p {
+  margin: 0;
+}
+
+.history-error-card dl {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(180px, 1fr));
+  gap: 6px 12px;
+  margin: 0;
+}
+
+.history-error-card dt {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.history-error-card dd {
+  margin: 0;
+}
+
+.history-thread-timeline {
+  display: grid;
+  gap: 10px;
+  border-top: 1px solid var(--border);
+  padding-top: 14px;
+}
+
+.history-thread-timeline header h4 {
+  margin: 0;
+}
+
+.history-thread-timeline header p,
+.history-thread-note {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.history-action-guidance {
+  display: grid;
+  gap: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.history-action-guidance h5,
+.history-action-guidance ul,
+.history-action-guidance p {
+  margin: 0;
+}
+
+.history-action-guidance ul {
+  display: grid;
+  gap: 8px;
+  padding-left: 18px;
+}
+
+.history-action-guidance li {
+  color: var(--muted);
+}
+
+.history-action-guidance strong {
+  margin-right: 8px;
+  color: var(--text);
+}
+
+.history-action-guidance span {
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.history-thread-timeline ol {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding-left: 22px;
+}
+
+.history-thread-step-main,
+.history-thread-step-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.history-thread-step-meta {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.history-detail-record {
+  display: grid;
+  gap: 12px;
+  border-top: 1px solid var(--border);
+  padding-top: 14px;
+}
+
+.history-detail-record:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.history-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(220px, 1fr));
+  gap: 12px;
+}
+
+.history-detail-section {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+}
+
+.history-detail-section dl {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+}
+
+.history-detail-row {
+  display: grid;
+  gap: 3px;
+}
+
+.history-detail-row dt {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.history-detail-row dd {
+  margin: 0;
+}
+
 .mono {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   font-size: 12px;
@@ -314,6 +639,23 @@ td {
 
   .workspace-tablist {
     flex-wrap: wrap;
+  }
+
+  .history-controls {
+    grid-template-columns: 1fr;
+  }
+
+  .history-detail-header,
+  .history-detail-record-header {
+    display: grid;
+  }
+
+  .history-detail-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .history-error-card dl {
+    grid-template-columns: 1fr;
   }
 
   .confirmation-grid {

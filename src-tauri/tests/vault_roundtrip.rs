@@ -65,10 +65,9 @@ fn encrypts_and_decrypts_a_mnemonic_roundtrip() {
 #[test]
 fn creates_and_unlocks_a_vault() {
     with_test_app_dir("happy-path", |_| {
-        let phrase = "test test test test test test test test test test test junk";
         let password = "correct horse battery staple";
 
-        create_vault(phrase.to_string(), password.to_string()).expect("create");
+        create_vault(password.to_string()).expect("create");
         let summary = unlock_vault(password.to_string()).expect("unlock");
 
         assert_eq!(summary.status, "ready");
@@ -76,20 +75,16 @@ fn creates_and_unlocks_a_vault() {
 
         let restored =
             with_session_mnemonic(|mnemonic| Ok::<_, String>(mnemonic.to_string())).expect("read");
-        assert_eq!(restored, phrase);
+        let parsed = bip39::Mnemonic::parse_in_normalized(bip39::Language::English, &restored)
+            .expect("valid generated mnemonic");
+        assert_eq!(parsed.to_string().split_whitespace().count(), 12);
     });
 }
 
 #[test]
 fn wrong_password_returns_an_error() {
     with_test_app_dir("wrong-password", |_| {
-        let phrase = "test test test test test test test test test test test junk";
-
-        create_vault(
-            phrase.to_string(),
-            "correct horse battery staple".to_string(),
-        )
-        .expect("create");
+        create_vault("correct horse battery staple".to_string()).expect("create");
         let error = unlock_vault("bad password".to_string()).expect_err("unlock should fail");
 
         assert!(error.contains("invalid password or vault data"));
@@ -119,12 +114,10 @@ fn malformed_vault_blob_returns_an_error() {
 #[test]
 fn create_vault_rejects_duplicate_vaults() {
     with_test_app_dir("duplicate-create", |_| {
-        let phrase = "test test test test test test test test test test test junk";
         let password = "correct horse battery staple";
 
-        create_vault(phrase.to_string(), password.to_string()).expect("first create");
-        let error = create_vault(phrase.to_string(), password.to_string())
-            .expect_err("second create should fail");
+        create_vault(password.to_string()).expect("first create");
+        let error = create_vault(password.to_string()).expect_err("second create should fail");
 
         assert!(error.contains("already exists"));
 

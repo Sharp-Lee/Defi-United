@@ -1,5 +1,17 @@
 import { invoke } from "@tauri-apps/api/core";
+import {
+  normalizeHistoryRecord,
+  parseTransactionHistoryPayload,
+  type HistoryRecord as NormalizedHistoryRecord,
+  type NativeTransferIntent as NormalizedNativeTransferIntent,
+} from "../core/history/schema";
 import { readAccountState } from "./rpc";
+
+export type {
+  ChainOutcomeState,
+  HistoryRecord,
+  NativeTransferIntent,
+} from "../core/history/schema";
 
 export interface AccountRecord {
   index: number;
@@ -40,12 +52,8 @@ export interface AppConfig {
   };
 }
 
-export function generateMnemonicPhrase() {
-  return invoke<string>("generate_mnemonic");
-}
-
-export function createVault(mnemonic: string, password: string) {
-  return invoke<void>("create_vault", { mnemonic, password });
+export function createVault(password: string) {
+  return invoke<void>("create_vault", { password });
 }
 
 export function unlockVault(password: string) {
@@ -118,41 +126,8 @@ export async function createAndScanAccount(index: number, chainId: number, rpcUr
   };
 }
 
-export type ChainOutcomeState =
-  | "Pending"
-  | "Confirmed"
-  | "Failed"
-  | "Replaced"
-  | "Cancelled"
-  | "Dropped";
-
-export interface NativeTransferIntent {
-  rpc_url: string;
-  account_index: number;
-  chain_id: number;
-  from: string;
-  to: string;
-  value_wei: string;
-  nonce: number;
-  gas_limit: string;
-  max_fee_per_gas: string;
-  max_priority_fee_per_gas: string;
-}
-
-export interface HistoryRecord {
-  intent: NativeTransferIntent;
-  submission: {
-    frozen_key: string;
-    tx_hash: string;
-  };
-  outcome: {
-    state: ChainOutcomeState;
-    tx_hash: string;
-  };
-}
-
-function parseHistory(raw: string): HistoryRecord[] {
-  return JSON.parse(raw) as HistoryRecord[];
+function parseHistory(raw: string): NormalizedHistoryRecord[] {
+  return parseTransactionHistoryPayload(raw);
 }
 
 export async function loadTransactionHistory() {
@@ -165,9 +140,9 @@ export async function reconcilePendingHistory(rpcUrl: string, chainId: number) {
   return parseHistory(raw);
 }
 
-export async function submitNativeTransfer(intent: NativeTransferIntent) {
+export async function submitNativeTransfer(intent: NormalizedNativeTransferIntent) {
   const raw = await invoke<string>("submit_native_transfer_command", { intent });
-  return JSON.parse(raw) as HistoryRecord;
+  return normalizeHistoryRecord(JSON.parse(raw));
 }
 
 export interface PendingMutationRequest {
@@ -186,10 +161,10 @@ export interface PendingMutationRequest {
 
 export async function replacePendingTransfer(request: PendingMutationRequest) {
   const raw = await invoke<string>("replace_pending_transfer", { request });
-  return JSON.parse(raw) as HistoryRecord;
+  return normalizeHistoryRecord(JSON.parse(raw));
 }
 
 export async function cancelPendingTransfer(request: PendingMutationRequest) {
   const raw = await invoke<string>("cancel_pending_transfer", { request });
-  return JSON.parse(raw) as HistoryRecord;
+  return normalizeHistoryRecord(JSON.parse(raw));
 }
