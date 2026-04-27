@@ -118,6 +118,44 @@ export interface HistoryStorageQuarantineResult {
   current: HistoryStorageInspection;
 }
 
+export type HistoryRecoveryIntentStatus = "active" | "recovered" | "dismissed";
+export type HistoryRecoveryResultStatus =
+  | "recovered"
+  | "pendingRecovered"
+  | "alreadyRecovered";
+
+export interface HistoryRecoveryIntent {
+  schemaVersion: number;
+  id: string;
+  status: HistoryRecoveryIntentStatus;
+  createdAt: string;
+  txHash: string;
+  kind: "legacy" | "nativeTransfer" | "replacement" | "cancellation";
+  chainId: number | null;
+  accountIndex: number | null;
+  from: string | null;
+  nonce: number | null;
+  to: string | null;
+  valueWei: string | null;
+  gasLimit: string | null;
+  maxFeePerGas: string | null;
+  maxPriorityFeePerGas: string | null;
+  replacesTxHash: string | null;
+  broadcastedAt: string;
+  writeError: string;
+  lastRecoveryError: string | null;
+  recoveredAt: string | null;
+  dismissedAt: string | null;
+}
+
+export interface HistoryRecoveryResult {
+  status: HistoryRecoveryResultStatus;
+  intent: HistoryRecoveryIntent;
+  record: NormalizedHistoryRecord;
+  history: NormalizedHistoryRecord[];
+  message: string;
+}
+
 export function createVault(password: string) {
   return invoke<void>("create_vault", { password });
 }
@@ -214,6 +252,37 @@ export async function quarantineTransactionHistory() {
 export async function reconcilePendingHistory(rpcUrl: string, chainId: number) {
   const raw = await invoke<string>("reconcile_pending_history_command", { rpcUrl, chainId });
   return parseHistory(raw);
+}
+
+export async function loadHistoryRecoveryIntents() {
+  const raw = await invoke<string>("load_history_recovery_intents_command");
+  return JSON.parse(raw) as HistoryRecoveryIntent[];
+}
+
+export async function recoverBroadcastedHistoryRecord(
+  recoveryId: string,
+  rpcUrl: string,
+  chainId: number,
+) {
+  const raw = await invoke<string>("recover_broadcasted_history_record_command", {
+    recoveryId,
+    rpcUrl,
+    chainId,
+  });
+  const parsed = JSON.parse(raw) as Omit<HistoryRecoveryResult, "record" | "history"> & {
+    record: unknown;
+    history: unknown[];
+  };
+  return {
+    ...parsed,
+    record: normalizeHistoryRecord(parsed.record),
+    history: parseHistory(JSON.stringify(parsed.history)),
+  };
+}
+
+export async function dismissHistoryRecoveryIntent(recoveryId: string) {
+  const raw = await invoke<string>("dismiss_history_recovery_intent_command", { recoveryId });
+  return JSON.parse(raw) as HistoryRecoveryIntent[];
 }
 
 export async function submitNativeTransfer(intent: NormalizedNativeTransferIntent) {

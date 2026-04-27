@@ -503,6 +503,11 @@ td {
   background: rgba(224, 82, 82, 0.12);
 }
 
+.history-broadcast-recovery-list {
+  display: grid;
+  gap: 12px;
+}
+
 .history-recovery-card-ok {
   border-color: rgba(53, 184, 111, 0.62);
   color: #c4f3d7;

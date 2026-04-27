@@ -16,15 +16,22 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::accounts::derive_wallet;
-use crate::diagnostics::{append_diagnostic_event, DiagnosticEventInput, DiagnosticLevel};
+use crate::diagnostics::{
+    append_diagnostic_event, sanitize_diagnostic_message, DiagnosticEventInput, DiagnosticLevel,
+};
 use crate::models::{
-    ChainOutcome, HistoryErrorSummary, IntentSnapshotMetadata, NonceThread, ReceiptSummary,
-    ReconcileSummary, SubmissionKind, SubmissionRecord,
+    ChainOutcome, HistoryErrorSummary, HistoryRecoveryIntent, HistoryRecoveryIntentStatus,
+    HistoryRecoveryResult, HistoryRecoveryResultStatus, IntentSnapshotMetadata, NonceThread,
+    ReceiptSummary, ReconcileSummary, SubmissionKind, SubmissionRecord,
 };
 use crate::session::with_session_mnemonic;
-use crate::storage::{history_path, write_file_atomic, write_new_file_atomic};
+use crate::storage::{
+    history_path, history_recovery_intents_path, write_file_atomic, write_new_file_atomic,
+};
 
 pub use crate::models::{ChainOutcomeState, HistoryRecord, NativeTransferIntent};
+
+const RECOVERED_HISTORY_RPC_URL: &str = "recovered://history-write-failed";
 
 fn history_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -485,6 +492,171 @@ fn write_history_records(records: &[HistoryRecord]) -> Result<(), String> {
     write_file_atomic(&history_path()?, &raw)
 }
 
+fn recovery_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
+fn write_history_recovery_intents(intents: &[HistoryRecoveryIntent]) -> Result<(), String> {
+    let raw = serde_json::to_string_pretty(intents).map_err(|e| e.to_string())?;
+    write_file_atomic(&history_recovery_intents_path()?, &raw)
+}
+
+pub fn load_history_recovery_intents() -> Result<Vec<HistoryRecoveryIntent>, String> {
+    let path = history_recovery_intents_path()?;
+    match fs::read_to_string(&path) {
+        Ok(raw) => serde_json::from_str::<Vec<HistoryRecoveryIntent>>(&raw)
+            .map(|intents| {
+                intents
+                    .into_iter()
+                    .map(sanitize_loaded_history_recovery_intent)
+                    .collect()
+            })
+            .map_err(|e| e.to_string()),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(Vec::new()),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+fn sanitize_loaded_history_recovery_intent(
+    mut intent: HistoryRecoveryIntent,
+) -> HistoryRecoveryIntent {
+    intent.write_error = sanitize_recovery_error(&intent.write_error);
+    intent.last_recovery_error = intent
+        .last_recovery_error
+        .as_deref()
+        .map(sanitize_recovery_error);
+    intent
+}
+
+fn history_recovery_intent_id(
+    chain_id: Option<u64>,
+    account_index: Option<u32>,
+    from: Option<&str>,
+    nonce: Option<u64>,
+    tx_hash: &str,
+) -> String {
+    format!(
+        "broadcast:{}:{}:{}:{}:{}",
+        chain_id
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "unknown".to_string()),
+        account_index
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "unknown".to_string()),
+        from.map(str::to_ascii_lowercase)
+            .unwrap_or_else(|| "unknown".to_string()),
+        nonce
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "unknown".to_string()),
+        tx_hash.to_ascii_lowercase()
+    )
+}
+
+fn history_recovery_intent_from_broadcast_failure(
+    intent: &NativeTransferIntent,
+    tx_hash: String,
+    kind: SubmissionKind,
+    replaces_tx_hash: Option<String>,
+    broadcasted_at: String,
+    write_error: String,
+) -> Result<HistoryRecoveryIntent, String> {
+    let created_at = now_unix_seconds()?;
+    let id = history_recovery_intent_id(
+        Some(intent.chain_id),
+        Some(intent.account_index),
+        Some(&intent.from),
+        Some(intent.nonce),
+        &tx_hash,
+    );
+    Ok(HistoryRecoveryIntent {
+        schema_version: 1,
+        id,
+        status: HistoryRecoveryIntentStatus::Active,
+        created_at,
+        tx_hash,
+        kind,
+        chain_id: Some(intent.chain_id),
+        account_index: Some(intent.account_index),
+        from: Some(intent.from.clone()),
+        nonce: Some(intent.nonce),
+        to: Some(intent.to.clone()),
+        value_wei: Some(intent.value_wei.clone()),
+        gas_limit: Some(intent.gas_limit.clone()),
+        max_fee_per_gas: Some(intent.max_fee_per_gas.clone()),
+        max_priority_fee_per_gas: Some(intent.max_priority_fee_per_gas.clone()),
+        replaces_tx_hash,
+        broadcasted_at,
+        write_error: sanitize_recovery_error(&write_error),
+        last_recovery_error: None,
+        recovered_at: None,
+        dismissed_at: None,
+    })
+}
+
+fn sanitize_recovery_error(error: &str) -> String {
+    sanitize_diagnostic_message(error)
+}
+
+pub fn record_history_recovery_intent(intent: HistoryRecoveryIntent) -> Result<(), String> {
+    let _guard = recovery_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut intents = load_history_recovery_intents()?;
+    if let Some(existing) = intents.iter_mut().find(|item| item.id == intent.id) {
+        let recovered_at = existing.recovered_at.clone();
+        let dismissed_at = existing.dismissed_at.clone();
+        *existing = intent;
+        existing.recovered_at = recovered_at;
+        existing.dismissed_at = dismissed_at;
+        if existing.recovered_at.is_some() {
+            existing.status = HistoryRecoveryIntentStatus::Recovered;
+        }
+        if existing.dismissed_at.is_some() {
+            existing.status = HistoryRecoveryIntentStatus::Dismissed;
+        }
+    } else {
+        intents.push(intent);
+    }
+    write_history_recovery_intents(&intents)
+}
+
+fn update_history_recovery_intent(
+    recovery_id: &str,
+    updater: impl FnOnce(&mut HistoryRecoveryIntent),
+) -> Result<HistoryRecoveryIntent, String> {
+    let _guard = recovery_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut intents = load_history_recovery_intents()?;
+    let Some(index) = intents.iter().position(|item| item.id == recovery_id) else {
+        return Err(format!("history recovery intent not found: {recovery_id}"));
+    };
+    updater(&mut intents[index]);
+    let updated = intents[index].clone();
+    write_history_recovery_intents(&intents)?;
+    Ok(updated)
+}
+
+pub fn dismiss_history_recovery_intent(
+    recovery_id: &str,
+) -> Result<Vec<HistoryRecoveryIntent>, String> {
+    update_history_recovery_intent(recovery_id, |intent| {
+        intent.status = HistoryRecoveryIntentStatus::Dismissed;
+        intent.dismissed_at = now_unix_seconds().ok();
+    })?;
+    record_transaction_diagnostic(
+        DiagnosticLevel::Info,
+        "historyRecoveryIntentDismissed",
+        None,
+        None,
+        None,
+        None,
+        json!({ "recoveryId": recovery_id }),
+    );
+    load_history_recovery_intents()
+}
+
 fn record_transaction_diagnostic(
     level: DiagnosticLevel,
     event: &'static str,
@@ -640,10 +812,20 @@ pub fn persist_pending_history_with_kind(
     kind: SubmissionKind,
     replaces_tx_hash: Option<String>,
 ) -> Result<HistoryRecord, String> {
+    let broadcasted_at = now_unix_seconds()?;
+    persist_pending_history_with_kind_at(intent, tx_hash, kind, replaces_tx_hash, broadcasted_at)
+}
+
+fn persist_pending_history_with_kind_at(
+    intent: NativeTransferIntent,
+    tx_hash: String,
+    kind: SubmissionKind,
+    replaces_tx_hash: Option<String>,
+    broadcasted_at: String,
+) -> Result<HistoryRecord, String> {
     let _guard = history_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let broadcasted_at = now_unix_seconds()?;
     let submission = submission_record_from_intent(
         &intent,
         tx_hash.clone(),
@@ -1169,6 +1351,478 @@ pub async fn reconcile_pending_history(
     apply_pending_history_update_details(chain_id, &updates)
 }
 
+fn require_recovery_u64(value: Option<u64>, field: &str) -> Result<u64, String> {
+    value.ok_or_else(|| format!("history recovery intent missing {field}"))
+}
+
+fn require_recovery_u32(value: Option<u32>, field: &str) -> Result<u32, String> {
+    value.ok_or_else(|| format!("history recovery intent missing {field}"))
+}
+
+fn require_recovery_string(value: &Option<String>, field: &str) -> Result<String, String> {
+    value
+        .as_ref()
+        .filter(|value| !value.trim().is_empty())
+        .cloned()
+        .ok_or_else(|| format!("history recovery intent missing {field}"))
+}
+
+fn history_record_matches_recovery_intent(
+    record: &HistoryRecord,
+    intent: &HistoryRecoveryIntent,
+) -> bool {
+    let identity = history_identity_for_record(record);
+    Some(identity.chain_id) == intent.chain_id
+        && Some(identity.account_index) == intent.account_index
+        && intent
+            .from
+            .as_deref()
+            .is_some_and(|from| identity.from.eq_ignore_ascii_case(from))
+        && Some(identity.nonce) == intent.nonce
+        && record.outcome.tx_hash.eq_ignore_ascii_case(&intent.tx_hash)
+}
+
+fn history_record_from_recovery_intent(
+    intent: &HistoryRecoveryIntent,
+    outcome_state: ChainOutcomeState,
+    receipt: Option<ReceiptSummary>,
+    checked_at: String,
+    decision: String,
+) -> Result<HistoryRecord, String> {
+    let chain_id = require_recovery_u64(intent.chain_id, "chainId")?;
+    let account_index = require_recovery_u32(intent.account_index, "account/from")?;
+    let from = require_recovery_string(&intent.from, "account/from")?;
+    let nonce = require_recovery_u64(intent.nonce, "nonce")?;
+    let to = intent.to.clone().unwrap_or_else(|| "unknown".to_string());
+    let value_wei = intent
+        .value_wei
+        .clone()
+        .unwrap_or_else(|| "unknown".to_string());
+    let gas_limit = intent
+        .gas_limit
+        .clone()
+        .unwrap_or_else(|| "unknown".to_string());
+    let max_fee_per_gas = intent
+        .max_fee_per_gas
+        .clone()
+        .unwrap_or_else(|| "unknown".to_string());
+    let max_priority_fee_per_gas = intent
+        .max_priority_fee_per_gas
+        .clone()
+        .unwrap_or_else(|| "unknown".to_string());
+    let frozen_key = format!("{chain_id}:{from}:{to}:{value_wei}:{nonce}");
+    let finalized_at = match outcome_state {
+        ChainOutcomeState::Confirmed | ChainOutcomeState::Failed => Some(checked_at.clone()),
+        _ => None,
+    };
+    let intent_snapshot = IntentSnapshotMetadata {
+        source: "historyRecoveryIntent".to_string(),
+        captured_at: Some(intent.created_at.clone()),
+    };
+    let native_intent = NativeTransferIntent {
+        rpc_url: RECOVERED_HISTORY_RPC_URL.to_string(),
+        account_index,
+        chain_id,
+        from: from.clone(),
+        to: to.clone(),
+        value_wei: value_wei.clone(),
+        nonce,
+        gas_limit: gas_limit.clone(),
+        max_fee_per_gas: max_fee_per_gas.clone(),
+        max_priority_fee_per_gas: max_priority_fee_per_gas.clone(),
+    };
+    Ok(HistoryRecord {
+        schema_version: 2,
+        intent: native_intent,
+        intent_snapshot,
+        submission: SubmissionRecord {
+            frozen_key,
+            tx_hash: intent.tx_hash.clone(),
+            kind: intent.kind.clone(),
+            source: "historyRecoveryIntent".to_string(),
+            chain_id: Some(chain_id),
+            account_index: Some(account_index),
+            from: Some(from.clone()),
+            to: intent.to.clone(),
+            value_wei: intent.value_wei.clone(),
+            nonce: Some(nonce),
+            gas_limit: intent.gas_limit.clone(),
+            max_fee_per_gas: intent.max_fee_per_gas.clone(),
+            max_priority_fee_per_gas: intent.max_priority_fee_per_gas.clone(),
+            broadcasted_at: Some(intent.broadcasted_at.clone()),
+            replaces_tx_hash: intent.replaces_tx_hash.clone(),
+        },
+        outcome: ChainOutcome {
+            state: outcome_state,
+            tx_hash: intent.tx_hash.clone(),
+            receipt,
+            finalized_at,
+            reconciled_at: Some(checked_at.clone()),
+            reconcile_summary: Some(ReconcileSummary {
+                source: "historyRecovery".to_string(),
+                checked_at: Some(checked_at),
+                rpc_chain_id: Some(chain_id),
+                latest_confirmed_nonce: None,
+                decision,
+            }),
+            error_summary: None,
+        },
+        nonce_thread: NonceThread {
+            source: "historyRecoveryIntent".to_string(),
+            key: nonce_thread_key(chain_id, account_index, &from, nonce),
+            chain_id: Some(chain_id),
+            account_index: Some(account_index),
+            from: Some(from),
+            nonce: Some(nonce),
+            replaces_tx_hash: intent.replaces_tx_hash.clone(),
+            replaced_by_tx_hash: None,
+        },
+    })
+}
+
+fn mark_history_recovery_intent_recovered(
+    recovery_id: &str,
+) -> Result<HistoryRecoveryIntent, String> {
+    update_history_recovery_intent(recovery_id, |intent| {
+        intent.status = HistoryRecoveryIntentStatus::Recovered;
+        intent.recovered_at = now_unix_seconds().ok();
+        intent.last_recovery_error = None;
+    })
+}
+
+fn mark_history_recovery_intent_error(recovery_id: &str, error: String) {
+    let sanitized = sanitize_recovery_error(&error);
+    let _ = update_history_recovery_intent(recovery_id, |intent| {
+        intent.last_recovery_error = Some(sanitized);
+    });
+}
+
+fn mark_recovery_intent_recovered_or_error(
+    recovery_id: &str,
+    tx_hash: &str,
+) -> Result<HistoryRecoveryIntent, String> {
+    mark_history_recovery_intent_recovered(recovery_id).map_err(|error| {
+        let error = sanitize_recovery_error(&error);
+        let message = format!(
+            "local history record for tx_hash {tx_hash} was written or already existed, but recovery intent could not be marked recovered; no duplicate history record will be written on retry: {error}"
+        );
+        record_transaction_diagnostic(
+            DiagnosticLevel::Error,
+            "historyRecoveryIntentMarkRecoveredFailed",
+            None,
+            None,
+            Some(tx_hash.to_string()),
+            Some(message.clone()),
+            json!({ "recoveryId": recovery_id }),
+        );
+        message
+    })
+}
+
+fn finalize_recovered_history_record(
+    intent: &HistoryRecoveryIntent,
+    recovered_record: HistoryRecord,
+) -> Result<
+    (
+        HistoryRecoveryResultStatus,
+        HistoryRecord,
+        Vec<HistoryRecord>,
+        String,
+    ),
+    String,
+> {
+    let _guard = history_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut records = load_history_records()?;
+    if let Some(existing) = records
+        .iter()
+        .find(|record| history_record_matches_recovery_intent(record, intent))
+        .cloned()
+    {
+        return Ok((
+            HistoryRecoveryResultStatus::AlreadyRecovered,
+            existing,
+            records,
+            "Matching local history record already exists; no duplicate was written.".to_string(),
+        ));
+    }
+
+    records.push(recovered_record.clone());
+    if let Err(error) = write_history_records(&records) {
+        return Err(sanitize_recovery_error(&error));
+    }
+    Ok((
+        HistoryRecoveryResultStatus::Recovered,
+        recovered_record,
+        records,
+        "Recovered local history from the transaction receipt.".to_string(),
+    ))
+}
+
+pub async fn recover_broadcasted_history_record(
+    recovery_id: String,
+    rpc_url: String,
+    chain_id: u64,
+) -> Result<HistoryRecoveryResult, String> {
+    record_transaction_diagnostic(
+        DiagnosticLevel::Info,
+        "historyRecoveryStarted",
+        Some(chain_id),
+        None,
+        None,
+        None,
+        json!({ "recoveryId": recovery_id }),
+    );
+    let intent = load_history_recovery_intents()?
+        .into_iter()
+        .find(|intent| intent.id == recovery_id)
+        .ok_or_else(|| format!("history recovery intent not found: {recovery_id}"))?;
+    let frozen_chain_id = require_recovery_u64(intent.chain_id, "chainId")?;
+    let account_index = require_recovery_u32(intent.account_index, "account/from")?;
+    require_recovery_string(&intent.from, "account/from")?;
+    require_recovery_u64(intent.nonce, "nonce")?;
+    if intent.tx_hash.trim().is_empty() {
+        return Err("history recovery intent missing tx hash".to_string());
+    }
+    if frozen_chain_id != chain_id {
+        let error = sanitize_recovery_error(&format!(
+            "history recovery chainId {} does not match requested chainId {}",
+            frozen_chain_id, chain_id
+        ));
+        mark_history_recovery_intent_error(&recovery_id, error.clone());
+        return Err(error);
+    }
+    if intent.status == HistoryRecoveryIntentStatus::Dismissed {
+        return Err("history recovery intent has been dismissed".to_string());
+    }
+
+    if let Some(existing) = load_history_records()?
+        .iter()
+        .find(|record| history_record_matches_recovery_intent(record, &intent))
+        .cloned()
+    {
+        let updated_intent =
+            mark_recovery_intent_recovered_or_error(&recovery_id, &intent.tx_hash)?;
+        let history = load_history_records()?;
+        record_transaction_diagnostic(
+            DiagnosticLevel::Info,
+            "historyRecoveryAlreadyRecovered",
+            Some(chain_id),
+            Some(account_index),
+            Some(intent.tx_hash.clone()),
+            None,
+            json!({ "recoveryId": recovery_id }),
+        );
+        return Ok(HistoryRecoveryResult {
+            status: HistoryRecoveryResultStatus::AlreadyRecovered,
+            intent: updated_intent,
+            record: existing,
+            history,
+            message: "Matching local history record already exists; no duplicate was written."
+                .to_string(),
+        });
+    }
+
+    let provider = Provider::<Http>::try_from(rpc_url.clone()).map_err(|e| {
+        let error = sanitize_recovery_error(&e.to_string());
+        mark_history_recovery_intent_error(&recovery_id, error.clone());
+        record_transaction_diagnostic(
+            DiagnosticLevel::Error,
+            "historyRecoveryProviderInvalid",
+            Some(chain_id),
+            Some(account_index),
+            Some(intent.tx_hash.clone()),
+            Some(error.clone()),
+            json!({ "recoveryId": recovery_id }),
+        );
+        error
+    })?;
+    let remote_chain_id = provider.get_chainid().await.map_err(|e| {
+        let error = sanitize_recovery_error(&e.to_string());
+        mark_history_recovery_intent_error(&recovery_id, error.clone());
+        record_transaction_diagnostic(
+            DiagnosticLevel::Error,
+            "historyRecoveryChainIdProbeFailed",
+            Some(chain_id),
+            Some(account_index),
+            Some(intent.tx_hash.clone()),
+            Some(error.clone()),
+            json!({ "recoveryId": recovery_id }),
+        );
+        error
+    })?;
+    if remote_chain_id.as_u64() != chain_id {
+        let error = sanitize_recovery_error(&format!(
+            "remote chainId {} does not match requested chainId {}",
+            remote_chain_id, chain_id
+        ));
+        mark_history_recovery_intent_error(&recovery_id, error.clone());
+        record_transaction_diagnostic(
+            DiagnosticLevel::Error,
+            "historyRecoveryChainIdMismatch",
+            Some(chain_id),
+            Some(account_index),
+            Some(intent.tx_hash.clone()),
+            Some(error.clone()),
+            json!({ "remoteChainId": remote_chain_id.as_u64(), "recoveryId": recovery_id }),
+        );
+        return Err(error);
+    }
+
+    let parsed_hash = intent.tx_hash.parse::<H256>().map_err(|e| {
+        let error = sanitize_recovery_error(&format!("{e}"));
+        mark_history_recovery_intent_error(&recovery_id, error.clone());
+        error
+    })?;
+    let checked_at = now_unix_seconds()?;
+    let receipt = provider
+        .get_transaction_receipt(parsed_hash)
+        .await
+        .map_err(|e| {
+            let error = sanitize_recovery_error(&e.to_string());
+            mark_history_recovery_intent_error(&recovery_id, error.clone());
+            record_transaction_diagnostic(
+                DiagnosticLevel::Error,
+                "historyRecoveryReceiptLookupFailed",
+                Some(chain_id),
+                Some(account_index),
+                Some(intent.tx_hash.clone()),
+                Some(error.clone()),
+                json!({ "recoveryId": recovery_id }),
+            );
+            error
+        })?;
+    let (outcome_state, receipt_summary_value, decision, result_status, message) = if let Some(
+        receipt,
+    ) = receipt
+    {
+        let next_state = chain_outcome_from_receipt_status(receipt.status);
+        let decision = format!(
+            "receiptStatus{}",
+            receipt
+                .status
+                .map(|value| value.as_u64().to_string())
+                .unwrap_or_else(|| "unknown".to_string())
+        );
+        (
+            next_state,
+            Some(receipt_summary(&receipt)),
+            decision,
+            HistoryRecoveryResultStatus::Recovered,
+            "Recovered local history from the transaction receipt.".to_string(),
+        )
+    } else {
+        let transaction = provider.get_transaction(parsed_hash).await.map_err(|e| {
+            let error = sanitize_recovery_error(&e.to_string());
+            mark_history_recovery_intent_error(&recovery_id, error.clone());
+            record_transaction_diagnostic(
+                DiagnosticLevel::Error,
+                "historyRecoveryTransactionLookupFailed",
+                Some(chain_id),
+                Some(account_index),
+                Some(intent.tx_hash.clone()),
+                Some(error.clone()),
+                json!({ "recoveryId": recovery_id }),
+            );
+            error
+        })?;
+        if transaction.is_none() {
+            let error = sanitize_recovery_error(
+                "transaction was not found by tx hash; no local history record was written",
+            );
+            mark_history_recovery_intent_error(&recovery_id, error.clone());
+            record_transaction_diagnostic(
+                DiagnosticLevel::Warn,
+                "historyRecoveryTransactionNotFound",
+                Some(chain_id),
+                Some(account_index),
+                Some(intent.tx_hash.clone()),
+                Some(error.clone()),
+                json!({ "recoveryId": recovery_id }),
+            );
+            return Err(error);
+        }
+        (
+            ChainOutcomeState::Pending,
+            None,
+            "transactionFoundReceiptPending".to_string(),
+            HistoryRecoveryResultStatus::PendingRecovered,
+            "Recovered local history as pending because the transaction exists but no receipt is available.".to_string(),
+        )
+    };
+
+    let recovered_record = history_record_from_recovery_intent(
+        &intent,
+        outcome_state,
+        receipt_summary_value,
+        checked_at,
+        decision,
+    )?;
+    let (final_status, final_record, records, final_message) =
+        match finalize_recovered_history_record(&intent, recovered_record) {
+            Ok((status, record, records, locked_message)) => {
+                let status = if status == HistoryRecoveryResultStatus::Recovered {
+                    result_status
+                } else {
+                    status
+                };
+                let message = if status == HistoryRecoveryResultStatus::AlreadyRecovered {
+                    locked_message
+                } else {
+                    message
+                };
+                (status, record, records, message)
+            }
+            Err(error) => {
+                mark_history_recovery_intent_error(&recovery_id, error.clone());
+                record_transaction_diagnostic(
+                    DiagnosticLevel::Error,
+                    "historyRecoveryHistoryWriteFailed",
+                    Some(chain_id),
+                    Some(account_index),
+                    Some(intent.tx_hash.clone()),
+                    Some(error.clone()),
+                    json!({ "recoveryId": recovery_id }),
+                );
+                return Err(error);
+            }
+        };
+    let updated_intent =
+        match mark_recovery_intent_recovered_or_error(&recovery_id, &intent.tx_hash) {
+            Ok(intent) => intent,
+            Err(error) => return Err(error),
+        };
+    if final_status == HistoryRecoveryResultStatus::AlreadyRecovered {
+        record_transaction_diagnostic(
+            DiagnosticLevel::Info,
+            "historyRecoveryAlreadyRecovered",
+            Some(chain_id),
+            Some(account_index),
+            Some(intent.tx_hash.clone()),
+            None,
+            json!({ "recoveryId": recovery_id }),
+        );
+    } else {
+        record_transaction_diagnostic(
+            DiagnosticLevel::Info,
+            "historyRecoveryHistoryWriteSucceeded",
+            Some(chain_id),
+            Some(account_index),
+            Some(intent.tx_hash.clone()),
+            None,
+            json!({ "recoveryId": recovery_id, "result": final_status }),
+        );
+    }
+    Ok(HistoryRecoveryResult {
+        status: final_status,
+        intent: updated_intent,
+        record: final_record,
+        history: records,
+        message: final_message,
+    })
+}
+
 async fn preflight_native_transfer(
     intent: &NativeTransferIntent,
     signer_address: Address,
@@ -1419,18 +2073,53 @@ pub async fn submit_native_transfer_with_history_kind(
     );
 
     let history_kind = kind.clone();
-    persist_pending_history_with_kind(intent, tx_hash.clone(), kind, replaces_tx_hash).map_err(
-        |error| {
+    let recovery_intent = intent.clone();
+    let recovery_kind = kind.clone();
+    let recovery_replaces_tx_hash = replaces_tx_hash.clone();
+    let broadcasted_at = now_unix_seconds()?;
+    persist_pending_history_with_kind_at(
+        intent,
+        tx_hash.clone(),
+        kind,
+        replaces_tx_hash,
+        broadcasted_at.clone(),
+    )
+    .map_err(|error| {
+        let recovery_result = history_recovery_intent_from_broadcast_failure(
+            &recovery_intent,
+            tx_hash.clone(),
+            recovery_kind,
+            recovery_replaces_tx_hash,
+            broadcasted_at,
+            error.clone(),
+        )
+        .and_then(record_history_recovery_intent);
+        let recovery_recorded = recovery_result.is_ok();
+        let recovery_error = recovery_result.err();
+        if let Some(recovery_error) = recovery_error.clone() {
             record_transaction_diagnostic(
                 DiagnosticLevel::Error,
-                "nativeTransferHistoryWriteAfterBroadcastFailed",
-                None,
-                None,
+                "nativeTransferHistoryRecoveryIntentWriteFailed",
+                Some(recovery_intent.chain_id),
+                Some(recovery_intent.account_index),
                 Some(tx_hash.clone()),
-                Some(error.clone()),
-                json!({ "kind": history_kind }),
+                Some(recovery_error),
+                json!({ "kind": history_kind, "nonce": recovery_intent.nonce }),
             );
-            broadcast_history_write_error(&tx_hash, &error)
-        },
-    )
+        }
+        record_transaction_diagnostic(
+            DiagnosticLevel::Error,
+            "nativeTransferHistoryWriteAfterBroadcastFailed",
+            Some(recovery_intent.chain_id),
+            Some(recovery_intent.account_index),
+            Some(tx_hash.clone()),
+            Some(error.clone()),
+            json!({
+                "kind": history_kind,
+                "nonce": recovery_intent.nonce,
+                "recoveryRecorded": recovery_recorded,
+            }),
+        );
+        broadcast_history_write_error(&tx_hash, &error)
+    })
 }

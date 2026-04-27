@@ -33,6 +33,10 @@ pub fn history_path() -> Result<PathBuf, String> {
     Ok(ensure_app_dir()?.join("tx-history.json"))
 }
 
+pub fn history_recovery_intents_path() -> Result<PathBuf, String> {
+    Ok(ensure_app_dir()?.join("history-recovery-intents.json"))
+}
+
 pub fn diagnostics_path() -> Result<PathBuf, String> {
     Ok(ensure_app_dir()?.join("diagnostics.jsonl"))
 }

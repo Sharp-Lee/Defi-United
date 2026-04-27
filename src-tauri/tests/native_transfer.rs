@@ -14,11 +14,11 @@ use wallet_workbench_lib::storage::{diagnostics_path, history_path};
 use wallet_workbench_lib::transactions::{
     apply_pending_history_updates, broadcast_history_write_error,
     chain_outcome_from_receipt_status, dropped_state_for_missing_receipt, inspect_history_storage,
-    load_history_records, mark_prior_history_state, mark_prior_history_state_with_replacement,
-    next_nonce_with_pending_history, nonce_thread_key, persist_pending_history,
-    persist_pending_history_with_kind, quarantine_history_storage, reconcile_pending_history,
-    ChainOutcomeState, HistoryCorruptionType, HistoryRecord, HistoryStorageStatus,
-    NativeTransferIntent,
+    load_history_records, load_history_recovery_intents, mark_prior_history_state,
+    mark_prior_history_state_with_replacement, next_nonce_with_pending_history, nonce_thread_key,
+    persist_pending_history, persist_pending_history_with_kind, quarantine_history_storage,
+    reconcile_pending_history, recover_broadcasted_history_record, ChainOutcomeState,
+    HistoryCorruptionType, HistoryRecord, HistoryStorageStatus, NativeTransferIntent,
 };
 
 const APP_DIR_ENV: &str = "EVM_WALLET_WORKBENCH_APP_DIR";
@@ -246,6 +246,163 @@ fn start_submission_guard_rpc_server() -> (String, Arc<Mutex<Vec<String>>>) {
         }
     });
     (format!("http://{address}"), requests)
+}
+
+fn start_history_write_failure_rpc_server(history_path: PathBuf) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind rpc server");
+    let address = listener.local_addr().expect("local addr");
+    thread::spawn(move || {
+        for stream in listener.incoming().take(4) {
+            let mut stream = stream.expect("accept rpc request");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .expect("set read timeout");
+            let mut buffer = [0; 4096];
+            let bytes = stream.read(&mut buffer).expect("read rpc request");
+            let mut request = String::from_utf8_lossy(&buffer[..bytes]).to_string();
+            while !request.contains("eth_") {
+                match stream.read(&mut buffer) {
+                    Ok(0) => break,
+                    Ok(bytes) => request.push_str(&String::from_utf8_lossy(&buffer[..bytes])),
+                    Err(_) => break,
+                }
+            }
+            let result = if request.contains("eth_chainId") {
+                "\"0x1\""
+            } else if request.contains("eth_getBalance") {
+                "\"0xffffffffffffffffffff\""
+            } else if request.contains("eth_getTransactionCount") {
+                "\"0x0\""
+            } else if request.contains("eth_sendRawTransaction") {
+                fs::create_dir_all(&history_path).expect("turn history path into directory");
+                "\"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\""
+            } else {
+                "null"
+            };
+            let body = format!(r#"{{"jsonrpc":"2.0","id":1,"result":{result}}}"#);
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("write rpc response");
+        }
+    });
+    format!("http://{address}")
+}
+
+fn start_recovery_rpc_server(
+    receipt_result: &'static str,
+    transaction_result: &'static str,
+) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind rpc server");
+    let address = listener.local_addr().expect("local addr");
+    thread::spawn(move || {
+        for stream in listener.incoming().take(3) {
+            let mut stream = stream.expect("accept rpc request");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .expect("set read timeout");
+            let mut buffer = [0; 4096];
+            let bytes = stream.read(&mut buffer).expect("read rpc request");
+            let mut request = String::from_utf8_lossy(&buffer[..bytes]).to_string();
+            while !request.contains("eth_") {
+                match stream.read(&mut buffer) {
+                    Ok(0) => break,
+                    Ok(bytes) => request.push_str(&String::from_utf8_lossy(&buffer[..bytes])),
+                    Err(_) => break,
+                }
+            }
+            let result = if request.contains("eth_chainId") {
+                "\"0x1\""
+            } else if request.contains("eth_getTransactionReceipt") {
+                receipt_result
+            } else if request.contains("eth_getTransactionByHash") {
+                transaction_result
+            } else {
+                "null"
+            };
+            let body = format!(r#"{{"jsonrpc":"2.0","id":1,"result":{result}}}"#);
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("write rpc response");
+        }
+    });
+    format!("http://{address}")
+}
+
+fn start_recovery_rpc_server_writing_history_on_receipt(
+    receipt_result: String,
+    history_path: PathBuf,
+    history_contents: String,
+) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind rpc server");
+    let address = listener.local_addr().expect("local addr");
+    thread::spawn(move || {
+        for stream in listener.incoming().take(2) {
+            let mut stream = stream.expect("accept rpc request");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .expect("set read timeout");
+            let mut buffer = [0; 4096];
+            let bytes = stream.read(&mut buffer).expect("read rpc request");
+            let mut request = String::from_utf8_lossy(&buffer[..bytes]).to_string();
+            while !request.contains("eth_") {
+                match stream.read(&mut buffer) {
+                    Ok(0) => break,
+                    Ok(bytes) => request.push_str(&String::from_utf8_lossy(&buffer[..bytes])),
+                    Err(_) => break,
+                }
+            }
+            let result = if request.contains("eth_chainId") {
+                "\"0x1\"".to_string()
+            } else if request.contains("eth_getTransactionReceipt") {
+                fs::write(&history_path, &history_contents).expect("write concurrent history");
+                receipt_result.clone()
+            } else {
+                "null".to_string()
+            };
+            let body = format!(r#"{{"jsonrpc":"2.0","id":1,"result":{result}}}"#);
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("write rpc response");
+        }
+    });
+    format!("http://{address}")
+}
+
+fn confirmed_recovery_receipt_json() -> String {
+    let bloom = format!("0x{}", "0".repeat(512));
+    format!(
+        r#"{{
+          "transactionHash":"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "transactionIndex":"0x0",
+          "blockHash":"0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "blockNumber":"0x1",
+          "from":"0x70997970C51812dc3A010C7d01b50e0d17dc79C8",
+          "to":"0x2222222222222222222222222222222222222222",
+          "cumulativeGasUsed":"0x5208",
+          "gasUsed":"0x5208",
+          "contractAddress":null,
+          "logs":[],
+          "logsBloom":"{bloom}",
+          "status":"0x1",
+          "effectiveGasPrice":"0x1",
+          "type":"0x2"
+        }}"#
+    )
 }
 
 #[test]
@@ -521,6 +678,310 @@ async fn submit_refuses_to_broadcast_when_history_is_unreadable() {
         "unexpected error: {error}; requests={joined_requests}"
     );
     assert!(!joined_requests.contains("eth_sendRawTransaction"));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn broadcast_history_write_failure_records_recovery_intent_without_rpc_secret() {
+    let _guard = test_lock().lock().expect("test lock");
+    let _app_dir_guard = TestAppDirGuard::new("broadcast-history-recovery-intent");
+    wallet_workbench_lib::session::write_session_mnemonic(
+        "test test test test test test test test test test test junk".into(),
+    );
+    let path = history_path().expect("history path");
+    let rpc_url = start_history_write_failure_rpc_server(path);
+    let mut intent = native_transfer_intent(0, "1");
+    intent.rpc_url = format!("{rpc_url}/?apiKey=super-secret");
+    intent.account_index = 1;
+    intent.chain_id = 1;
+    intent.from = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8".into();
+
+    let error = wallet_workbench_lib::transactions::submit_native_transfer(intent)
+        .await
+        .expect_err("history write should fail after broadcast");
+    let intents = load_history_recovery_intents().expect("load recovery intents");
+    let raw_intents = serde_json::to_string(&intents).expect("serialize recovery intents");
+    let events = read_diagnostic_events_from_path(&diagnostics_path().expect("diagnostics path"))
+        .expect("read diagnostics");
+    let raw_events = serde_json::to_string(&events).expect("serialize diagnostics");
+
+    assert!(error.contains("transaction broadcast"));
+    assert_eq!(intents.len(), 1);
+    assert_eq!(
+        intents[0].tx_hash,
+        "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    );
+    assert_eq!(intents[0].chain_id, Some(1));
+    assert_eq!(intents[0].account_index, Some(1));
+    assert_eq!(
+        intents[0].from.as_deref(),
+        Some("0x70997970C51812dc3A010C7d01b50e0d17dc79C8")
+    );
+    assert_eq!(intents[0].nonce, Some(0));
+    assert!(
+        intents[0].write_error.contains("Is a directory")
+            || intents[0].write_error.contains("directory")
+    );
+    assert!(!raw_intents.contains("rpc_url"));
+    assert!(!raw_intents.contains("super-secret"));
+    assert!(!raw_events.contains("super-secret"));
+    assert!(events
+        .iter()
+        .any(|event| event.event == "nativeTransferHistoryWriteAfterBroadcastFailed"));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn recovery_writes_confirmed_history_and_does_not_duplicate() {
+    let _guard = test_lock().lock().expect("test lock");
+    let _app_dir_guard = TestAppDirGuard::new("broadcast-history-recover-confirmed");
+    wallet_workbench_lib::session::write_session_mnemonic(
+        "test test test test test test test test test test test junk".into(),
+    );
+    let path = history_path().expect("history path");
+    let rpc_url = start_history_write_failure_rpc_server(path.clone());
+    let mut intent = native_transfer_intent(0, "1");
+    intent.rpc_url = rpc_url;
+    intent.account_index = 1;
+    intent.chain_id = 1;
+    intent.from = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8".into();
+    let _ = wallet_workbench_lib::transactions::submit_native_transfer(intent)
+        .await
+        .expect_err("history write should fail after broadcast");
+    fs::remove_dir_all(&path).expect("remove blocking history directory");
+    fs::write(&path, "[]").expect("reset healthy history");
+    let recovery_id = load_history_recovery_intents()
+        .expect("load recovery intents")
+        .first()
+        .expect("recovery intent")
+        .id
+        .clone();
+    let receipt = confirmed_recovery_receipt_json();
+    let rpc_url = format!(
+        "{}/v1?apiKey=recovery-secret-token",
+        start_recovery_rpc_server(Box::leak(receipt.into_boxed_str()), "null")
+    );
+
+    let result = recover_broadcasted_history_record(recovery_id.clone(), rpc_url, 1)
+        .await
+        .expect("recover history");
+    let duplicate = recover_broadcasted_history_record(recovery_id, "http://127.0.0.1:1".into(), 1)
+        .await
+        .expect("duplicate recovery should not need rpc");
+    let records = load_history_records().expect("load recovered history");
+
+    assert_eq!(result.record.outcome.state, ChainOutcomeState::Confirmed);
+    assert_eq!(
+        result
+            .record
+            .outcome
+            .receipt
+            .as_ref()
+            .and_then(|receipt| receipt.status),
+        Some(1)
+    );
+    assert_eq!(
+        result.record.intent_snapshot.source,
+        "historyRecoveryIntent"
+    );
+    assert_eq!(
+        result.record.intent.rpc_url,
+        "recovered://history-write-failed"
+    );
+    assert!(!serde_json::to_string(&result.record)
+        .expect("serialize recovered record")
+        .contains("recovery-secret-token"));
+    assert!(!serde_json::to_string(&result.record)
+        .expect("serialize recovered record")
+        .contains("127.0.0.1"));
+    assert_eq!(duplicate.history.len(), 1);
+    assert_eq!(records.len(), 1);
+    assert_eq!(
+        records[0].outcome.tx_hash,
+        "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn recovery_final_write_reloads_history_inside_lock_to_preserve_concurrent_records() {
+    let _guard = test_lock().lock().expect("test lock");
+    let _app_dir_guard = TestAppDirGuard::new("broadcast-history-recover-concurrent-reload");
+    wallet_workbench_lib::session::write_session_mnemonic(
+        "test test test test test test test test test test test junk".into(),
+    );
+    let path = history_path().expect("history path");
+    let rpc_url = start_history_write_failure_rpc_server(path.clone());
+    let mut intent = native_transfer_intent(0, "1");
+    intent.rpc_url = rpc_url;
+    intent.account_index = 1;
+    intent.chain_id = 1;
+    intent.from = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8".into();
+    let _ = wallet_workbench_lib::transactions::submit_native_transfer(intent)
+        .await
+        .expect_err("history write should fail after broadcast");
+    fs::remove_dir_all(&path).expect("remove blocking history directory");
+    fs::write(&path, "[]").expect("reset healthy history");
+    let recovery_id = load_history_recovery_intents()
+        .expect("load recovery intents")
+        .first()
+        .expect("recovery intent")
+        .id
+        .clone();
+    let concurrent_record = history_record(77, ChainOutcomeState::Pending, "0xconcurrent");
+    let concurrent_history = serde_json::to_string_pretty(&vec![concurrent_record])
+        .expect("serialize concurrent history");
+    let rpc_url = start_recovery_rpc_server_writing_history_on_receipt(
+        confirmed_recovery_receipt_json(),
+        path.clone(),
+        concurrent_history,
+    );
+
+    let result = recover_broadcasted_history_record(recovery_id, rpc_url, 1)
+        .await
+        .expect("recover history");
+    let records = load_history_records().expect("load history");
+
+    assert_eq!(result.history.len(), 2);
+    assert_eq!(records.len(), 2);
+    assert!(records
+        .iter()
+        .any(|record| record.outcome.tx_hash == "0xconcurrent"));
+    assert!(records.iter().any(|record| {
+        record.outcome.tx_hash
+            == "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn recovery_does_not_write_when_chain_has_no_transaction() {
+    let _guard = test_lock().lock().expect("test lock");
+    let _app_dir_guard = TestAppDirGuard::new("broadcast-history-recover-not-found");
+    wallet_workbench_lib::session::write_session_mnemonic(
+        "test test test test test test test test test test test junk".into(),
+    );
+    let path = history_path().expect("history path");
+    let rpc_url = start_history_write_failure_rpc_server(path.clone());
+    let mut intent = native_transfer_intent(0, "1");
+    intent.rpc_url = rpc_url;
+    intent.account_index = 1;
+    intent.chain_id = 1;
+    intent.from = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8".into();
+    let _ = wallet_workbench_lib::transactions::submit_native_transfer(intent)
+        .await
+        .expect_err("history write should fail after broadcast");
+    fs::remove_dir_all(&path).expect("remove blocking history directory");
+    fs::write(&path, "[]").expect("reset healthy history");
+    let recovery_id = load_history_recovery_intents()
+        .expect("load recovery intents")
+        .first()
+        .expect("recovery intent")
+        .id
+        .clone();
+    let rpc_url = start_recovery_rpc_server("null", "null");
+
+    let error = recover_broadcasted_history_record(recovery_id, rpc_url, 1)
+        .await
+        .expect_err("missing transaction should not write terminal history");
+    let records = load_history_records().expect("load history");
+
+    assert!(error.contains("not found"));
+    assert!(records.is_empty());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn recovery_rejects_intents_missing_minimum_frozen_fields() {
+    let _guard = test_lock().lock().expect("test lock");
+    let _app_dir_guard = TestAppDirGuard::new("broadcast-history-recover-missing-fields");
+    let path = wallet_workbench_lib::storage::history_recovery_intents_path()
+        .expect("recovery intents path");
+    fs::write(
+        path,
+        serde_json::to_string_pretty(&serde_json::json!([
+            {
+                "schemaVersion": 1,
+                "id": "missing-nonce",
+                "status": "active",
+                "createdAt": "1700000000",
+                "txHash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "kind": "nativeTransfer",
+                "chainId": 1,
+                "accountIndex": 1,
+                "from": "0x1111111111111111111111111111111111111111",
+                "nonce": null,
+                "to": "0x2222222222222222222222222222222222222222",
+                "valueWei": "1",
+                "gasLimit": "21000",
+                "maxFeePerGas": "1",
+                "maxPriorityFeePerGas": "1",
+                "replacesTxHash": null,
+                "broadcastedAt": "1700000000",
+                "writeError": "disk full",
+                "lastRecoveryError": null,
+                "recoveredAt": null,
+                "dismissedAt": null
+            }
+        ]))
+        .expect("serialize recovery intent"),
+    )
+    .expect("write recovery intent");
+    let error =
+        recover_broadcasted_history_record("missing-nonce".into(), "http://127.0.0.1:1".into(), 1)
+            .await
+            .expect_err("missing nonce must be rejected before rpc");
+
+    assert!(error.contains("missing nonce"));
+}
+
+#[test]
+fn recovery_intents_load_with_sanitized_errors() {
+    with_test_app_dir("broadcast-history-recovery-error-sanitize", |_| {
+        let path = wallet_workbench_lib::storage::history_recovery_intents_path()
+            .expect("recovery intents path");
+        fs::write(
+            path,
+            serde_json::to_string_pretty(&serde_json::json!([
+                {
+                    "schemaVersion": 1,
+                    "id": "sensitive-error",
+                    "status": "active",
+                    "createdAt": "1700000000",
+                    "txHash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "kind": "nativeTransfer",
+                    "chainId": 1,
+                    "accountIndex": 1,
+                    "from": "0x1111111111111111111111111111111111111111",
+                    "nonce": 1,
+                    "to": "0x2222222222222222222222222222222222222222",
+                    "valueWei": "1",
+                    "gasLimit": "21000",
+                    "maxFeePerGas": "1",
+                    "maxPriorityFeePerGas": "1",
+                    "replacesTxHash": null,
+                    "broadcastedAt": "1700000000",
+                    "writeError": "failed at https://rpc.example/v1?apiKey=write-secret rawTx=0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa token token-secret password hunter2",
+                    "lastRecoveryError": "Authorization Bearer bearer-secret mnemonic test test test test next=value privateKey=0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb signature sig-secret private key my-secret raw tx raw-secret",
+                    "recoveredAt": null,
+                    "dismissedAt": null
+                }
+            ]))
+            .expect("serialize recovery intent"),
+        )
+        .expect("write recovery intent");
+
+        let intents = load_history_recovery_intents().expect("load recovery intents");
+        let raw = serde_json::to_string(&intents).expect("serialize recovery intents");
+
+        assert_eq!(intents.len(), 1);
+        assert!(raw.contains("[redacted"));
+        assert!(!raw.contains("rpc.example"));
+        assert!(!raw.contains("write-secret"));
+        assert!(!raw.contains("token-secret"));
+        assert!(!raw.contains("hunter2"));
+        assert!(!raw.contains("bearer-secret"));
+        assert!(!raw.contains("sig-secret"));
+        assert!(!raw.contains("my-secret"));
+        assert!(!raw.contains("raw-secret"));
+        assert!(!raw.contains("test test test"));
+        assert!(!raw.contains("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"));
+    });
 }
 
 #[test]

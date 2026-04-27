@@ -570,31 +570,47 @@ fn collect_metadata_strings_for_keys(value: &Value, keys: &[&str], output: &mut 
 pub fn sanitize_diagnostic_message(value: &str) -> String {
     let mut redact_mode = RedactMode::None;
     let mut sanitized_parts = Vec::new();
-    for token in value.split_whitespace() {
+    let tokens = value.split_whitespace().collect::<Vec<_>>();
+    let mut index = 0;
+    while index < tokens.len() {
+        let token = tokens[index];
         match redact_mode {
             RedactMode::None => {}
             RedactMode::Next => {
                 sanitized_parts.push("[redacted]".to_string());
                 redact_mode = RedactMode::None;
+                index += 1;
                 continue;
             }
             RedactMode::NextTwo => {
                 sanitized_parts.push("[redacted]".to_string());
                 redact_mode = RedactMode::Next;
+                index += 1;
                 continue;
             }
             RedactMode::UntilNextKeyValue => {
                 if looks_like_key_value_token(token) {
                 } else {
                     sanitized_parts.push("[redacted]".to_string());
+                    index += 1;
                     continue;
                 }
             }
         }
 
+        if let Some((key_len, next_mode)) = sensitive_space_key_match(&tokens, index) {
+            for key_token in &tokens[index..index + key_len] {
+                sanitized_parts.push(sanitize_token(key_token));
+            }
+            redact_mode = next_mode;
+            index += key_len;
+            continue;
+        }
+
         let (sanitized, next_mode) = sanitize_message_token(token);
         sanitized_parts.push(sanitized);
         redact_mode = next_mode;
+        index += 1;
     }
 
     let mut sanitized = sanitized_parts.join(" ");
@@ -623,6 +639,9 @@ fn sanitize_message_token(token: &str) -> (String, RedactMode) {
     }
     if is_standalone_authorization_key(token) {
         return (sanitize_token(token), RedactMode::NextTwo);
+    }
+    if is_standalone_multi_token_secret_key(token) {
+        return (sanitize_token(token), RedactMode::UntilNextKeyValue);
     }
     if is_standalone_auth_scheme(token) {
         return ("[redacted]".to_string(), RedactMode::Next);
@@ -731,6 +750,70 @@ fn is_standalone_auth_scheme(token: &str) -> bool {
         normalize_key_name(trim_auth_token_punctuation(token)).as_str(),
         "bearer" | "basic"
     )
+}
+
+fn is_standalone_multi_token_secret_key(token: &str) -> bool {
+    matches!(
+        normalize_key_name(trim_auth_token_punctuation(token)).as_str(),
+        "mnemonic" | "seed" | "seedphrase" | "recoveryphrase"
+    )
+}
+
+fn sensitive_space_key_match(tokens: &[&str], index: usize) -> Option<(usize, RedactMode)> {
+    let first = normalized_standalone_token(tokens.get(index)?);
+    let second = tokens
+        .get(index + 1)
+        .map(|token| normalized_standalone_token(token));
+
+    if matches!(
+        (first.as_str(), second.as_deref()),
+        ("api", Some("key"))
+            | ("access", Some("token"))
+            | ("private", Some("key"))
+            | ("raw", Some("tx"))
+            | ("raw", Some("transaction"))
+            | ("signed", Some("tx"))
+            | ("signed", Some("transaction"))
+    ) {
+        return Some((2, RedactMode::Next));
+    }
+    if matches!(
+        (first.as_str(), second.as_deref()),
+        ("seed", Some("phrase")) | ("recovery", Some("phrase"))
+    ) {
+        return Some((2, RedactMode::UntilNextKeyValue));
+    }
+    if matches!(
+        first.as_str(),
+        "token"
+            | "password"
+            | "passphrase"
+            | "signature"
+            | "secret"
+            | "apikey"
+            | "accesstoken"
+            | "privatekey"
+            | "rawtx"
+            | "rawtransaction"
+            | "signedtx"
+            | "signedtransaction"
+    ) {
+        return Some((1, RedactMode::Next));
+    }
+    if matches!(first.as_str(), "auth" | "authorization") {
+        return Some((1, RedactMode::NextTwo));
+    }
+    if matches!(
+        first.as_str(),
+        "mnemonic" | "seed" | "seedphrase" | "recoveryphrase"
+    ) {
+        return Some((1, RedactMode::UntilNextKeyValue));
+    }
+    None
+}
+
+fn normalized_standalone_token(token: &&str) -> String {
+    normalize_key_name(trim_auth_token_punctuation(token))
 }
 
 fn trim_auth_token_punctuation(token: &str) -> &str {
@@ -977,6 +1060,43 @@ mod tests {
         assert!(!message.contains("abandon"));
         assert!(message.contains("mnemonic=[redacted] [redacted] [redacted]"));
         assert!(message.contains("next=value"));
+    }
+
+    #[test]
+    fn redacts_space_separated_sensitive_keys_and_phrases() {
+        let event = event(
+            "token token-secret password hunter2 signature sig-secret private key my-secret raw tx raw-secret api key api-secret access token access-secret signed transaction signed-secret auth Basic auth-secret next=value",
+            serde_json::json!({
+                "message": "secret nested-secret raw transaction nested-raw signed tx nested-signed"
+            }),
+        );
+        let serialized = serde_json::to_string(&event).expect("serialize");
+
+        for secret in [
+            "token-secret",
+            "hunter2",
+            "sig-secret",
+            "my-secret",
+            "raw-secret",
+            "api-secret",
+            "access-secret",
+            "signed-secret",
+            "auth-secret",
+            "nested-secret",
+            "nested-raw",
+            "nested-signed",
+        ] {
+            assert!(
+                !serialized.contains(secret),
+                "leaked {secret}: {serialized}"
+            );
+        }
+        assert!(serialized.contains("token [redacted]"));
+        assert!(serialized.contains("password [redacted]"));
+        assert!(serialized.contains("private key [redacted]"));
+        assert!(serialized.contains("raw tx [redacted]"));
+        assert!(serialized.contains("api key [redacted]"));
+        assert!(serialized.contains("access token [redacted]"));
     }
 
     #[test]

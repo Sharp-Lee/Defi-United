@@ -16,6 +16,7 @@ import {
 } from "../../core/history/selectors";
 import type {
   HistoryCorruptionType,
+  HistoryRecoveryIntent,
   HistoryRecord,
   HistoryStorageInspection,
   HistoryStorageQuarantineResult,
@@ -255,6 +256,8 @@ export function HistoryView({
   items,
   onRefresh,
   onQuarantineHistory,
+  onRecoverBroadcastedHistory,
+  onDismissRecovery,
   onReplace,
   onCancelPending,
   disabled = false,
@@ -262,10 +265,14 @@ export function HistoryView({
   error = null,
   storage = null,
   lastQuarantine = null,
+  recoveryIntents = [],
+  recoveryRpcDisabledReason = null,
 }: {
   items: HistoryRecord[];
   onRefresh: () => Promise<void> | void;
   onQuarantineHistory?: () => Promise<void> | void;
+  onRecoverBroadcastedHistory?: (recoveryId: string) => Promise<void> | void;
+  onDismissRecovery?: (recoveryId: string) => Promise<void> | void;
   onReplace?: (request: PendingMutationRequest) => Promise<void> | void;
   onCancelPending?: (request: PendingMutationRequest) => Promise<void> | void;
   disabled?: boolean;
@@ -273,6 +280,8 @@ export function HistoryView({
   error?: string | null;
   storage?: HistoryStorageInspection | null;
   lastQuarantine?: HistoryStorageQuarantineResult | null;
+  recoveryIntents?: HistoryRecoveryIntent[];
+  recoveryRpcDisabledReason?: string | null;
 }) {
   const [viewMode, setViewMode] = useState<"submissions" | "threads">("submissions");
   const [accountFilter, setAccountFilter] = useState(ALL);
@@ -406,6 +415,10 @@ export function HistoryView({
         .slice(0, 3),
     [allEntries],
   );
+  const activeRecoveryIntents = useMemo(
+    () => recoveryIntents.filter((intent) => intent.status === "active"),
+    [recoveryIntents],
+  );
 
   async function handleRefresh() {
     setRefreshing(true);
@@ -537,6 +550,16 @@ export function HistoryView({
       )}
       {lastQuarantine && storage?.status !== "corrupted" && (
         <HistoryStorageRecoveredCard result={lastQuarantine} />
+      )}
+      {activeRecoveryIntents.length > 0 && (
+        <HistoryBroadcastRecoveryList
+          disabled={disabled || isBusy}
+          intents={activeRecoveryIntents}
+          onDismissRecovery={onDismissRecovery}
+          onRecoverBroadcastedHistory={onRecoverBroadcastedHistory}
+          recoveryRpcDisabledReason={recoveryRpcDisabledReason}
+          storageBlockedReason={storageBlockedReason}
+        />
       )}
       {isBusy && items.length === 0 && <div className="inline-warning">Loading transaction history...</div>}
       {recentFailureSummaries.length > 0 && (
@@ -791,6 +814,164 @@ function invalidRecordSummary(storage: HistoryStorageInspection) {
     ? storage.invalidRecordIndices.join(", ")
     : "not available";
   return `${storage.invalidRecordCount} invalid record(s); first indices: ${indices}.`;
+}
+
+function recoveryDisabledReason(
+  intent: HistoryRecoveryIntent,
+  storageBlockedReason: string | null,
+  recoveryRpcDisabledReason: string | null,
+  handlerAvailable: boolean,
+) {
+  if (storageBlockedReason) return storageBlockedReason;
+  if (recoveryRpcDisabledReason) return recoveryRpcDisabledReason;
+  if (!handlerAvailable) return "Recovery handler is not available in this view.";
+  if (intent.chainId === null || intent.chainId === undefined) {
+    return "Recovery is disabled because the frozen chainId is missing.";
+  }
+  if (intent.accountIndex === null || intent.accountIndex === undefined || !intent.from) {
+    return "Recovery is disabled because the frozen account/from is missing.";
+  }
+  if (intent.nonce === null || intent.nonce === undefined) {
+    return "Recovery is disabled because the frozen nonce is missing.";
+  }
+  if (!intent.txHash) return "Recovery is disabled because the tx hash is missing.";
+  return null;
+}
+
+function feeSummary(intent: HistoryRecoveryIntent) {
+  const gasLimit = intent.gasLimit ?? "unknown";
+  const maxFee = intent.maxFeePerGas ?? "unknown";
+  const priority = intent.maxPriorityFeePerGas ?? "unknown";
+  return `gas ${gasLimit} · max ${maxFee} wei · priority ${priority} wei`;
+}
+
+function sanitizeRecoveryDisplayText(value: string) {
+  return value
+    .replace(/https?:\/\/\S+/gi, "[redacted_url]")
+    .replace(/\b(?:wss?|ws):\/\/\S+/gi, "[redacted_url]")
+    .replace(/\b(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+/gi, "[redacted_auth]")
+    .replace(
+      /\b(mnemonic|seed(?:\s+phrase)?|recovery\s+phrase)\b\s+.*?(?=\s+[A-Za-z0-9_-]+\s*[:=]|$)/gi,
+      "$1 [redacted]",
+    )
+    .replace(
+      /\b(api\s+key|access\s+token|private\s+key|raw\s+tx|signed\s+tx|raw\s+transaction|signed\s+transaction|token|authorization|auth|password|passphrase|signature|secret)\b\s+("[^"]*"|'[^']*'|[^\s,;)]+)/gi,
+      "$1 [redacted]",
+    )
+    .replace(
+      /\b(api[_-]?key|access[_-]?token|token|authorization|auth|password|passphrase|mnemonic|seed|private[_-]?key|signature|signed[_-]?tx|raw[_-]?tx|secret)\s*[:=]\s*("[^"]*"|'[^']*'|[^\s,;)]+)/gi,
+      "$1=[redacted]",
+    )
+    .replace(/0x[a-f0-9]{64,}/gi, "[redacted_hex]");
+}
+
+function HistoryBroadcastRecoveryList({
+  intents,
+  disabled,
+  storageBlockedReason,
+  recoveryRpcDisabledReason,
+  onRecoverBroadcastedHistory,
+  onDismissRecovery,
+}: {
+  intents: HistoryRecoveryIntent[];
+  disabled: boolean;
+  storageBlockedReason: string | null;
+  recoveryRpcDisabledReason: string | null;
+  onRecoverBroadcastedHistory?: (recoveryId: string) => Promise<void> | void;
+  onDismissRecovery?: (recoveryId: string) => Promise<void> | void;
+}) {
+  return (
+    <section className="history-broadcast-recovery-list" aria-label="Broadcast recovery">
+      {intents.map((intent) => {
+        const reason = recoveryDisabledReason(
+          intent,
+          storageBlockedReason,
+          recoveryRpcDisabledReason,
+          Boolean(onRecoverBroadcastedHistory),
+        );
+        return (
+          <article className="history-recovery-card" key={intent.id} role="alert">
+            <header>
+              <div>
+                <span>Broadcast recovery</span>
+                <h3>{short(intent.txHash)}</h3>
+              </div>
+              <span className="pill danger-pill">History missing</span>
+            </header>
+            <p>
+              The transaction was broadcast, but the local history write failed. Recovery queries
+              the selected RPC for this tx hash and writes a local record without signing or
+              broadcasting again.
+            </p>
+            <dl>
+              <div>
+                <dt>chainId</dt>
+                <dd className="mono">{formatOptional(intent.chainId)}</dd>
+              </div>
+              <div>
+                <dt>Account/from</dt>
+                <dd className="mono">
+                  Account {formatOptional(intent.accountIndex)} · {short(formatOptional(intent.from))}
+                </dd>
+              </div>
+              <div>
+                <dt>Nonce</dt>
+                <dd className="mono">{formatOptional(intent.nonce)}</dd>
+              </div>
+              <div>
+                <dt>To/value</dt>
+                <dd className="mono">
+                  {short(formatOptional(intent.to))} · {formatOptional(intent.valueWei)} wei
+                </dd>
+              </div>
+              <div>
+                <dt>Fee summary</dt>
+                <dd className="mono">{feeSummary(intent)}</dd>
+              </div>
+              <div>
+                <dt>Broadcasted at</dt>
+                <dd>{formatTimestamp(intent.broadcastedAt)}</dd>
+              </div>
+              <div>
+                <dt>Write error</dt>
+                <dd>{sanitizeRecoveryDisplayText(intent.writeError)}</dd>
+              </div>
+              {intent.lastRecoveryError && (
+                <div>
+                  <dt>Last recovery error</dt>
+                  <dd>{sanitizeRecoveryDisplayText(intent.lastRecoveryError)}</dd>
+                </div>
+              )}
+            </dl>
+            <p className="history-thread-note">
+              Risk: only recover transactions you recognize. Unknown fields remain unknown; this
+              flow does not recreate an intent beyond the saved frozen submission.
+            </p>
+            <div className="button-row">
+              <button
+                className="secondary-button"
+                disabled={disabled || reason !== null}
+                onClick={() => void onRecoverBroadcastedHistory?.(intent.id)}
+                title={reason ?? "Recover local history from this broadcast tx hash."}
+                type="button"
+              >
+                Recover {short(intent.txHash)}
+              </button>
+              <button
+                className="secondary-button"
+                disabled={disabled || !onDismissRecovery}
+                onClick={() => void onDismissRecovery?.(intent.id)}
+                type="button"
+              >
+                Dismiss
+              </button>
+              {reason && <span className="history-action-reason">{reason}</span>}
+            </div>
+          </article>
+        );
+      })}
+    </section>
+  );
 }
 
 function HistoryStorageRecoveryCard({

@@ -236,6 +236,33 @@ function renderHistory(rawRecords: unknown[], options = {}) {
   );
 }
 
+function recoveryIntent(overrides = {}) {
+  return {
+    schemaVersion: 1,
+    id: "broadcast-1",
+    status: "active",
+    createdAt: "1700000002",
+    txHash: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    kind: "nativeTransfer",
+    chainId: 1,
+    accountIndex: 1,
+    from: accountA,
+    nonce: 7,
+    to: recipient,
+    valueWei: "100",
+    gasLimit: "21000",
+    maxFeePerGas: "40000000000",
+    maxPriorityFeePerGas: "1500000000",
+    replacesTxHash: null,
+    broadcastedAt: "1700000001",
+    writeError: "Is a directory",
+    lastRecoveryError: null,
+    recoveredAt: null,
+    dismissedAt: null,
+    ...overrides,
+  };
+}
+
 const damagedStorage = {
   status: "corrupted" as const,
   path: "/tmp/tx-history.json",
@@ -1198,5 +1225,75 @@ describe("HistoryView", () => {
     expect(screen.getByText("No local transaction history.")).toBeInTheDocument();
     expect(screen.queryByText("History storage recovery")).not.toBeInTheDocument();
     expect(screen.queryByText("Submissions disabled")).not.toBeInTheDocument();
+  });
+
+  it("shows broadcast recovery parameters and calls recover by id", () => {
+    const onRecoverBroadcastedHistory = vi.fn();
+    const onDismissRecovery = vi.fn();
+    renderHistory([], {
+      recoveryIntents: [recoveryIntent()],
+      onRecoverBroadcastedHistory,
+      onDismissRecovery,
+    });
+
+    expect(screen.getByText("Broadcast recovery")).toBeInTheDocument();
+    expect(screen.getByText("History missing")).toBeInTheDocument();
+    expect(screen.getByText(/without signing or broadcasting again/)).toBeInTheDocument();
+    expect(screen.getByText("chainId")).toBeInTheDocument();
+    expect(screen.getByText("gas 21000 · max 40000000000 wei · priority 1500000000 wei")).toBeInTheDocument();
+    expect(screen.getByText("Is a directory")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /Recover 0xaaaaaaaa/i }));
+    expect(onRecoverBroadcastedHistory).toHaveBeenCalledWith("broadcast-1");
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+    expect(onDismissRecovery).toHaveBeenCalledWith("broadcast-1");
+  });
+
+  it("disables broadcast recovery when minimum frozen fields are missing", () => {
+    renderHistory([], {
+      recoveryIntents: [recoveryIntent({ nonce: null })],
+      onRecoverBroadcastedHistory: vi.fn(),
+    });
+
+    expect(screen.getByRole("button", { name: /Recover 0xaaaaaaaa/i })).toBeDisabled();
+    expect(screen.getByText(/frozen nonce is missing/)).toBeInTheDocument();
+  });
+
+  it("redacts sensitive recovery errors before display", () => {
+    renderHistory([], {
+      recoveryIntents: [
+        recoveryIntent({
+          writeError:
+            "failed at https://rpc.example/v1?apiKey=write-secret rawTx=0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa token token-secret password hunter2",
+          lastRecoveryError:
+            "Authorization Bearer bearer-secret mnemonic test test test test next=value privateKey=0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb signature sig-secret private key my-secret raw tx raw-secret",
+        }),
+      ],
+      onRecoverBroadcastedHistory: vi.fn(),
+    });
+
+    expect(screen.getByText(/\[redacted_url\]/)).toBeInTheDocument();
+    expect(screen.getAllByText(/\[redacted/).length).toBeGreaterThan(1);
+    expect(screen.queryByText(/rpc\.example/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/write-secret/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/token-secret/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/hunter2/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/bearer-secret/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/sig-secret/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/my-secret/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/raw-secret/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/test test test/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/)).not.toBeInTheDocument();
+  });
+
+  it("blocks broadcast recovery while history storage is corrupted", () => {
+    renderHistory([], {
+      recoveryIntents: [recoveryIntent()],
+      onRecoverBroadcastedHistory: vi.fn(),
+      storage: damagedStorage,
+    });
+
+    expect(screen.getByRole("button", { name: /Recover 0xaaaaaaaa/i })).toBeDisabled();
+    expect(screen.getByText(/Disabled while local transaction history is unreadable/)).toBeInTheDocument();
   });
 });

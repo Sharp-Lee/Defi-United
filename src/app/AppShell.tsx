@@ -10,6 +10,7 @@ import type { ChainRecord } from "../core/chains/registry";
 import type {
   AccountRecord,
   HistoryRecord,
+  HistoryRecoveryIntent,
   HistoryStorageInspection,
   HistoryStorageQuarantineResult,
   PendingMutationRequest,
@@ -27,6 +28,8 @@ export interface AppShellProps {
   onLock?: () => Promise<void> | void;
   accounts?: Array<AccountRecord & AccountChainState>;
   history?: HistoryRecord[];
+  historyRecoveryIntents?: HistoryRecoveryIntent[];
+  historyRecoveryRpcDisabledReason?: string | null;
   chains?: ChainRecord[];
   selectedChainId?: bigint;
   rpcUrl?: string;
@@ -41,6 +44,8 @@ export interface AppShellProps {
   onRefreshAccounts?: () => Promise<void> | void;
   onRefreshHistory?: () => Promise<void> | void;
   onQuarantineHistory?: () => Promise<void> | void;
+  onRecoverBroadcastedHistory?: (recoveryId: string) => Promise<void> | void;
+  onDismissHistoryRecovery?: (recoveryId: string) => Promise<void> | void;
   onReplacePending?: (request: PendingMutationRequest) => Promise<void> | void;
   onCancelPending?: (request: PendingMutationRequest) => Promise<void> | void;
   onChainChange?: (chainId: bigint) => void;
@@ -65,6 +70,8 @@ export function AppShell({
   onLock = () => {},
   accounts = [],
   history = [],
+  historyRecoveryIntents = [],
+  historyRecoveryRpcDisabledReason = null,
   chains = BUILT_IN_CHAINS,
   selectedChainId = 1n,
   rpcUrl = "",
@@ -79,6 +86,8 @@ export function AppShell({
   onRefreshAccounts = async () => {},
   onRefreshHistory = async () => {},
   onQuarantineHistory = async () => {},
+  onRecoverBroadcastedHistory = async () => {},
+  onDismissHistoryRecovery = async () => {},
   onReplacePending = async () => {},
   onCancelPending = async () => {},
   onChainChange = () => {},
@@ -170,9 +179,13 @@ export function AppShell({
                 lastQuarantine={lastHistoryQuarantine}
                 loading={busy}
                 onCancelPending={onCancelPending}
+                onDismissRecovery={onDismissHistoryRecovery}
                 onQuarantineHistory={onQuarantineHistory}
                 onRefresh={onRefreshHistory}
+                onRecoverBroadcastedHistory={onRecoverBroadcastedHistory}
                 onReplace={onReplacePending}
+                recoveryIntents={historyRecoveryIntents}
+                recoveryRpcDisabledReason={historyRecoveryRpcDisabledReason}
                 storage={historyStorage}
               />
             )}

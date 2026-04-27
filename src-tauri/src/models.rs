@@ -299,3 +299,69 @@ pub struct HistoryRecord {
     #[serde(default)]
     pub nonce_thread: NonceThread,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum HistoryRecoveryIntentStatus {
+    Active,
+    Recovered,
+    Dismissed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryRecoveryIntent {
+    pub schema_version: u32,
+    pub id: String,
+    pub status: HistoryRecoveryIntentStatus,
+    pub created_at: String,
+    pub tx_hash: String,
+    #[serde(default)]
+    pub kind: SubmissionKind,
+    #[serde(default)]
+    pub chain_id: Option<u64>,
+    #[serde(default)]
+    pub account_index: Option<u32>,
+    #[serde(default)]
+    pub from: Option<String>,
+    #[serde(default)]
+    pub nonce: Option<u64>,
+    #[serde(default)]
+    pub to: Option<String>,
+    #[serde(default)]
+    pub value_wei: Option<String>,
+    #[serde(default)]
+    pub gas_limit: Option<String>,
+    #[serde(default)]
+    pub max_fee_per_gas: Option<String>,
+    #[serde(default)]
+    pub max_priority_fee_per_gas: Option<String>,
+    #[serde(default)]
+    pub replaces_tx_hash: Option<String>,
+    pub broadcasted_at: String,
+    pub write_error: String,
+    #[serde(default)]
+    pub last_recovery_error: Option<String>,
+    #[serde(default)]
+    pub recovered_at: Option<String>,
+    #[serde(default)]
+    pub dismissed_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum HistoryRecoveryResultStatus {
+    Recovered,
+    PendingRecovered,
+    AlreadyRecovered,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryRecoveryResult {
+    pub status: HistoryRecoveryResultStatus,
+    pub intent: HistoryRecoveryIntent,
+    pub record: HistoryRecord,
+    pub history: Vec<HistoryRecord>,
+    pub message: String,
+}
