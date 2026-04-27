@@ -13,3 +13,9 @@ export async function readAccountState(rpcUrl: string, address: string): Promise
   ]);
   return { nativeBalanceWei, nonce };
 }
+
+export async function probeChainId(rpcUrl: string): Promise<bigint> {
+  const provider = new JsonRpcProvider(rpcUrl);
+  const network = await provider.getNetwork();
+  return network.chainId;
+}
