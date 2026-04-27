@@ -7,3 +7,6 @@ dist
 .env.*
 !.env.example
 tsconfig.tsbuildinfo
+.worktrees
+src-tauri/target/
+src-tauri/gen/
