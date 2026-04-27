@@ -243,11 +243,11 @@ function requireFrozenField<T>(value: T | null | undefined, label: string): T {
   return value;
 }
 
-function pendingRequestFromRecord(record: HistoryRecord): PendingMutationRequest {
+function pendingRequestFromRecord(record: HistoryRecord, rpcUrl: string): PendingMutationRequest {
   const { submission } = record;
   return {
     txHash: submission.tx_hash,
-    rpcUrl: record.intent.rpc_url,
+    rpcUrl,
     accountIndex: requireFrozenField(submission.account_index, "account_index"),
     chainId: requireFrozenField(submission.chain_id, "chain_id"),
     from: requireFrozenField(submission.from, "from"),
@@ -279,6 +279,8 @@ export function HistoryView({
   recoveryIntents = [],
   recoveryRpcDisabledReason = null,
   reviewRpcDisabledReason = null,
+  rpcUrl = null,
+  chainReady = false,
 }: {
   items: HistoryRecord[];
   onRefresh: () => Promise<void> | void;
@@ -296,6 +298,8 @@ export function HistoryView({
   recoveryIntents?: HistoryRecoveryIntent[];
   recoveryRpcDisabledReason?: string | null;
   reviewRpcDisabledReason?: string | null;
+  rpcUrl?: string | null;
+  chainReady?: boolean;
 }) {
   const [viewMode, setViewMode] = useState<"submissions" | "threads">("submissions");
   const [accountFilter, setAccountFilter] = useState(ALL);
@@ -396,6 +400,10 @@ export function HistoryView({
   const storageBlockedReason = storageBlocked
     ? "Disabled while local transaction history is unreadable. Retry the read or quarantine the damaged file before submitting, replacing, cancelling, or reviewing dropped records."
     : null;
+  const pendingActionRpcUrl = chainReady ? (rpcUrl ?? "").trim() : "";
+  const pendingActionRpcDisabledReason = pendingActionRpcUrl
+    ? null
+    : "Validate an RPC endpoint before replacing or cancelling pending transactions.";
   const statusMessage = refreshError ?? error;
   const statusError = useMemo(
     () =>
@@ -496,6 +504,22 @@ export function HistoryView({
             ? "Dropped review handler is not available in this view."
             : reviewRpcDisabledReason)
       : null;
+    const replaceBlockedReason = replace
+      ? storageBlockedReason ??
+        (!replace.enabled
+          ? replace.reason
+          : !onReplace
+            ? "Replace handler is not available in this view."
+            : pendingActionRpcDisabledReason)
+      : null;
+    const cancelBlockedReason = cancel
+      ? storageBlockedReason ??
+        (!cancel.enabled
+          ? cancel.reason
+          : !onCancelPending
+            ? "Cancel handler is not available in this view."
+            : pendingActionRpcDisabledReason)
+      : null;
     return (
       <div className="button-row history-actions">
         {renderDetailButton(entry)}
@@ -515,24 +539,38 @@ export function HistoryView({
           <>
             <button
               className="secondary-button"
-              disabled={disabled || storageBlocked || !replace.enabled || !onReplace}
-              onClick={() => onReplace?.(pendingRequestFromRecord(entry.record))}
-              title={
-                storageBlockedReason ??
-                (!onReplace ? "Replace handler is not available in this view." : replace.reason)
+              disabled={
+                disabled ||
+                storageBlocked ||
+                !replace.enabled ||
+                !onReplace ||
+                Boolean(pendingActionRpcDisabledReason)
               }
+              onClick={() => {
+                if (pendingActionRpcUrl) {
+                  onReplace?.(pendingRequestFromRecord(entry.record, pendingActionRpcUrl));
+                }
+              }}
+              title={replaceBlockedReason ?? replace.reason}
               type="button"
             >
               Replace {short(entry.txHash)}
             </button>
             <button
               className="secondary-button"
-              disabled={disabled || storageBlocked || !cancel.enabled || !onCancelPending}
-              onClick={() => onCancelPending?.(pendingRequestFromRecord(entry.record))}
-              title={
-                storageBlockedReason ??
-                (!onCancelPending ? "Cancel handler is not available in this view." : cancel.reason)
+              disabled={
+                disabled ||
+                storageBlocked ||
+                !cancel.enabled ||
+                !onCancelPending ||
+                Boolean(pendingActionRpcDisabledReason)
               }
+              onClick={() => {
+                if (pendingActionRpcUrl) {
+                  onCancelPending?.(pendingRequestFromRecord(entry.record, pendingActionRpcUrl));
+                }
+              }}
+              title={cancelBlockedReason ?? cancel.reason}
               type="button"
             >
               Cancel {short(entry.txHash)}

@@ -177,6 +177,7 @@ export function AppShell({
             )}
             {activeTab === "history" && (
               <HistoryView
+                chainReady={chainReady}
                 disabled={busy}
                 error={historyError}
                 items={history}
@@ -192,6 +193,7 @@ export function AppShell({
                 recoveryIntents={historyRecoveryIntents}
                 recoveryRpcDisabledReason={historyRecoveryRpcDisabledReason}
                 reviewRpcDisabledReason={historyReviewRpcDisabledReason}
+                rpcUrl={rpcUrl}
                 storage={historyStorage}
               />
             )}

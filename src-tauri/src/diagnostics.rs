@@ -371,6 +371,14 @@ fn is_suspicious_scope_text(value: &str) -> bool {
         || lower.contains("seed")
         || lower.contains("mnemonic")
         || lower.contains("private")
+        || lower.contains("rawtx")
+        || lower.contains("raw tx")
+        || lower.contains("rawtransaction")
+        || lower.contains("raw transaction")
+        || lower.contains("signedtx")
+        || lower.contains("signed tx")
+        || lower.contains("signedtransaction")
+        || lower.contains("signed transaction")
         || lower.contains("signature")
         || lower.contains("secret")
         || lower.contains("authorization")
@@ -630,7 +638,12 @@ enum RedactMode {
 }
 
 fn sanitize_structured_tx_hash(value: &str) -> String {
-    value.split_whitespace().collect::<Vec<_>>().join("")
+    let compact = value.split_whitespace().collect::<Vec<_>>().join("");
+    if is_full_tx_hash(&compact) || is_safe_tx_hash_fragment(&compact) {
+        compact
+    } else {
+        "[redacted]".to_string()
+    }
 }
 
 fn sanitize_message_token(token: &str) -> (String, RedactMode) {
@@ -1201,6 +1214,78 @@ mod tests {
         assert!(!serialized.contains("0xaaaaaaaa"));
         assert!(!serialized.contains("0xsecret"));
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn load_and_export_redact_unsafe_legacy_structured_tx_hashes() {
+        let source_path = std::env::temp_dir().join(format!(
+            "wallet-workbench-diagnostics-legacy-txhash-source-{}.jsonl",
+            std::process::id()
+        ));
+        let export_path = std::env::temp_dir().join(format!(
+            "wallet-workbench-diagnostics-legacy-txhash-export-{}.json",
+            std::process::id()
+        ));
+        let _ = fs::remove_file(&source_path);
+        let _ = fs::remove_file(&export_path);
+        let rpc_url_tx_hash = serde_json::json!({
+            "timestamp": "1700000000",
+            "level": "error",
+            "category": "rpc",
+            "source": "test",
+            "event": "rpcFailed",
+            "txHash": "https://rpc.example/path?token=secret"
+        });
+        let password_tx_hash = serde_json::json!({
+            "timestamp": "1700000001",
+            "level": "warn",
+            "category": "rpc",
+            "source": "test",
+            "event": "rpcFailed",
+            "txHash": "password=hunter2"
+        });
+        fs::write(
+            &source_path,
+            format!("{rpc_url_tx_hash}\n{password_tx_hash}\n"),
+        )
+        .expect("write legacy tx hashes");
+
+        let events =
+            load_recent_diagnostic_events_from_path(&source_path, DiagnosticEventQuery::default())
+                .expect("load");
+        let loaded = serde_json::to_string(&events).expect("serialize loaded");
+
+        assert_eq!(events.len(), 2);
+        assert!(events
+            .iter()
+            .all(|event| event.tx_hash.as_deref() == Some("[redacted]")));
+        assert!(!loaded.contains("rpc.example"));
+        assert!(!loaded.contains("token=secret"));
+        assert!(!loaded.contains("hunter2"));
+
+        export_diagnostic_events_to_path(
+            &source_path,
+            &export_path,
+            DiagnosticEventQuery::default(),
+        )
+        .expect("export");
+        let exported = fs::read_to_string(&export_path).expect("read export");
+        let exported_json: Value = serde_json::from_str(&exported).expect("export json");
+        let exported_events = exported_json
+            .pointer("/events")
+            .and_then(|value| value.as_array())
+            .expect("events");
+
+        assert_eq!(exported_events.len(), 2);
+        assert!(exported_events.iter().all(|event| event
+            .pointer("/txHash")
+            .and_then(|value| value.as_str())
+            == Some("[redacted]")));
+        assert!(!exported.contains("rpc.example"));
+        assert!(!exported.contains("token=secret"));
+        assert!(!exported.contains("hunter2"));
+        let _ = fs::remove_file(source_path);
+        let _ = fs::remove_file(export_path);
     }
 
     #[test]

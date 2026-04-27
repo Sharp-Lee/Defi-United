@@ -232,8 +232,10 @@ function incompleteAccountRecord({
 function renderHistory(rawRecords: unknown[], options = {}) {
   return renderScreen(
     <HistoryView
+      chainReady
       items={normalizeHistoryRecords(rawRecords)}
       onRefresh={vi.fn()}
+      rpcUrl="http://127.0.0.1:8545"
       {...options}
     />,
   );
@@ -739,12 +741,13 @@ describe("HistoryView", () => {
     expect(screen.getByRole("button", { name: "Cancel 0xcancel" })).toBeInTheDocument();
   });
 
-  it("builds replace and cancel requests from the current pending frozen submission", () => {
+  it("builds replace and cancel requests from the current validated RPC and frozen submission", () => {
     const onReplace = vi.fn();
     const onCancelPending = vi.fn();
     const staleIntentAccount = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const frozenSubmissionAccount = "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
     const frozenRecipient = "0x4444444444444444444444444444444444444444";
+    const validatedRpcUrl = "https://validated-rpc.example";
     const staleIntentRecord = record({
       txHash: "0xaction",
       accountIndex: 1,
@@ -756,6 +759,7 @@ describe("HistoryView", () => {
       maxPriorityFeePerGas: "1500000000",
       intentValueWei: "100",
     });
+    staleIntentRecord.intent.rpc_url = "recovered://history-write-failed";
     staleIntentRecord.submission.chain_id = 5;
     staleIntentRecord.submission.account_index = 2;
     staleIntentRecord.submission.from = frozenSubmissionAccount;
@@ -775,6 +779,7 @@ describe("HistoryView", () => {
       {
         onReplace,
         onCancelPending,
+        rpcUrl: validatedRpcUrl,
       },
     );
 
@@ -783,7 +788,7 @@ describe("HistoryView", () => {
 
     const expectedRequest = {
       txHash: "0xaction",
-      rpcUrl: "http://127.0.0.1:8545",
+      rpcUrl: validatedRpcUrl,
       accountIndex: 2,
       chainId: 5,
       from: frozenSubmissionAccount,
@@ -796,6 +801,47 @@ describe("HistoryView", () => {
     };
     expect(onReplace).toHaveBeenCalledWith(expectedRequest);
     expect(onCancelPending).toHaveBeenCalledWith(expectedRequest);
+  });
+
+  it("disables replace and cancel when the current RPC has not been validated", () => {
+    const onReplace = vi.fn();
+    const onCancelPending = vi.fn();
+    const reason = "Validate an RPC endpoint before replacing or cancelling pending transactions.";
+    renderHistory([record({ txHash: "0xnotready", state: "Pending" })], {
+      chainReady: false,
+      onReplace,
+      onCancelPending,
+      rpcUrl: "http://127.0.0.1:8545",
+    });
+
+    const replace = screen.getByRole("button", { name: "Replace 0xnotready" });
+    const cancel = screen.getByRole("button", { name: "Cancel 0xnotready" });
+
+    expect(replace).toBeDisabled();
+    expect(cancel).toBeDisabled();
+    expect(replace).toHaveAttribute("title", reason);
+    expect(cancel).toHaveAttribute("title", reason);
+    fireEvent.click(replace);
+    fireEvent.click(cancel);
+    expect(onReplace).not.toHaveBeenCalled();
+    expect(onCancelPending).not.toHaveBeenCalled();
+  });
+
+  it("disables replace and cancel when no validated RPC URL is provided", () => {
+    const reason = "Validate an RPC endpoint before replacing or cancelling pending transactions.";
+    renderHistory([record({ txHash: "0xmissingrpc", state: "Pending" })], {
+      onReplace: vi.fn(),
+      onCancelPending: vi.fn(),
+      rpcUrl: undefined,
+    });
+
+    const replace = screen.getByRole("button", { name: "Replace 0xmissingrpc" });
+    const cancel = screen.getByRole("button", { name: "Cancel 0xmissingrpc" });
+
+    expect(replace).toBeDisabled();
+    expect(cancel).toBeDisabled();
+    expect(replace).toHaveAttribute("title", reason);
+    expect(cancel).toHaveAttribute("title", reason);
   });
 
   it("uses full nonce-thread context when marking single-submission details actionable", () => {
