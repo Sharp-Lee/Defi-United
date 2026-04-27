@@ -276,15 +276,37 @@ td {
   background: rgba(211, 154, 50, 0.12);
 }
 
-.history-status-replaced,
-.history-status-cancelled {
+.history-status-replaced {
   border-color: rgba(80, 147, 255, 0.58);
   color: #b9d3ff;
   background: rgba(80, 147, 255, 0.12);
 }
 
+.history-status-cancelled {
+  border-color: rgba(186, 123, 255, 0.58);
+  color: #dec4ff;
+  background: rgba(186, 123, 255, 0.12);
+}
+
 .history-actions {
   flex-wrap: wrap;
+}
+
+.history-thread-relation {
+  color: var(--muted);
+}
+
+.history-thread-current {
+  display: inline-block;
+  margin-left: 6px;
+  border: 1px solid rgba(53, 184, 111, 0.55);
+  border-radius: 6px;
+  padding: 2px 6px;
+  color: #a7ebc4;
+  background: rgba(53, 184, 111, 0.12);
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
 }
 
 .history-detail-panel {
@@ -321,6 +343,45 @@ td {
 .history-detail-submissions {
   display: grid;
   gap: 12px;
+}
+
+.history-thread-timeline {
+  display: grid;
+  gap: 10px;
+  border-top: 1px solid var(--border);
+  padding-top: 14px;
+}
+
+.history-thread-timeline header h4 {
+  margin: 0;
+}
+
+.history-thread-timeline header p,
+.history-thread-note {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.history-thread-timeline ol {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding-left: 22px;
+}
+
+.history-thread-step-main,
+.history-thread-step-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.history-thread-step-meta {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .history-detail-record {

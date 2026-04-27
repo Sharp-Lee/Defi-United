@@ -114,6 +114,32 @@ function formatThread(group: HistoryNonceGroup) {
   return `chainId ${chain} · account ${index} · nonce ${formatMaybe(group.nonce)}`;
 }
 
+function roleLabel(entry: Pick<HistoryReadModel, "submissionRole">) {
+  switch (entry.submissionRole) {
+    case "submission":
+      return "Original submission";
+    case "replacement":
+      return "Replacement submission";
+    case "cancellation":
+      return "Cancel submission";
+    case "legacy":
+      return "Legacy submission";
+  }
+}
+
+function relationshipLabel(entry: HistoryReadModel) {
+  if (entry.submissionRole === "replacement" && entry.replacesTxHash) {
+    return `replaces ${short(entry.replacesTxHash)}`;
+  }
+  if (entry.submissionRole === "cancellation" && entry.replacesTxHash) {
+    return `cancels ${short(entry.replacesTxHash)}`;
+  }
+  if (entry.replacedByTxHash) {
+    return `replaced by ${short(entry.replacedByTxHash)}`;
+  }
+  return "thread root";
+}
+
 function timestampValue(entry: HistoryReadModel) {
   return (
     entry.record.outcome.finalized_at ??
@@ -147,6 +173,39 @@ function latestTimestamp(entries: HistoryReadModel[]) {
   return entries
     .map((entry) => timestampValue(entry))
     .sort((left, right) => (timestampMillis(right) ?? 0) - (timestampMillis(left) ?? 0))[0] ?? null;
+}
+
+function compareThreadEntries(left: HistoryReadModel, right: HistoryReadModel) {
+  return (
+    (timestampMillis(threadOrderTimestamp(left)) ?? 0) -
+      (timestampMillis(threadOrderTimestamp(right)) ?? 0) ||
+    left.originalIndex - right.originalIndex
+  );
+}
+
+function sortedThreadEntries(entries: HistoryReadModel[]) {
+  return [...entries].sort(compareThreadEntries);
+}
+
+function threadOrderTimestamp(entry: HistoryReadModel) {
+  return entry.broadcastedAt ?? entry.record.intent_snapshot.captured_at ?? timestampValue(entry);
+}
+
+function isSupersededInThread(entry: HistoryReadModel, entries: HistoryReadModel[]) {
+  return (
+    entry.replacedByTxHash !== null ||
+    entry.status === "replaced" ||
+    entry.status === "cancelled" ||
+    entries.some((candidate) => candidate.replacesTxHash === entry.txHash)
+  );
+}
+
+function isActionablePending(entry: HistoryReadModel, entries: HistoryReadModel[]) {
+  return (
+    entry.status === "pending" &&
+    entries.some((candidate) => candidate.originalIndex === entry.originalIndex) &&
+    !isSupersededInThread(entry, entries)
+  );
 }
 
 function statusClass(status: HistoryStatus) {
@@ -207,6 +266,10 @@ export function HistoryView({
 
   const allEntries = useMemo(() => selectHistoryEntries(items), [items]);
   const allGroups = useMemo(() => groupHistoryByNonce(items), [items]);
+  const allThreadEntriesByKey = useMemo(
+    () => new Map(allGroups.map((group) => [group.key, group.submissions])),
+    [allGroups],
+  );
   const accountOptions = useMemo(() => {
     const options = new Map<string, string>();
     for (const entry of allEntries) {
@@ -262,11 +325,23 @@ export function HistoryView({
     if (detailSelection === null) return null;
     if (detailSelection.type === "thread") {
       const group = visibleGroups.find((item) => item.key === detailSelection.key);
-      return group ? { type: "thread" as const, group } : null;
+      return group
+        ? {
+            type: "thread" as const,
+            group,
+            threadEntries: allThreadEntriesByKey.get(group.key) ?? [],
+          }
+        : null;
     }
     const entry = visibleEntries.find((item) => detailKey(item) === detailSelection.key);
-    return entry ? { type: "submission" as const, entry } : null;
-  }, [detailSelection, visibleEntries, visibleGroups]);
+    return entry
+      ? {
+          type: "submission" as const,
+          entry,
+          threadEntries: allThreadEntriesByKey.get(entry.key) ?? [],
+        }
+      : null;
+  }, [allThreadEntriesByKey, detailSelection, visibleEntries, visibleGroups]);
   const isBusy = loading || refreshing;
   const statusMessage = refreshError ?? error;
 
@@ -310,11 +385,12 @@ export function HistoryView({
     );
   }
 
-  function renderActions(entry: HistoryReadModel) {
+  function renderActions(entry: HistoryReadModel, threadEntries: HistoryReadModel[]) {
+    const current = isActionablePending(entry, threadEntries);
     return (
       <div className="button-row history-actions">
         {renderDetailButton(entry)}
-        {entry.status === "pending" && (
+        {current && (
           <>
             <button
               className="secondary-button"
@@ -322,7 +398,7 @@ export function HistoryView({
               onClick={() => onReplace?.(pendingRequestFromRecord(entry.record))}
               type="button"
             >
-              Replace
+              Replace {short(entry.txHash)}
             </button>
             <button
               className="secondary-button"
@@ -330,7 +406,7 @@ export function HistoryView({
               onClick={() => onCancelPending?.(pendingRequestFromRecord(entry.record))}
               type="button"
             >
-              Cancel
+              Cancel {short(entry.txHash)}
             </button>
           </>
         )}
@@ -493,7 +569,7 @@ export function HistoryView({
                     {entry.record.submission.value_wei ?? entry.record.intent.value_wei} wei
                   </td>
                   <td>{formatTimestamp(timestampValue(entry))}</td>
-                  <td>{renderActions(entry)}</td>
+                  <td>{renderActions(entry, allThreadEntriesByKey.get(entry.key) ?? [entry])}</td>
                 </tr>
               ))}
             {viewMode === "threads" &&
@@ -517,9 +593,16 @@ export function HistoryView({
                   <td className="mono">{formatMaybe(group.nonce)}</td>
                   <td className="mono">
                     <div className="history-thread-list">
-                      {group.submissions.map((entry) => (
+                      {sortedThreadEntries(group.submissions).map((entry) => (
                         <div key={`${entry.txHash}-${entry.originalIndex}`}>
-                          {entry.submissionRole}: {short(entry.txHash)}
+                          {roleLabel(entry)}: {short(entry.txHash)}
+                          <span className="history-thread-relation"> {relationshipLabel(entry)}</span>
+                          {isActionablePending(
+                            entry,
+                            allThreadEntriesByKey.get(group.key) ?? [],
+                          ) && (
+                            <span className="history-thread-current"> current pending</span>
+                          )}
                         </div>
                       ))}
                     </div>
@@ -545,9 +628,9 @@ export function HistoryView({
                       >
                         Thread details
                       </button>
-                      {group.submissions.map((entry) => (
+                      {sortedThreadEntries(group.submissions).map((entry) => (
                         <div key={`${entry.txHash}-${entry.originalIndex}-actions`}>
-                          {renderActions(entry)}
+                          {renderActions(entry, allThreadEntriesByKey.get(group.key) ?? [])}
                         </div>
                       ))}
                     </div>
@@ -574,14 +657,15 @@ function HistoryDetails({
   renderStatus,
 }: {
   detail:
-    | { type: "submission"; entry: HistoryReadModel }
-    | { type: "thread"; group: HistoryNonceGroup };
+    | { type: "submission"; entry: HistoryReadModel; threadEntries: HistoryReadModel[] }
+    | { type: "thread"; group: HistoryNonceGroup; threadEntries: HistoryReadModel[] };
   onClose: () => void;
   renderStatus: (status: HistoryStatus) => JSX.Element;
 }) {
   const entries = detail.type === "submission" ? [detail.entry] : detail.group.submissions;
   const title =
     detail.type === "submission" ? `Submission ${short(detail.entry.txHash)}` : formatThread(detail.group);
+  const threadEntries = sortedThreadEntries(detail.threadEntries);
 
   return (
     <section className="history-detail-panel" aria-label="History details">
@@ -598,10 +682,18 @@ function HistoryDetails({
           Close
         </button>
       </header>
+      {detail.type === "thread" && (
+        <NonceThreadTimeline
+          entries={sortedThreadEntries(entries)}
+          threadEntries={threadEntries}
+          renderStatus={renderStatus}
+        />
+      )}
       <div className="history-detail-submissions">
-        {entries.map((entry) => (
+        {sortedThreadEntries(entries).map((entry) => (
           <HistorySubmissionDetails
             entry={entry}
+            threadEntries={threadEntries}
             key={`${entry.txHash}-${entry.originalIndex}-detail`}
             renderStatus={renderStatus}
           />
@@ -611,25 +703,87 @@ function HistoryDetails({
   );
 }
 
+function NonceThreadTimeline({
+  entries,
+  threadEntries,
+  renderStatus,
+}: {
+  entries: HistoryReadModel[];
+  threadEntries: HistoryReadModel[];
+  renderStatus: (status: HistoryStatus) => JSX.Element;
+}) {
+  return (
+    <section className="history-thread-timeline" aria-label="Nonce thread timeline">
+      <header>
+        <h4>Nonce Thread</h4>
+        <p>{threadOutcomeSummary(threadEntries)}</p>
+      </header>
+      <ol>
+        {entries.map((entry) => {
+          const current = isActionablePending(entry, threadEntries);
+          return (
+            <li key={`${entry.txHash}-${entry.originalIndex}-timeline`}>
+              <div className="history-thread-step-main">
+                <strong>{roleLabel(entry)}</strong>
+                <span className="mono">{short(entry.txHash)}</span>
+                {renderStatus(entry.status)}
+                {current && <span className="history-thread-current">current pending action target</span>}
+              </div>
+              <div className="history-thread-step-meta">
+                <span>{formatTimestamp(timestampValue(entry))}</span>
+                <span>{relationshipLabel(entry)}</span>
+                <span>ChainOutcome {entry.record.outcome.state}</span>
+              </div>
+              {entry.submissionRole === "cancellation" && (
+                <p className="history-thread-note">
+                  Cancel model: same nonce, 0 wei, sent from the account to itself with a higher fee.
+                </p>
+              )}
+            </li>
+          );
+        })}
+      </ol>
+    </section>
+  );
+}
+
+function threadOutcomeSummary(entries: HistoryReadModel[]) {
+  const outcomes = sortedThreadEntries(entries)
+    .filter((entry) => entry.status !== "pending" && entry.status !== "unknown")
+    .map((entry) => `${entry.record.outcome.state} on ${short(entry.txHash)}`);
+  return outcomes.length > 0 ? `Thread outcomes: ${outcomes.join("; ")}` : "Thread outcomes: Pending";
+}
+
 function HistorySubmissionDetails({
   entry,
+  threadEntries,
   renderStatus,
 }: {
   entry: HistoryReadModel;
+  threadEntries: HistoryReadModel[];
   renderStatus: (status: HistoryStatus) => JSX.Element;
 }) {
   const { record } = entry;
+  const current = isActionablePending(entry, threadEntries);
   return (
     <article className="history-detail-record">
       <header className="history-detail-record-header">
         <div>
           <h4>
-            {entry.submissionRole} · <span className="mono">{short(entry.txHash)}</span>
+            {roleLabel(entry)} · <span className="mono">{short(entry.txHash)}</span>
           </h4>
-          <p>{statusDescriptions[entry.status]}</p>
+          <p>
+            {statusDescriptions[entry.status]}
+            {current ? " This is the current pending submission for replace/cancel actions." : ""}
+          </p>
         </div>
         {renderStatus(entry.status)}
       </header>
+      {entry.submissionRole === "cancellation" && (
+        <p className="history-thread-note">
+          Cancel model: same nonce, 0 wei, sent from the account to itself with a higher fee.
+        </p>
+      )}
       <div className="history-detail-grid">
         <HistoryDetailSection
           title="Intent"
@@ -663,6 +817,9 @@ function HistorySubmissionDetails({
             ["Max fee", `${formatOptional(record.submission.max_fee_per_gas)} wei`],
             ["Priority fee", `${formatOptional(record.submission.max_priority_fee_per_gas)} wei`],
             ["Replaces tx", record.submission.replaces_tx_hash],
+            ["Replaced by tx", record.nonce_thread.replaced_by_tx_hash],
+            ["Thread role", roleLabel(entry)],
+            ["Action target", current ? "Current pending submission" : "Not current pending"],
           ]}
         />
         <HistoryDetailSection title="ChainOutcome" rows={outcomeRows(entry)} />

@@ -1,4 +1,5 @@
 import { fireEvent, screen, within } from "@testing-library/react";
+import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import {
   normalizeHistoryRecords,
@@ -11,6 +12,7 @@ import { HistoryView } from "./HistoryView";
 const accountA = "0x1111111111111111111111111111111111111111";
 const accountB = "0x2222222222222222222222222222222222222222";
 const recipient = "0x3333333333333333333333333333333333333333";
+const stylesCss = readFileSync("src/styles.css", "utf8");
 
 function record({
   txHash,
@@ -24,6 +26,8 @@ function record({
   replacedByTxHash = null,
   intentValueWei = "100",
   submissionValueWei = "100",
+  broadcastedAt = "1700000001",
+  finalizedAt,
   receipt = null,
   reconcileSummary = null,
 }: {
@@ -38,6 +42,8 @@ function record({
   replacedByTxHash?: string | null;
   intentValueWei?: string;
   submissionValueWei?: string;
+  broadcastedAt?: string;
+  finalizedAt?: string | null;
   receipt?: Record<string, unknown> | null;
   reconcileSummary?: Record<string, unknown> | null;
 }) {
@@ -73,13 +79,13 @@ function record({
       gas_limit: "21000",
       max_fee_per_gas: "40000000000",
       max_priority_fee_per_gas: "1500000000",
-      broadcasted_at: "1700000001",
+      broadcasted_at: broadcastedAt,
       replaces_tx_hash: replacesTxHash,
     },
     outcome: {
       state,
       tx_hash: txHash,
-      finalized_at: state === "Pending" ? null : "1700000100",
+      finalized_at: finalizedAt ?? (state === "Pending" ? null : "1700000100"),
       receipt,
       reconciled_at: reconcileSummary ? "1700000101" : null,
       reconcile_summary: reconcileSummary,
@@ -246,6 +252,20 @@ describe("HistoryView", () => {
     expect(table.getAllByText("Account 1 · 0x11111111...1111")).toHaveLength(6);
   });
 
+  it("keeps replaced and cancelled status pills visually distinct", () => {
+    renderHistory([
+      record({ txHash: "0xreplaced", state: "Replaced", nonce: 4 }),
+      record({ txHash: "0xcancelled", state: "Cancelled", nonce: 5 }),
+    ]);
+
+    const table = within(screen.getByRole("table"));
+    expect(table.getByText("Replaced")).toHaveClass("history-status-replaced");
+    expect(table.getByText("Cancelled")).toHaveClass("history-status-cancelled");
+    expect(stylesCss).toMatch(/\.history-status-replaced\s*\{/);
+    expect(stylesCss).toMatch(/\.history-status-cancelled\s*\{/);
+    expect(stylesCss).not.toMatch(/\.history-status-replaced,\s*\n\.history-status-cancelled/);
+  });
+
   it("filters by account, chainId, status, and nonce using selector output", () => {
     renderHistory([
       record({ txHash: "0xmatch", chainId: 5, nonce: 12, state: "Pending" }),
@@ -398,9 +418,9 @@ describe("HistoryView", () => {
     fireEvent.change(screen.getByLabelText("View"), { target: { value: "threads" } });
 
     const table = within(screen.getByRole("table"));
-    expect(table.getByText("submission: 0xoriginal")).toBeInTheDocument();
-    expect(table.getByText("replacement: 0xreplacement")).toBeInTheDocument();
-    expect(table.getByText("cancellation: 0xcancel")).toBeInTheDocument();
+    expect(table.getByText(/Original submission: 0xoriginal/)).toBeInTheDocument();
+    expect(table.getByText(/Replacement submission: 0xreplacement/)).toBeInTheDocument();
+    expect(table.getByText(/Cancel submission: 0xcancel/)).toBeInTheDocument();
     expect(table.queryByText("0xother")).not.toBeInTheDocument();
   });
 
@@ -514,7 +534,321 @@ describe("HistoryView", () => {
     expect(panel.getByText("Nonce thread details grouped by account, chainId, and nonce.")).toBeInTheDocument();
     expect(panel.getAllByText("0xoriginal").length).toBeGreaterThan(0);
     expect(panel.getAllByText("0xreplacement").length).toBeGreaterThan(0);
+    expect(panel.getByLabelText("Nonce thread timeline")).toBeInTheDocument();
+    expect(panel.getByText("Thread outcomes: Replaced on 0xoriginal")).toBeInTheDocument();
     expect(panel.getAllByText("ChainOutcome")).toHaveLength(2);
+  });
+
+  it("orders multiple replacements by timestamps and marks only the latest pending submission actionable", () => {
+    renderHistory([
+      record({
+        txHash: "0xoriginal",
+        nonce: 9,
+        state: "Replaced",
+        replacedByTxHash: "0xreplace1",
+        broadcastedAt: "1700000001",
+        finalizedAt: "1700000100",
+      }),
+      record({
+        txHash: "0xreplace2",
+        nonce: 9,
+        state: "Pending",
+        kind: "replacement",
+        replacesTxHash: "0xreplace1",
+        broadcastedAt: "1700000003",
+      }),
+      record({
+        txHash: "0xreplace1",
+        nonce: 9,
+        state: "Replaced",
+        kind: "replacement",
+        replacesTxHash: "0xoriginal",
+        replacedByTxHash: "0xreplace2",
+        broadcastedAt: "1700000002",
+        finalizedAt: "1700000101",
+      }),
+    ]);
+
+    fireEvent.change(screen.getByLabelText("View"), { target: { value: "threads" } });
+    fireEvent.click(screen.getByRole("button", { name: "Thread details" }));
+
+    const timeline = within(screen.getByLabelText("Nonce thread timeline"));
+    const steps = timeline.getAllByRole("listitem");
+    expect(steps.map((step) => step.textContent)).toEqual([
+      expect.stringContaining("Original submission0xoriginal"),
+      expect.stringContaining("Replacement submission0xreplace1"),
+      expect.stringContaining("Replacement submission0xreplace2"),
+    ]);
+    expect(timeline.getByText("current pending action target")).toBeInTheDocument();
+    expect(screen.getAllByText("Action target")).toHaveLength(3);
+    expect(screen.getByText("Current pending submission")).toBeInTheDocument();
+  });
+
+  it("uses full nonce-thread context for action gating when filters hide later submissions", () => {
+    renderHistory([
+      record({
+        txHash: "0xoriginal",
+        nonce: 9,
+        state: "Pending",
+        broadcastedAt: "1700000001",
+      }),
+      record({
+        txHash: "0xreplacement",
+        nonce: 9,
+        state: "Confirmed",
+        kind: "replacement",
+        replacesTxHash: "0xoriginal",
+        broadcastedAt: "1700000002",
+        finalizedAt: "1700000100",
+      }),
+      record({
+        txHash: "0xcancel",
+        nonce: 9,
+        state: "Dropped",
+        kind: "cancellation",
+        replacesTxHash: "0xreplacement",
+        submissionValueWei: "0",
+        broadcastedAt: "1700000003",
+        finalizedAt: "1700000101",
+      }),
+    ]);
+
+    fireEvent.change(screen.getByLabelText("Status"), { target: { value: "pending" } });
+
+    expect(screen.getByText("0xoriginal")).toBeInTheDocument();
+    expect(screen.queryByText("0xreplacement")).not.toBeInTheDocument();
+    expect(screen.queryByText("0xcancel")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Replace 0xoriginal" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Cancel 0xoriginal" })).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("View"), { target: { value: "threads" } });
+
+    const table = within(screen.getByRole("table"));
+    expect(table.queryByText("current pending")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Replace 0xoriginal" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Cancel 0xoriginal" })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Thread details" }));
+    const panel = within(screen.getByLabelText("History details"));
+    expect(panel.queryByText("current pending action target")).not.toBeInTheDocument();
+    expect(panel.getByText("Not current pending")).toBeInTheDocument();
+    expect(
+      panel.queryByText("Broadcasted and tracked locally. This is the current pending submission for replace/cancel actions."),
+    ).not.toBeInTheDocument();
+  });
+
+  it("only exposes replace and cancel actions for the current pending nonce-thread target", () => {
+    renderHistory(
+      [
+        record({
+          txHash: "0xoriginal",
+          nonce: 9,
+          state: "Replaced",
+          replacedByTxHash: "0xreplace",
+          broadcastedAt: "1700000001",
+          finalizedAt: "1700000100",
+        }),
+        record({
+          txHash: "0xreplace",
+          nonce: 9,
+          state: "Pending",
+          kind: "replacement",
+          replacesTxHash: "0xoriginal",
+          broadcastedAt: "1700000002",
+        }),
+        record({
+          txHash: "0xcancel",
+          nonce: 9,
+          state: "Pending",
+          kind: "cancellation",
+          replacesTxHash: "0xreplace",
+          submissionValueWei: "0",
+          broadcastedAt: "1700000003",
+        }),
+      ],
+      {
+        onReplace: vi.fn(),
+        onCancelPending: vi.fn(),
+      },
+    );
+
+    expect(screen.queryByRole("button", { name: "Replace 0xreplace" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Cancel 0xreplace" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Replace 0xcancel" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Cancel 0xcancel" })).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("View"), { target: { value: "threads" } });
+
+    expect(screen.queryByRole("button", { name: "Replace 0xreplace" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Cancel 0xreplace" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Replace 0xcancel" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Cancel 0xcancel" })).toBeInTheDocument();
+  });
+
+  it("uses full nonce-thread context when marking single-submission details actionable", () => {
+    renderHistory([
+      record({
+        txHash: "0xoriginal",
+        nonce: 9,
+        state: "Replaced",
+        replacedByTxHash: "0xreplace",
+        broadcastedAt: "1700000001",
+        finalizedAt: "1700000100",
+      }),
+      record({
+        txHash: "0xreplace",
+        nonce: 9,
+        state: "Pending",
+        kind: "replacement",
+        replacesTxHash: "0xoriginal",
+        broadcastedAt: "1700000002",
+      }),
+      record({
+        txHash: "0xcancel",
+        nonce: 9,
+        state: "Pending",
+        kind: "cancellation",
+        replacesTxHash: "0xreplace",
+        submissionValueWei: "0",
+        broadcastedAt: "1700000003",
+      }),
+    ]);
+
+    fireEvent.click(within(screen.getByText("0xreplace").closest("tr") as HTMLElement).getByText("Details"));
+
+    let panel = within(screen.getByLabelText("History details"));
+    expect(
+      panel.queryByText("Broadcasted and tracked locally. This is the current pending submission for replace/cancel actions."),
+    ).not.toBeInTheDocument();
+    expect(panel.getByText("Not current pending")).toBeInTheDocument();
+    expect(panel.queryByText("Current pending submission")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    fireEvent.click(within(screen.getByText("0xcancel").closest("tr") as HTMLElement).getByText("Details"));
+
+    panel = within(screen.getByLabelText("History details"));
+    expect(
+      panel.getByText("Broadcasted and tracked locally. This is the current pending submission for replace/cancel actions."),
+    ).toBeInTheDocument();
+    expect(panel.getByText("Current pending submission")).toBeInTheDocument();
+  });
+
+  it("explains a confirmed cancel submission as the final nonce-thread outcome", () => {
+    renderHistory([
+      record({
+        txHash: "0xoriginal",
+        nonce: 9,
+        state: "Cancelled",
+        replacedByTxHash: "0xcancel",
+        broadcastedAt: "1700000001",
+        finalizedAt: "1700000100",
+      }),
+      record({
+        txHash: "0xcancel",
+        nonce: 9,
+        state: "Confirmed",
+        kind: "cancellation",
+        replacesTxHash: "0xoriginal",
+        submissionValueWei: "0",
+        broadcastedAt: "1700000002",
+        finalizedAt: "1700000102",
+      }),
+    ]);
+
+    fireEvent.change(screen.getByLabelText("View"), { target: { value: "threads" } });
+    fireEvent.click(screen.getByRole("button", { name: "Thread details" }));
+
+    const panel = within(screen.getByLabelText("History details"));
+    expect(panel.getByText("Thread outcomes: Cancelled on 0xoriginal; Confirmed on 0xcancel")).toBeInTheDocument();
+    expect(
+      panel.getAllByText(
+        "Cancel model: same nonce, 0 wei, sent from the account to itself with a higher fee.",
+      ).length,
+    ).toBeGreaterThan(0);
+    expect(panel.getByText("cancels 0xoriginal")).toBeInTheDocument();
+  });
+
+  it("keeps dropped originals in the nonce thread next to their replacement result", () => {
+    renderHistory([
+      record({
+        txHash: "0xoriginal",
+        nonce: 9,
+        state: "Dropped",
+        replacedByTxHash: "0xreplacement",
+        broadcastedAt: "1700000001",
+        finalizedAt: "1700000100",
+      }),
+      record({
+        txHash: "0xreplacement",
+        nonce: 9,
+        state: "Confirmed",
+        kind: "replacement",
+        replacesTxHash: "0xoriginal",
+        broadcastedAt: "1700000002",
+        finalizedAt: "1700000102",
+      }),
+    ]);
+
+    fireEvent.change(screen.getByLabelText("View"), { target: { value: "threads" } });
+    fireEvent.click(screen.getByRole("button", { name: "Thread details" }));
+
+    const timeline = within(screen.getByLabelText("Nonce thread timeline"));
+    expect(timeline.getByText("Thread outcomes: Dropped on 0xoriginal; Confirmed on 0xreplacement")).toBeInTheDocument();
+    expect(timeline.getByText("ChainOutcome Dropped")).toBeInTheDocument();
+    expect(timeline.getByText("replaced by 0xreplacement")).toBeInTheDocument();
+  });
+
+  it("does not describe a later dropped cancellation as the final thread outcome", () => {
+    renderHistory([
+      record({
+        txHash: "0xoriginal",
+        nonce: 9,
+        state: "Replaced",
+        replacedByTxHash: "0xreplacement",
+        broadcastedAt: "1700000001",
+        finalizedAt: "1700000100",
+      }),
+      record({
+        txHash: "0xreplacement",
+        nonce: 9,
+        state: "Confirmed",
+        kind: "replacement",
+        replacesTxHash: "0xoriginal",
+        broadcastedAt: "1700000002",
+        finalizedAt: "1700000101",
+      }),
+      record({
+        txHash: "0xcancel",
+        nonce: 9,
+        state: "Dropped",
+        kind: "cancellation",
+        replacesTxHash: "0xreplacement",
+        submissionValueWei: "0",
+        broadcastedAt: "1700000003",
+        finalizedAt: "1700000102",
+      }),
+    ]);
+
+    fireEvent.change(screen.getByLabelText("View"), { target: { value: "threads" } });
+    fireEvent.click(screen.getByRole("button", { name: "Thread details" }));
+
+    const timeline = within(screen.getByLabelText("Nonce thread timeline"));
+    expect(timeline.queryByText(/Final ChainOutcome/)).not.toBeInTheDocument();
+    expect(timeline.getByText("Thread outcomes: Replaced on 0xoriginal; Confirmed on 0xreplacement; Dropped on 0xcancel")).toBeInTheDocument();
+  });
+
+  it("does not merge nonce threads across chains when hashes share the same nonce", () => {
+    renderHistory([
+      record({ txHash: "0xchain1", chainId: 1, nonce: 9, state: "Pending" }),
+      record({ txHash: "0xchain5", chainId: 5, nonce: 9, state: "Pending" }),
+    ]);
+
+    fireEvent.change(screen.getByLabelText("View"), { target: { value: "threads" } });
+
+    const table = within(screen.getByRole("table"));
+    expect(table.getAllByRole("row")).toHaveLength(3);
+    expect(table.getByText("chainId 1")).toBeInTheDocument();
+    expect(table.getByText("chainId 5")).toBeInTheDocument();
   });
 
   it("hides an open submission detail when filters make that record invisible", () => {
