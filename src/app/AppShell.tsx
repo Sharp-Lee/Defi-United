@@ -133,6 +133,7 @@ export function AppShell({
               <HistoryView
                 disabled={busy}
                 items={history}
+                loading={busy}
                 onCancelPending={onCancelPending}
                 onRefresh={onRefreshHistory}
                 onReplace={onReplacePending}

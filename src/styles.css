@@ -216,6 +216,77 @@ td {
   border-radius: 8px;
 }
 
+.history-controls {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(130px, 1fr)) auto;
+  gap: 10px;
+  align-items: end;
+}
+
+.history-controls .secondary-button {
+  min-width: 72px;
+}
+
+.history-status,
+.history-status-stack {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.history-status {
+  min-height: 26px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 3px 7px;
+  background: var(--panel-soft);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.history-status-stack,
+.history-thread-list {
+  display: grid;
+  gap: 6px;
+}
+
+.history-status-pending {
+  border-color: rgba(211, 154, 50, 0.62);
+  color: #ffd891;
+  background: rgba(211, 154, 50, 0.12);
+}
+
+.history-status-confirmed {
+  border-color: rgba(53, 184, 111, 0.62);
+  color: #a7ebc4;
+  background: rgba(53, 184, 111, 0.12);
+}
+
+.history-status-failed {
+  border-color: rgba(224, 82, 82, 0.6);
+  color: #ffb5b5;
+  background: rgba(224, 82, 82, 0.12);
+}
+
+.history-status-dropped {
+  border-color: rgba(211, 154, 50, 0.62);
+  color: #ffd891;
+  background: rgba(211, 154, 50, 0.12);
+}
+
+.history-status-replaced,
+.history-status-cancelled {
+  border-color: rgba(80, 147, 255, 0.58);
+  color: #b9d3ff;
+  background: rgba(80, 147, 255, 0.12);
+}
+
+.history-actions {
+  flex-wrap: wrap;
+}
+
 .mono {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   font-size: 12px;
@@ -314,6 +385,10 @@ td {
 
   .workspace-tablist {
     flex-wrap: wrap;
+  }
+
+  .history-controls {
+    grid-template-columns: 1fr;
   }
 
   .confirmation-grid {
