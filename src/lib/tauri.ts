@@ -11,6 +11,8 @@ export type {
   ChainOutcomeState,
   HistoryRecord,
   NativeTransferIntent,
+  SubmissionKind,
+  TransactionType,
 } from "../core/history/schema";
 
 export interface AccountRecord {
@@ -130,7 +132,13 @@ export interface HistoryRecoveryIntent {
   status: HistoryRecoveryIntentStatus;
   createdAt: string;
   txHash: string;
-  kind: "legacy" | "nativeTransfer" | "replacement" | "cancellation";
+  kind:
+    | "legacy"
+    | "nativeTransfer"
+    | "erc20Transfer"
+    | "replacement"
+    | "cancellation"
+    | "unsupported";
   chainId: number | null;
   accountIndex: number | null;
   from: string | null;

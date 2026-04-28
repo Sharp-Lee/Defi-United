@@ -82,7 +82,14 @@ function mismatchesFrozenSubmission(
 function firstMissingMutationField(entry: HistoryReadModel) {
   const { intent, submission } = entry.record;
   if (
+    submission.transaction_type !== "nativeTransfer" &&
+    submission.transaction_type !== "legacy"
+  ) {
+    return `Replace/cancel for ${submission.transaction_type} history records is not implemented yet.`;
+  }
+  if (
     entry.submissionKind === "legacy" ||
+    entry.submissionKind === "unsupported" ||
     entry.record.submission.source === "legacy" ||
     entry.record.nonce_thread.source === "legacy" ||
     entry.identitySource === "intent"

@@ -241,6 +241,60 @@ function renderHistory(rawRecords: unknown[], options = {}) {
   );
 }
 
+function erc20Record() {
+  const tokenContract = "0x4444444444444444444444444444444444444444";
+  const erc20Recipient = "0x5555555555555555555555555555555555555555";
+  return {
+    ...record({ txHash: "0xerc20", nonce: 11, submissionValueWei: "0", intentValueWei: "0" }),
+    intent: {
+      ...record({ txHash: "0xerc20-intent", nonce: 11 }).intent,
+      transaction_type: "erc20Transfer",
+      to: tokenContract,
+      value_wei: "0",
+      token_contract: tokenContract,
+      recipient: erc20Recipient,
+      amount_raw: "1234500",
+      decimals: 6,
+      token_symbol: "TST",
+      token_name: "Test Token",
+      token_metadata_source: "userConfirmed",
+      selector: "0xa9059cbb",
+      method_name: "transfer",
+      native_value_wei: "0",
+    },
+    submission: {
+      ...record({ txHash: "0xerc20-submission", nonce: 11 }).submission,
+      frozen_key: "erc20-key",
+      tx_hash: "0xerc20",
+      kind: "erc20Transfer",
+      transaction_type: "erc20Transfer",
+      to: tokenContract,
+      value_wei: "0",
+      token_contract: tokenContract,
+      recipient: erc20Recipient,
+      amount_raw: "1234500",
+      decimals: 6,
+      token_symbol: "TST",
+      token_name: "Test Token",
+      token_metadata_source: "userConfirmed",
+      selector: "0xa9059cbb",
+      method_name: "transfer",
+      native_value_wei: "0",
+      nonce: 11,
+    },
+    nonce_thread: {
+      source: "derived",
+      key: `${1}:${1}:${accountA.toLowerCase()}:${11}`,
+      chain_id: 1,
+      account_index: 1,
+      from: accountA,
+      nonce: 11,
+      replaces_tx_hash: null,
+      replaced_by_tx_hash: null,
+    },
+  };
+}
+
 function recoveryIntent(overrides = {}) {
   return {
     schemaVersion: 1,
@@ -507,8 +561,8 @@ describe("HistoryView", () => {
     expect(intentSection).not.toBeNull();
     expect(submissionSection).not.toBeNull();
     expect(outcomeSection).not.toBeNull();
-    expect(within(intentSection as HTMLElement).getByText("100 wei")).toBeInTheDocument();
-    expect(within(submissionSection as HTMLElement).getByText("250 wei")).toBeInTheDocument();
+    expect(within(intentSection as HTMLElement).getAllByText("100 wei").length).toBeGreaterThan(0);
+    expect(within(submissionSection as HTMLElement).getAllByText("250 wei").length).toBeGreaterThan(0);
     expect(within(submissionSection as HTMLElement).getByText("0xdetail")).toBeInTheDocument();
     expect(
       within(outcomeSection as HTMLElement).getByText(
@@ -516,6 +570,54 @@ describe("HistoryView", () => {
       ),
     ).toBeInTheDocument();
     expect(within(outcomeSection as HTMLElement).getByText("broadcastTracked")).toBeInTheDocument();
+  });
+
+  it("shows ERC-20 typed details without treating recipient as transaction to", () => {
+    renderHistory([erc20Record()]);
+
+    const row = screen.getByText("0xerc20").closest("tr") as HTMLElement;
+    expect(within(row).getByText("0x44444444...4444")).toBeInTheDocument();
+    expect(within(row).getByText("1234500 raw")).toBeInTheDocument();
+
+    fireEvent.click(within(row).getByText("Details"));
+
+    const panel = within(screen.getByLabelText("History details"));
+    const intentSection = panel.getByText("Intent").closest("section") as HTMLElement;
+    const submissionSection = panel.getByText("Submission").closest("section") as HTMLElement;
+
+    expect(within(intentSection).getByText("ERC-20 transfer (erc20Transfer)")).toBeInTheDocument();
+    expect(within(intentSection).getByText("Token contract")).toBeInTheDocument();
+    expect(
+      within(intentSection).getAllByText("0x4444444444444444444444444444444444444444")
+        .length,
+    ).toBeGreaterThan(0);
+    expect(within(intentSection).getByText("Recipient")).toBeInTheDocument();
+    expect(within(intentSection).getByText("0x5555555555555555555555555555555555555555")).toBeInTheDocument();
+    expect(within(intentSection).getByText("Amount raw")).toBeInTheDocument();
+    expect(within(intentSection).getByText("1234500")).toBeInTheDocument();
+    expect(within(submissionSection).getByText("Selector")).toBeInTheDocument();
+    expect(within(submissionSection).getByText("0xa9059cbb")).toBeInTheDocument();
+    expect(within(submissionSection).getByText("Method name")).toBeInTheDocument();
+    expect(within(submissionSection).getByText("transfer")).toBeInTheDocument();
+    expect(within(submissionSection).getByText("Metadata source")).toBeInTheDocument();
+    expect(within(submissionSection).getByText("userConfirmed")).toBeInTheDocument();
+  });
+
+  it("shows unknown typed records as unsupported instead of native transfer copy", () => {
+    const unsupported = record({ txHash: "0xunknownkind", nonce: 12 });
+    (unsupported.intent as Record<string, unknown>).transaction_type = "mysteryCall";
+    (unsupported.submission as Record<string, unknown>).transaction_type = "mysteryCall";
+    (unsupported.submission as Record<string, unknown>).kind = "mysteryKind";
+    renderHistory([unsupported]);
+
+    const row = screen.getByText("0xunknownkind").closest("tr") as HTMLElement;
+    expect(within(row).getAllByText("Unsupported/unknown").length).toBeGreaterThan(0);
+
+    fireEvent.click(within(row).getByText("Details"));
+
+    const panel = within(screen.getByLabelText("History details"));
+    expect(panel.getAllByText("Unsupported/unknown transaction type").length).toBeGreaterThan(0);
+    expect(panel.queryByText("Native transfer (nativeTransfer)")).not.toBeInTheDocument();
   });
 
   it("explains terminal chain outcomes without treating dropped as a chain failure", () => {

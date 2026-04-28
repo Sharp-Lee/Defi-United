@@ -26,10 +26,10 @@ export function releaseNonceReservation(
 
 export interface PendingNonceHistoryRecord {
   intent: {
-    account_index: number;
-    chain_id: number;
-    from: string;
-    nonce: number;
+    account_index: number | null;
+    chain_id: number | null;
+    from: string | null;
+    nonce: number | null;
   };
   submission?: {
     account_index: number | null;
@@ -71,12 +71,8 @@ function completeIdentity(
 function pendingNonceIdentity(record: PendingNonceHistoryRecord) {
   return (
     completeIdentity(record.submission) ??
-    completeIdentity(record.nonce_thread) ?? {
-      accountIndex: record.intent.account_index,
-      chainId: record.intent.chain_id,
-      from: record.intent.from,
-      nonce: record.intent.nonce,
-    }
+    completeIdentity(record.nonce_thread) ??
+    completeIdentity(record.intent)
   );
 }
 
@@ -90,6 +86,7 @@ export function nextNonceWithLocalPending(
   return history.reduce((nextNonce, record) => {
     const identity = pendingNonceIdentity(record);
     if (
+      identity === null ||
       record.outcome.state !== "Pending" ||
       identity.accountIndex !== accountIndex ||
       identity.chainId !== chainId ||

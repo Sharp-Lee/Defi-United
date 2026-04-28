@@ -741,11 +741,16 @@
 
 ### 7.3 P4-8 后续拆分建议
 
-#### Task P4-8a: history schema/type contract for typed transaction intents
+#### Task P4-8a: history schema/type contract for typed transaction intents（状态：已完成）
 
 **目标**
 
 为历史记录和前后端类型增加 typed transaction intent 契约，让 native transfer、ERC-20 transfer、replacement、cancellation 能在同一三层模型下兼容展示。
+
+**完成记录**
+
+- 已为 Rust history model 与 TypeScript history schema 增加 additive `transaction_type` 契约和 ERC-20 transfer 预留字段；旧记录缺失字段时仍按 legacy/nativeTransfer 读取展示。
+- History selector/detail UI 已按 typed transaction 分支展示 native、ERC-20 与 unsupported/unknown；replacement/cancellation 仍由 `SubmissionKind` 与 nonce thread identity 聚合，不写成 ERC-20 发送能力。
 
 **改动范围**
 
