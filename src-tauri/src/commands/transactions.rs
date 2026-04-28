@@ -3,13 +3,14 @@ use std::sync::{Mutex, OnceLock};
 
 use crate::diagnostics::{append_diagnostic_event, DiagnosticEventInput, DiagnosticLevel};
 use crate::models::{
-    NativeTransferIntent, SubmissionKind, SubmissionRecord, TypedTransactionFields,
+    Erc20TransferIntent, NativeTransferIntent, SubmissionKind, SubmissionRecord, TransactionType,
+    TypedTransactionFields,
 };
 use crate::transactions::{
     dismiss_history_recovery_intent, inspect_history_storage, load_history_records,
     load_history_recovery_intents, persist_pending_history, quarantine_history_storage,
     reconcile_pending_history, recover_broadcasted_history_record, review_dropped_history_record,
-    submit_native_transfer, submit_native_transfer_with_history_kind,
+    submit_erc20_transfer, submit_native_transfer, submit_native_transfer_with_history_kind,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -217,6 +218,34 @@ fn validate_fee_not_below_frozen(
     Ok(())
 }
 
+fn validate_erc20_replacement_fee_increase(
+    request: &PendingMutationRequest,
+    submission: &SubmissionRecord,
+) -> Result<(), String> {
+    let frozen_max_fee_per_gas =
+        require_submission_string(&submission.max_fee_per_gas, "max_fee_per_gas")?;
+    let frozen_max_priority_fee_per_gas = require_submission_string(
+        &submission.max_priority_fee_per_gas,
+        "max_priority_fee_per_gas",
+    )?;
+    let request_max_fee = ethers::types::U256::from_dec_str(&request.max_fee_per_gas)
+        .map_err(|e| format!("pending request max_fee_per_gas is invalid: {e}"))?;
+    let request_priority_fee = ethers::types::U256::from_dec_str(&request.max_priority_fee_per_gas)
+        .map_err(|e| format!("pending request max_priority_fee_per_gas is invalid: {e}"))?;
+    let frozen_max_fee = ethers::types::U256::from_dec_str(&frozen_max_fee_per_gas)
+        .map_err(|e| format!("frozen submission max_fee_per_gas is invalid: {e}"))?;
+    let frozen_priority_fee =
+        ethers::types::U256::from_dec_str(&frozen_max_priority_fee_per_gas)
+            .map_err(|e| format!("frozen submission max_priority_fee_per_gas is invalid: {e}"))?;
+    if request_max_fee == frozen_max_fee && request_priority_fee == frozen_priority_fee {
+        return Err(
+            "ERC-20 replacement must increase max_fee_per_gas or max_priority_fee_per_gas"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
 pub fn build_replace_intent_from_pending_request(
     request: PendingMutationRequest,
 ) -> Result<NativeTransferIntent, String> {
@@ -229,6 +258,63 @@ fn build_replace_intent_from_record(
     record: crate::models::HistoryRecord,
 ) -> Result<NativeTransferIntent, String> {
     let (chain_id, account_index, from, nonce) = frozen_submission_identity(&record.submission)?;
+    if record.submission.typed_transaction.transaction_type == TransactionType::Erc20Transfer {
+        validate_erc20_replacement_fee_increase(&request, &record.submission)?;
+        let token_contract = require_submission_string(
+            &record.submission.typed_transaction.token_contract,
+            "token_contract",
+        )
+        .or_else(|_| require_submission_string(&record.submission.to, "to"))?;
+        let recipient =
+            require_submission_string(&record.submission.typed_transaction.recipient, "recipient")?;
+        let amount_raw = require_submission_string(
+            &record.submission.typed_transaction.amount_raw,
+            "amount_raw",
+        )?;
+        let decimals = record
+            .submission
+            .typed_transaction
+            .decimals
+            .ok_or_else(|| "pending history submission missing frozen decimals".to_string())?;
+        if !request
+            .to
+            .as_deref()
+            .is_some_and(|to| to.eq_ignore_ascii_case(&token_contract))
+        {
+            return Err(
+                "ERC-20 replace must keep the frozen token contract transaction target".to_string(),
+            );
+        }
+        if request.value_wei.as_deref().unwrap_or("0") != "0" {
+            return Err("ERC-20 replace must keep native value at 0".to_string());
+        }
+        return Ok(NativeTransferIntent {
+            typed_transaction: TypedTransactionFields::erc20_transfer(
+                token_contract.clone(),
+                recipient,
+                amount_raw,
+                decimals,
+                record.submission.typed_transaction.token_symbol.clone(),
+                record.submission.typed_transaction.token_name.clone(),
+                record
+                    .submission
+                    .typed_transaction
+                    .token_metadata_source
+                    .clone()
+                    .unwrap_or_else(|| "unknown".to_string()),
+            ),
+            rpc_url: request.rpc_url,
+            account_index,
+            chain_id,
+            from,
+            to: token_contract,
+            value_wei: "0".to_string(),
+            nonce,
+            gas_limit: request.gas_limit,
+            max_fee_per_gas: request.max_fee_per_gas,
+            max_priority_fee_per_gas: request.max_priority_fee_per_gas,
+        });
+    }
     let value_wei = request
         .value_wei
         .ok_or_else(|| "replace requires a value".to_string())?;
@@ -391,6 +477,12 @@ pub async fn submit_native_transfer_command(
     intent: NativeTransferIntent,
 ) -> Result<String, String> {
     let record = submit_native_transfer(intent).await?;
+    serde_json::to_string(&record).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn submit_erc20_transfer_command(intent: Erc20TransferIntent) -> Result<String, String> {
+    let record = submit_erc20_transfer(intent).await?;
     serde_json::to_string(&record).map_err(|e| e.to_string())
 }
 

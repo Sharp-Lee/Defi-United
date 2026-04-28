@@ -73,7 +73,7 @@ classify_stage_failure() {
   local default_category="$2"
   local log_path="$3"
 
-  if [ "${stage}" = "native_transfer_roundtrip" ]; then
+  if [ "${stage}" = "native_transfer_roundtrip" ] || [ "${stage}" = "erc20_transfer_roundtrip" ]; then
     if grep -Eiq 'vault|session|unlock|password|mnemonic|key[[:space:]_-]*deriv|derive|decrypt' "${log_path}" 2>/dev/null; then
       printf 'vault_session'
     elif grep -Eiq 'history|persist|storage|write' "${log_path}" 2>/dev/null; then
@@ -270,6 +270,10 @@ run_stage "frontend_vitest" "frontend_vitest" \
 run_stage "native_transfer_roundtrip" "signing_broadcast" \
   "Inspect the roundtrip log; failures are classified as vault/session, signing/broadcast, history, or reconcile when possible." \
   cargo test --manifest-path src-tauri/Cargo.toml submit_native_transfer_roundtrip_against_anvil -- --exact --ignored
+
+run_stage "erc20_transfer_roundtrip" "signing_broadcast" \
+  "Inspect the ERC-20 roundtrip log; the smoke deploys a local test token, submits transfer, and reconciles the receipt without logging secrets." \
+  cargo test --manifest-path src-tauri/Cargo.toml submit_erc20_transfer_roundtrip_against_anvil -- --exact --ignored
 
 run_stage "rust_regression" "rust_regression" \
   "Inspect the Rust test log for non-anvil regression failures." \

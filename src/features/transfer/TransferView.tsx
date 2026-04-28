@@ -16,11 +16,12 @@ import { nextNonceWithLocalPending } from "../../core/history/reconciler";
 import { HistoryErrorCard } from "../history/HistoryErrorCard";
 import type {
   AccountRecord,
+  Erc20TransferIntent,
   HistoryRecord,
   NativeTransferIntent,
   PendingMutationRequest,
 } from "../../lib/tauri";
-import { submitNativeTransfer } from "../../lib/tauri";
+import { submitErc20Transfer, submitNativeTransfer } from "../../lib/tauri";
 import type { AccountChainState } from "../../lib/rpc";
 
 export interface TransferViewProps {
@@ -402,6 +403,61 @@ export function TransferView({
     }
   }
 
+  async function submitErc20Draft() {
+    setError(null);
+    if (!erc20Draft || !selectedAccount) return;
+    if (historyStorageIssue) {
+      setStageError("submit", historyStorageIssue);
+      return;
+    }
+    if (erc20Draft.requiresSecondConfirmation && !secondConfirm) {
+      setStageError("build", "High-risk fee settings need the extra confirmation.");
+      return;
+    }
+    const submission = erc20Draft.submission;
+    const intent: Erc20TransferIntent = {
+      rpc_url: rpcUrl,
+      account_index: selectedAccount.index,
+      chain_id: Number(chainId),
+      from: submission.from,
+      token_contract: submission.tokenContract,
+      recipient: submission.recipient,
+      amount_raw: submission.amountRaw.toString(),
+      decimals: submission.decimals,
+      token_symbol: submission.symbol,
+      token_name: submission.name,
+      token_metadata_source: submission.metadataSource,
+      nonce: submission.nonce,
+      gas_limit: submission.gasLimit.toString(),
+      max_fee_per_gas: submission.maxFeePerGas.toString(),
+      max_priority_fee_per_gas: submission.maxPriorityFeePerGas.toString(),
+      latest_base_fee_per_gas: submission.latestBaseFeePerGas?.toString() ?? null,
+      base_fee_per_gas: submission.baseFeePerGas.toString(),
+      base_fee_multiplier: submission.baseFeeMultiplier,
+      max_fee_override_per_gas: submission.maxFeeOverridePerGas?.toString() ?? null,
+      selector: submission.selector,
+      method: submission.method,
+      native_value_wei: submission.nativeValueWei.toString(),
+      frozen_key: erc20Draft.frozenKey,
+    };
+
+    setBusy(true);
+    try {
+      const record = await submitErc20Transfer(intent);
+      onSubmitted(record);
+      setErc20Draft(null);
+    } catch (err) {
+      setStageError("submit", err);
+      try {
+        await onSubmitFailed?.(err);
+      } catch {
+        // The local submit error remains visible; parent recovery state can be retried separately.
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <section className="workspace-section transfer-grid">
       <header className="section-header">
@@ -701,13 +757,13 @@ export function TransferView({
           <header className="section-header">
             <h3>Confirm ERC-20 Transfer</h3>
             <span className={erc20Draft.feeRisk === "high" ? "pill danger-pill" : "pill"}>
-              {erc20Draft.feeRisk === "high" ? "High fee risk" : "Read-only draft"}
+              {erc20Draft.feeRisk === "high" ? "High fee risk" : "Normal fee"}
             </span>
           </header>
           {erc20Draft.feeRisk === "high" && (
             <div className="inline-warning" role="alert">
               Fee or gas settings are far above the live network reference. Review total cost before
-              signing in a later release.
+              signing.
             </div>
           )}
           <div className="confirmation-grid">
@@ -765,9 +821,28 @@ export function TransferView({
             />
             <ConfirmationRow label="Frozen key" value={erc20Draft.frozenKey} />
           </div>
+          {erc20Draft.requiresSecondConfirmation && (
+            <label className="check-row">
+              <input
+                checked={secondConfirm}
+                onChange={(event) => setSecondConfirm(event.target.checked)}
+                type="checkbox"
+              />
+              Confirm high-risk fee settings
+            </label>
+          )}
           <div className="button-row">
-            <button disabled type="button">
-              Submit will be enabled in P4-8c
+            <button
+              disabled={
+                busy ||
+                historyStorageIssue !== null ||
+                (erc20Draft.requiresSecondConfirmation && !secondConfirm)
+              }
+              onClick={() => void submitErc20Draft()}
+              title={historyStorageIssue ?? undefined}
+              type="button"
+            >
+              Submit
             </button>
           </div>
         </section>

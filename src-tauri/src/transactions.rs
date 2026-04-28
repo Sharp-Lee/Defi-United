@@ -8,8 +8,10 @@ use ethers::middleware::SignerMiddleware;
 use ethers::providers::{Http, Middleware, Provider};
 use ethers::signers::Signer;
 use ethers::types::{
-    transaction::{eip1559::Eip1559TransactionRequest, response::TransactionReceipt},
-    Address, H256, U256, U64,
+    transaction::{
+        eip1559::Eip1559TransactionRequest, eip2718::TypedTransaction, response::TransactionReceipt,
+    },
+    Address, Bytes, TransactionRequest, H256, U256, U64,
 };
 use rand::Rng;
 use serde::{Deserialize, Serialize};
@@ -20,10 +22,10 @@ use crate::diagnostics::{
     append_diagnostic_event, sanitize_diagnostic_message, DiagnosticEventInput, DiagnosticLevel,
 };
 use crate::models::{
-    ChainOutcome, DroppedReviewSummary, HistoryErrorSummary, HistoryRecoveryIntent,
-    HistoryRecoveryIntentStatus, HistoryRecoveryResult, HistoryRecoveryResultStatus,
-    IntentSnapshotMetadata, NonceThread, ReceiptSummary, ReconcileSummary, SubmissionKind,
-    SubmissionRecord, TypedTransactionFields,
+    ChainOutcome, DroppedReviewSummary, Erc20TransferIntent, HistoryErrorSummary,
+    HistoryRecoveryIntent, HistoryRecoveryIntentStatus, HistoryRecoveryResult,
+    HistoryRecoveryResultStatus, IntentSnapshotMetadata, NonceThread, ReceiptSummary,
+    ReconcileSummary, SubmissionKind, SubmissionRecord, TransactionType, TypedTransactionFields,
 };
 use crate::session::with_session_mnemonic;
 use crate::storage::{
@@ -33,6 +35,10 @@ use crate::storage::{
 pub use crate::models::{ChainOutcomeState, HistoryRecord, NativeTransferIntent};
 
 const RECOVERED_HISTORY_RPC_URL: &str = "recovered://history-write-failed";
+const ERC20_TRANSFER_SELECTOR: [u8; 4] = [0xa9, 0x05, 0x9c, 0xbb];
+const ERC20_BALANCE_OF_SELECTOR: [u8; 4] = [0x70, 0xa0, 0x82, 0x31];
+const ERC20_TRANSFER_SELECTOR_HEX: &str = "0xa9059cbb";
+const ERC20_TRANSFER_METHOD: &str = "transfer(address,uint256)";
 
 fn history_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -562,6 +568,26 @@ fn history_recovery_intent_from_broadcast_failure(
     broadcasted_at: String,
     write_error: String,
 ) -> Result<HistoryRecoveryIntent, String> {
+    history_recovery_intent_from_broadcast_failure_with_frozen_key(
+        intent,
+        tx_hash,
+        kind,
+        replaces_tx_hash,
+        broadcasted_at,
+        write_error,
+        None,
+    )
+}
+
+fn history_recovery_intent_from_broadcast_failure_with_frozen_key(
+    intent: &NativeTransferIntent,
+    tx_hash: String,
+    kind: SubmissionKind,
+    replaces_tx_hash: Option<String>,
+    broadcasted_at: String,
+    write_error: String,
+    frozen_key_override: Option<String>,
+) -> Result<HistoryRecoveryIntent, String> {
     let created_at = now_unix_seconds()?;
     let id = history_recovery_intent_id(
         Some(intent.chain_id),
@@ -575,14 +601,34 @@ fn history_recovery_intent_from_broadcast_failure(
         id,
         status: HistoryRecoveryIntentStatus::Active,
         created_at,
-        tx_hash,
-        kind,
+        tx_hash: tx_hash.clone(),
+        kind: kind.clone(),
         chain_id: Some(intent.chain_id),
         account_index: Some(intent.account_index),
         from: Some(intent.from.clone()),
         nonce: Some(intent.nonce),
         to: Some(intent.to.clone()),
         value_wei: Some(intent.value_wei.clone()),
+        token_contract: intent.typed_transaction.token_contract.clone(),
+        recipient: intent.typed_transaction.recipient.clone(),
+        amount_raw: intent.typed_transaction.amount_raw.clone(),
+        decimals: intent.typed_transaction.decimals,
+        token_symbol: intent.typed_transaction.token_symbol.clone(),
+        token_name: intent.typed_transaction.token_name.clone(),
+        token_metadata_source: intent.typed_transaction.token_metadata_source.clone(),
+        selector: intent.typed_transaction.selector.clone(),
+        method_name: intent.typed_transaction.method_name.clone(),
+        native_value_wei: intent.typed_transaction.native_value_wei.clone(),
+        frozen_key: Some(frozen_key_override.unwrap_or_else(|| {
+            submission_record_from_intent(
+                intent,
+                tx_hash.clone(),
+                broadcasted_at.clone(),
+                kind.clone(),
+                replaces_tx_hash.clone(),
+            )
+            .frozen_key
+        })),
         gas_limit: Some(intent.gas_limit.clone()),
         max_fee_per_gas: Some(intent.max_fee_per_gas.clone()),
         max_priority_fee_per_gas: Some(intent.max_priority_fee_per_gas.clone()),
@@ -730,6 +776,143 @@ fn parse_native_transfer_u256(
     })
 }
 
+pub fn build_erc20_transfer_calldata(recipient: Address, amount: U256) -> Bytes {
+    let mut data = Vec::with_capacity(68);
+    data.extend_from_slice(&ERC20_TRANSFER_SELECTOR);
+    data.extend_from_slice(&[0u8; 12]);
+    data.extend_from_slice(recipient.as_bytes());
+    let mut amount_word = [0u8; 32];
+    amount.to_big_endian(&mut amount_word);
+    data.extend_from_slice(&amount_word);
+    Bytes::from(data)
+}
+
+fn build_erc20_balance_of_calldata(owner: Address) -> Bytes {
+    let mut data = Vec::with_capacity(36);
+    data.extend_from_slice(&ERC20_BALANCE_OF_SELECTOR);
+    data.extend_from_slice(&[0u8; 12]);
+    data.extend_from_slice(owner.as_bytes());
+    Bytes::from(data)
+}
+
+fn native_intent_from_erc20_intent(intent: &Erc20TransferIntent) -> NativeTransferIntent {
+    NativeTransferIntent {
+        typed_transaction: TypedTransactionFields::erc20_transfer(
+            intent.token_contract.clone(),
+            intent.recipient.clone(),
+            intent.amount_raw.clone(),
+            intent.decimals,
+            intent.token_symbol.clone(),
+            intent.token_name.clone(),
+            intent.token_metadata_source.clone(),
+        ),
+        rpc_url: summarize_rpc_endpoint(&intent.rpc_url),
+        account_index: intent.account_index,
+        chain_id: intent.chain_id,
+        from: intent.from.clone(),
+        to: intent.token_contract.clone(),
+        value_wei: "0".to_string(),
+        nonce: intent.nonce,
+        gas_limit: intent.gas_limit.clone(),
+        max_fee_per_gas: intent.max_fee_per_gas.clone(),
+        max_priority_fee_per_gas: intent.max_priority_fee_per_gas.clone(),
+    }
+}
+
+fn sanitized_erc20_history_intent(intent: &NativeTransferIntent) -> NativeTransferIntent {
+    let mut sanitized = intent.clone();
+    sanitized.rpc_url = summarize_rpc_endpoint(&intent.rpc_url);
+    sanitized
+}
+
+fn erc20_frozen_key_from_submit_intent(intent: &Erc20TransferIntent) -> String {
+    [
+        format!("chainId={}", intent.chain_id),
+        format!("from={}", intent.from),
+        format!("tokenContract={}", intent.token_contract),
+        format!("recipient={}", intent.recipient),
+        format!("amountRaw={}", intent.amount_raw),
+        format!("decimals={}", intent.decimals),
+        format!("metadataSource={}", intent.token_metadata_source),
+        format!("nonce={}", intent.nonce),
+        format!("gasLimit={}", intent.gas_limit),
+        format!(
+            "latestBaseFee={}",
+            intent
+                .latest_base_fee_per_gas
+                .as_deref()
+                .unwrap_or("unavailable")
+        ),
+        format!("baseFee={}", intent.base_fee_per_gas),
+        format!("baseFeeMultiplier={}", intent.base_fee_multiplier),
+        format!("maxFee={}", intent.max_fee_per_gas),
+        format!(
+            "maxFeeOverride={}",
+            intent.max_fee_override_per_gas.as_deref().unwrap_or("auto")
+        ),
+        format!("priorityFee={}", intent.max_priority_fee_per_gas),
+        format!("selector={}", intent.selector),
+        format!("method={}", intent.method),
+        format!("nativeValueWei={}", intent.native_value_wei),
+    ]
+    .join("|")
+}
+
+fn erc20_submit_intent_from_native_intent(
+    intent: &NativeTransferIntent,
+    frozen_key: String,
+) -> Result<Erc20TransferIntent, String> {
+    let typed = &intent.typed_transaction;
+    Ok(Erc20TransferIntent {
+        rpc_url: intent.rpc_url.clone(),
+        account_index: intent.account_index,
+        chain_id: intent.chain_id,
+        from: intent.from.clone(),
+        token_contract: typed
+            .token_contract
+            .clone()
+            .unwrap_or_else(|| intent.to.clone()),
+        recipient: typed
+            .recipient
+            .clone()
+            .ok_or_else(|| "ERC-20 intent missing recipient".to_string())?,
+        amount_raw: typed
+            .amount_raw
+            .clone()
+            .ok_or_else(|| "ERC-20 intent missing amount_raw".to_string())?,
+        decimals: typed
+            .decimals
+            .ok_or_else(|| "ERC-20 intent missing decimals".to_string())?,
+        token_symbol: typed.token_symbol.clone(),
+        token_name: typed.token_name.clone(),
+        token_metadata_source: typed
+            .token_metadata_source
+            .clone()
+            .unwrap_or_else(|| "unknown".to_string()),
+        nonce: intent.nonce,
+        gas_limit: intent.gas_limit.clone(),
+        max_fee_per_gas: intent.max_fee_per_gas.clone(),
+        max_priority_fee_per_gas: intent.max_priority_fee_per_gas.clone(),
+        latest_base_fee_per_gas: None,
+        base_fee_per_gas: "0".to_string(),
+        base_fee_multiplier: "unknown".to_string(),
+        max_fee_override_per_gas: None,
+        selector: typed
+            .selector
+            .clone()
+            .unwrap_or_else(|| ERC20_TRANSFER_SELECTOR_HEX.to_string()),
+        method: typed
+            .method_name
+            .clone()
+            .unwrap_or_else(|| ERC20_TRANSFER_METHOD.to_string()),
+        native_value_wei: typed
+            .native_value_wei
+            .clone()
+            .unwrap_or_else(|| "0".to_string()),
+        frozen_key,
+    })
+}
+
 fn now_unix_seconds() -> Result<String, String> {
     Ok(SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -755,13 +938,44 @@ fn submission_record_from_intent(
     kind: SubmissionKind,
     replaces_tx_hash: Option<String>,
 ) -> SubmissionRecord {
-    let frozen_key = format!(
-        "{}:{}:{}:{}:{}",
-        intent.chain_id, intent.from, intent.to, intent.value_wei, intent.nonce
-    );
+    let frozen_key = if intent.typed_transaction.transaction_type == TransactionType::Erc20Transfer
+    {
+        format!(
+            "{}:{}:{}:{}:{}:{}:{}:{}",
+            intent.chain_id,
+            intent.from,
+            intent
+                .typed_transaction
+                .token_contract
+                .as_deref()
+                .unwrap_or(&intent.to),
+            intent
+                .typed_transaction
+                .recipient
+                .as_deref()
+                .unwrap_or("unknown"),
+            intent
+                .typed_transaction
+                .amount_raw
+                .as_deref()
+                .unwrap_or("unknown"),
+            intent
+                .typed_transaction
+                .decimals
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "unknown".to_string()),
+            intent.nonce,
+            ERC20_TRANSFER_SELECTOR_HEX
+        )
+    } else {
+        format!(
+            "{}:{}:{}:{}:{}",
+            intent.chain_id, intent.from, intent.to, intent.value_wei, intent.nonce
+        )
+    };
 
     SubmissionRecord {
-        typed_transaction: TypedTransactionFields::native_transfer(intent.value_wei.clone()),
+        typed_transaction: intent.typed_transaction.clone(),
         frozen_key,
         tx_hash,
         kind,
@@ -972,6 +1186,73 @@ pub fn mark_prior_history_state_with_replacement(
 pub fn broadcast_history_write_error(tx_hash: &str, error: &str) -> String {
     format!(
         "transaction broadcast but local history write failed; tx_hash={tx_hash}; error={error}"
+    )
+}
+
+fn erc20_broadcast_history_write_error(
+    tx_hash: &str,
+    intent: &Erc20TransferIntent,
+    error: &str,
+) -> String {
+    format!(
+        "ERC-20 transaction broadcast but local history write failed; tx_hash={tx_hash}; chainId={}; accountIndex={}; from={}; nonce={}; tokenContract={}; recipient={}; amountRaw={}; decimals={}; selector={}; method={}; frozenKey={}; error={error}",
+        intent.chain_id,
+        intent.account_index,
+        intent.from,
+        intent.nonce,
+        intent.token_contract,
+        intent.recipient,
+        intent.amount_raw,
+        intent.decimals,
+        intent.selector,
+        intent.method,
+        intent.frozen_key,
+    )
+}
+
+fn erc20_history_intent_broadcast_history_write_error(
+    tx_hash: &str,
+    intent: &NativeTransferIntent,
+    frozen_key: &str,
+    error: &str,
+) -> String {
+    format!(
+        "ERC-20 transaction broadcast but local history write failed; tx_hash={tx_hash}; chainId={}; accountIndex={}; from={}; nonce={}; tokenContract={}; recipient={}; amountRaw={}; decimals={}; selector={}; method={}; frozenKey={}; error={error}",
+        intent.chain_id,
+        intent.account_index,
+        intent.from,
+        intent.nonce,
+        intent
+            .typed_transaction
+            .token_contract
+            .as_deref()
+            .unwrap_or(&intent.to),
+        intent
+            .typed_transaction
+            .recipient
+            .as_deref()
+            .unwrap_or("unknown"),
+        intent
+            .typed_transaction
+            .amount_raw
+            .as_deref()
+            .unwrap_or("unknown"),
+        intent
+            .typed_transaction
+            .decimals
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "unknown".to_string()),
+        intent
+            .typed_transaction
+            .selector
+            .as_deref()
+            .unwrap_or(ERC20_TRANSFER_SELECTOR_HEX),
+        intent
+            .typed_transaction
+            .method_name
+            .as_deref()
+            .unwrap_or(ERC20_TRANSFER_METHOD),
+        frozen_key,
     )
 }
 
@@ -2082,7 +2363,58 @@ fn history_record_from_recovery_intent(
         .max_priority_fee_per_gas
         .clone()
         .unwrap_or_else(|| "unknown".to_string());
-    let frozen_key = format!("{chain_id}:{from}:{to}:{value_wei}:{nonce}");
+    let is_erc20 = intent.kind == SubmissionKind::Erc20Transfer
+        || intent.token_contract.is_some()
+        || intent.amount_raw.is_some();
+    let typed_transaction = if is_erc20 {
+        TypedTransactionFields {
+            transaction_type: TransactionType::Erc20Transfer,
+            token_contract: intent.token_contract.clone().or_else(|| Some(to.clone())),
+            recipient: intent.recipient.clone(),
+            amount_raw: intent.amount_raw.clone(),
+            decimals: intent.decimals,
+            token_symbol: intent.token_symbol.clone(),
+            token_name: intent.token_name.clone(),
+            token_metadata_source: intent.token_metadata_source.clone(),
+            selector: intent
+                .selector
+                .clone()
+                .or_else(|| Some(ERC20_TRANSFER_SELECTOR_HEX.to_string())),
+            method_name: intent
+                .method_name
+                .clone()
+                .or_else(|| Some(ERC20_TRANSFER_METHOD.to_string())),
+            native_value_wei: intent
+                .native_value_wei
+                .clone()
+                .or_else(|| Some("0".to_string())),
+        }
+    } else {
+        TypedTransactionFields::native_transfer(value_wei.clone())
+    };
+    let frozen_key = intent.frozen_key.clone().unwrap_or_else(|| {
+        if is_erc20 {
+            format!(
+                "{}:{}:{}:{}:{}:{}:{}:{}",
+                chain_id,
+                from,
+                typed_transaction.token_contract.as_deref().unwrap_or(&to),
+                typed_transaction.recipient.as_deref().unwrap_or("unknown"),
+                typed_transaction.amount_raw.as_deref().unwrap_or("unknown"),
+                typed_transaction
+                    .decimals
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "unknown".to_string()),
+                nonce,
+                typed_transaction
+                    .selector
+                    .as_deref()
+                    .unwrap_or(ERC20_TRANSFER_SELECTOR_HEX)
+            )
+        } else {
+            format!("{chain_id}:{from}:{to}:{value_wei}:{nonce}")
+        }
+    });
     let finalized_at = match outcome_state {
         ChainOutcomeState::Confirmed | ChainOutcomeState::Failed => Some(checked_at.clone()),
         _ => None,
@@ -2092,7 +2424,7 @@ fn history_record_from_recovery_intent(
         captured_at: Some(intent.created_at.clone()),
     };
     let native_intent = NativeTransferIntent {
-        typed_transaction: TypedTransactionFields::native_transfer(value_wei.clone()),
+        typed_transaction: typed_transaction.clone(),
         rpc_url: RECOVERED_HISTORY_RPC_URL.to_string(),
         account_index,
         chain_id,
@@ -2109,7 +2441,7 @@ fn history_record_from_recovery_intent(
         intent: native_intent,
         intent_snapshot,
         submission: SubmissionRecord {
-            typed_transaction: TypedTransactionFields::native_transfer(value_wei),
+            typed_transaction,
             frozen_key,
             tx_hash: intent.tx_hash.clone(),
             kind: intent.kind.clone(),
@@ -2644,8 +2976,504 @@ async fn preflight_native_transfer(
     Ok(())
 }
 
+async fn preflight_erc20_transfer(
+    intent: &Erc20TransferIntent,
+    signer_address: Address,
+    provider: &Provider<Http>,
+    verify_frozen_key: bool,
+) -> Result<(NativeTransferIntent, Address, Address, Bytes), String> {
+    record_transaction_diagnostic(
+        DiagnosticLevel::Info,
+        "erc20TransferPreflightStarted",
+        Some(intent.chain_id),
+        Some(intent.account_index),
+        None,
+        None,
+        json!({ "nonce": intent.nonce }),
+    );
+
+    let remote_chain_id = provider.get_chainid().await.map_err(|e| {
+        let error = e.to_string();
+        record_transaction_diagnostic(
+            DiagnosticLevel::Error,
+            "erc20TransferPreflightChainIdFailed",
+            Some(intent.chain_id),
+            Some(intent.account_index),
+            None,
+            Some(error.clone()),
+            json!({ "nonce": intent.nonce }),
+        );
+        error
+    })?;
+    if remote_chain_id.as_u64() != intent.chain_id {
+        let error = format!(
+            "remote chainId {} does not match intent chainId {}",
+            remote_chain_id, intent.chain_id
+        );
+        record_transaction_diagnostic(
+            DiagnosticLevel::Error,
+            "erc20TransferPreflightChainIdMismatch",
+            Some(intent.chain_id),
+            Some(intent.account_index),
+            None,
+            Some(error.clone()),
+            json!({ "remoteChainId": remote_chain_id.as_u64(), "nonce": intent.nonce }),
+        );
+        return Err(error);
+    }
+
+    let expected_from = intent.from.parse::<Address>().map_err(|e| {
+        record_transaction_diagnostic(
+            DiagnosticLevel::Error,
+            "erc20TransferPreflightAddressInvalid",
+            Some(intent.chain_id),
+            Some(intent.account_index),
+            None,
+            Some(format!("{e}")),
+            json!({ "field": "from", "nonce": intent.nonce }),
+        );
+        format!("{e}")
+    })?;
+    if signer_address != expected_from {
+        record_transaction_diagnostic(
+            DiagnosticLevel::Error,
+            "erc20TransferPreflightSignerMismatch",
+            Some(intent.chain_id),
+            Some(intent.account_index),
+            None,
+            Some("derived wallet does not match intent.from".to_string()),
+            json!({ "nonce": intent.nonce }),
+        );
+        return Err("derived wallet does not match intent.from".to_string());
+    }
+
+    if intent.selector != ERC20_TRANSFER_SELECTOR_HEX {
+        return Err("ERC-20 selector does not match transfer(address,uint256)".to_string());
+    }
+    if intent.method != ERC20_TRANSFER_METHOD {
+        return Err("ERC-20 method does not match transfer(address,uint256)".to_string());
+    }
+    if intent.native_value_wei != "0" {
+        return Err("ERC-20 transfer native value must be 0".to_string());
+    }
+    let computed_frozen_key = erc20_frozen_key_from_submit_intent(intent);
+    if verify_frozen_key && computed_frozen_key != intent.frozen_key {
+        record_transaction_diagnostic(
+            DiagnosticLevel::Error,
+            "erc20TransferPreflightFrozenKeyMismatch",
+            Some(intent.chain_id),
+            Some(intent.account_index),
+            None,
+            Some("ERC-20 frozen draft key does not match submitted fields".to_string()),
+            json!({ "nonce": intent.nonce }),
+        );
+        return Err("ERC-20 frozen draft key does not match submitted fields".to_string());
+    }
+
+    let token_contract = intent.token_contract.parse::<Address>().map_err(|e| {
+        record_transaction_diagnostic(
+            DiagnosticLevel::Error,
+            "erc20TransferPreflightAddressInvalid",
+            Some(intent.chain_id),
+            Some(intent.account_index),
+            None,
+            Some(format!("{e}")),
+            json!({ "field": "token_contract", "nonce": intent.nonce }),
+        );
+        format!("{e}")
+    })?;
+    let recipient = intent.recipient.parse::<Address>().map_err(|e| {
+        record_transaction_diagnostic(
+            DiagnosticLevel::Error,
+            "erc20TransferPreflightAddressInvalid",
+            Some(intent.chain_id),
+            Some(intent.account_index),
+            None,
+            Some(format!("{e}")),
+            json!({ "field": "recipient", "nonce": intent.nonce }),
+        );
+        format!("{e}")
+    })?;
+    let amount_raw = U256::from_dec_str(&intent.amount_raw).map_err(|e| {
+        record_transaction_diagnostic(
+            DiagnosticLevel::Error,
+            "erc20TransferPreflightNumericFieldInvalid",
+            Some(intent.chain_id),
+            Some(intent.account_index),
+            None,
+            Some(e.to_string()),
+            json!({ "field": "amount_raw", "nonce": intent.nonce }),
+        );
+        e.to_string()
+    })?;
+    if amount_raw.is_zero() {
+        return Err("ERC-20 amount_raw must be greater than zero".to_string());
+    }
+    let gas_limit = U256::from_dec_str(&intent.gas_limit).map_err(|e| e.to_string())?;
+    let max_fee_per_gas = U256::from_dec_str(&intent.max_fee_per_gas).map_err(|e| e.to_string())?;
+    let max_priority_fee_per_gas =
+        U256::from_dec_str(&intent.max_priority_fee_per_gas).map_err(|e| e.to_string())?;
+    if max_priority_fee_per_gas > max_fee_per_gas {
+        return Err("max priority fee cannot exceed max fee".to_string());
+    }
+
+    let native_balance = provider
+        .get_balance(signer_address, None)
+        .await
+        .map_err(|e| {
+            let error = e.to_string();
+            record_transaction_diagnostic(
+                DiagnosticLevel::Error,
+                "erc20TransferPreflightNativeBalanceFailed",
+                Some(intent.chain_id),
+                Some(intent.account_index),
+                None,
+                Some(error.clone()),
+                json!({ "nonce": intent.nonce }),
+            );
+            error
+        })?;
+    let max_gas_cost = gas_limit * max_fee_per_gas;
+    if native_balance < max_gas_cost {
+        record_transaction_diagnostic(
+            DiagnosticLevel::Error,
+            "erc20TransferPreflightNativeGasInsufficient",
+            Some(intent.chain_id),
+            Some(intent.account_index),
+            None,
+            Some("native balance cannot cover max gas cost".to_string()),
+            json!({ "nonce": intent.nonce }),
+        );
+        return Err(
+            "native gas balance insufficient: native balance cannot cover max gas cost".to_string(),
+        );
+    }
+
+    let balance_call: TypedTransaction = TransactionRequest::new()
+        .to(token_contract)
+        .from(signer_address)
+        .data(build_erc20_balance_of_calldata(signer_address))
+        .into();
+    let token_balance_raw = provider.call(&balance_call, None).await.map_err(|e| {
+        let error = e.to_string();
+        record_transaction_diagnostic(
+            DiagnosticLevel::Error,
+            "erc20TransferPreflightTokenBalanceFailed",
+            Some(intent.chain_id),
+            Some(intent.account_index),
+            None,
+            Some(error.clone()),
+            json!({ "nonce": intent.nonce }),
+        );
+        error
+    })?;
+    if token_balance_raw.as_ref().len() != 32 {
+        let error = format!(
+            "ERC-20 balanceOf returned {} bytes; expected 32-byte uint256 ABI payload",
+            token_balance_raw.as_ref().len()
+        );
+        record_transaction_diagnostic(
+            DiagnosticLevel::Error,
+            "erc20TransferPreflightTokenBalanceFailed",
+            Some(intent.chain_id),
+            Some(intent.account_index),
+            None,
+            Some(error.clone()),
+            json!({ "nonce": intent.nonce, "returnBytes": token_balance_raw.as_ref().len() }),
+        );
+        return Err(error);
+    }
+    let token_balance = U256::from_big_endian(token_balance_raw.as_ref());
+    if token_balance < amount_raw {
+        record_transaction_diagnostic(
+            DiagnosticLevel::Error,
+            "erc20TransferPreflightTokenBalanceInsufficient",
+            Some(intent.chain_id),
+            Some(intent.account_index),
+            None,
+            Some("token balance cannot cover amount_raw".to_string()),
+            json!({ "nonce": intent.nonce }),
+        );
+        return Err(
+            "token balance insufficient: token balance cannot cover amount_raw".to_string(),
+        );
+    }
+
+    let latest_nonce = provider
+        .get_transaction_count(signer_address, None)
+        .await
+        .map_err(|e| {
+            let error = e.to_string();
+            record_transaction_diagnostic(
+                DiagnosticLevel::Error,
+                "erc20TransferPreflightNonceLookupFailed",
+                Some(intent.chain_id),
+                Some(intent.account_index),
+                None,
+                Some(error.clone()),
+                json!({ "nonce": intent.nonce }),
+            );
+            error
+        })?;
+    if intent.nonce < latest_nonce.as_u64() {
+        let error = format!(
+            "intent nonce {} is below latest on-chain nonce {}",
+            intent.nonce, latest_nonce
+        );
+        record_transaction_diagnostic(
+            DiagnosticLevel::Error,
+            "erc20TransferPreflightNonceTooLow",
+            Some(intent.chain_id),
+            Some(intent.account_index),
+            None,
+            Some(error.clone()),
+            json!({ "nonce": intent.nonce, "latestNonce": latest_nonce.as_u64() }),
+        );
+        return Err(error);
+    }
+
+    let native_intent = native_intent_from_erc20_intent(intent);
+    let calldata = build_erc20_transfer_calldata(recipient, amount_raw);
+    record_transaction_diagnostic(
+        DiagnosticLevel::Info,
+        "erc20TransferPreflightSucceeded",
+        Some(intent.chain_id),
+        Some(intent.account_index),
+        None,
+        None,
+        json!({ "nonce": intent.nonce }),
+    );
+    Ok((native_intent, token_contract, recipient, calldata))
+}
+
+async fn preflight_erc20_replacement_intent(
+    intent: &Erc20TransferIntent,
+    signer_address: Address,
+    provider: &Provider<Http>,
+) -> Result<(NativeTransferIntent, Address, Address, Bytes), String> {
+    preflight_erc20_transfer(intent, signer_address, provider, false).await
+}
+
 pub async fn submit_native_transfer(intent: NativeTransferIntent) -> Result<HistoryRecord, String> {
     submit_native_transfer_with_history_kind(intent, SubmissionKind::NativeTransfer, None).await
+}
+
+pub async fn submit_erc20_transfer(intent: Erc20TransferIntent) -> Result<HistoryRecord, String> {
+    let wallet = with_session_mnemonic(|mnemonic| derive_wallet(mnemonic, intent.account_index))?
+        .with_chain_id(intent.chain_id);
+    let provider = Provider::<Http>::try_from(intent.rpc_url.clone()).map_err(|e| {
+        let error = e.to_string();
+        record_transaction_diagnostic(
+            DiagnosticLevel::Error,
+            "erc20TransferProviderInvalid",
+            Some(intent.chain_id),
+            Some(intent.account_index),
+            None,
+            Some(error.clone()),
+            json!({ "kind": SubmissionKind::Erc20Transfer }),
+        );
+        error
+    })?;
+    let (history_intent, token_contract, _recipient, calldata) =
+        preflight_erc20_transfer(&intent, wallet.address(), &provider, true).await?;
+    if let Err(error) = load_history_records() {
+        record_transaction_diagnostic(
+            DiagnosticLevel::Error,
+            "erc20TransferHistoryPreloadFailed",
+            Some(intent.chain_id),
+            Some(intent.account_index),
+            None,
+            Some(error.clone()),
+            json!({ "kind": SubmissionKind::Erc20Transfer }),
+        );
+        return Err(error);
+    }
+
+    let signer = SignerMiddleware::new(provider, wallet);
+    let tx = Eip1559TransactionRequest::new()
+        .to(token_contract)
+        .from(intent.from.parse::<Address>().map_err(|e| format!("{e}"))?)
+        .value(U256::zero())
+        .data(calldata)
+        .nonce(U256::from(intent.nonce))
+        .gas(U256::from_dec_str(&intent.gas_limit).map_err(|e| e.to_string())?)
+        .max_fee_per_gas(U256::from_dec_str(&intent.max_fee_per_gas).map_err(|e| e.to_string())?)
+        .max_priority_fee_per_gas(
+            U256::from_dec_str(&intent.max_priority_fee_per_gas).map_err(|e| e.to_string())?,
+        )
+        .chain_id(intent.chain_id);
+
+    let pending = signer.send_transaction(tx, None).await.map_err(|e| {
+        let error = e.to_string();
+        record_transaction_diagnostic(
+            DiagnosticLevel::Error,
+            "erc20TransferBroadcastFailed",
+            Some(intent.chain_id),
+            Some(intent.account_index),
+            None,
+            Some(error.clone()),
+            json!({ "kind": SubmissionKind::Erc20Transfer, "nonce": intent.nonce }),
+        );
+        error
+    })?;
+    let tx_hash = format!("{:#x}", pending.tx_hash());
+    record_transaction_diagnostic(
+        DiagnosticLevel::Info,
+        "erc20TransferBroadcastSucceeded",
+        Some(intent.chain_id),
+        Some(intent.account_index),
+        Some(tx_hash.clone()),
+        None,
+        json!({ "kind": SubmissionKind::Erc20Transfer, "nonce": intent.nonce }),
+    );
+
+    let recovery_intent = history_intent.clone();
+    let broadcasted_at = now_unix_seconds()?;
+    persist_pending_history_with_kind_at(
+        history_intent,
+        tx_hash.clone(),
+        SubmissionKind::Erc20Transfer,
+        None,
+        broadcasted_at.clone(),
+    )
+    .map_err(|error| {
+        let recovery_result = history_recovery_intent_from_broadcast_failure_with_frozen_key(
+            &recovery_intent,
+            tx_hash.clone(),
+            SubmissionKind::Erc20Transfer,
+            None,
+            broadcasted_at,
+            error.clone(),
+            Some(intent.frozen_key.clone()),
+        )
+        .and_then(record_history_recovery_intent);
+        let recovery_recorded = recovery_result.is_ok();
+        if let Some(recovery_error) = recovery_result.err() {
+            record_transaction_diagnostic(
+                DiagnosticLevel::Error,
+                "erc20TransferHistoryRecoveryIntentWriteFailed",
+                Some(recovery_intent.chain_id),
+                Some(recovery_intent.account_index),
+                Some(tx_hash.clone()),
+                Some(recovery_error),
+                json!({ "kind": SubmissionKind::Erc20Transfer, "nonce": recovery_intent.nonce }),
+            );
+        }
+        record_transaction_diagnostic(
+            DiagnosticLevel::Error,
+            "erc20TransferHistoryWriteAfterBroadcastFailed",
+            Some(recovery_intent.chain_id),
+            Some(recovery_intent.account_index),
+            Some(tx_hash.clone()),
+            Some(error.clone()),
+            json!({
+                "kind": SubmissionKind::Erc20Transfer,
+                "nonce": recovery_intent.nonce,
+                "recoveryRecorded": recovery_recorded,
+            }),
+        );
+        erc20_broadcast_history_write_error(&tx_hash, &intent, &error)
+    })
+}
+
+async fn submit_erc20_history_intent_with_kind(
+    intent: NativeTransferIntent,
+    kind: SubmissionKind,
+    replaces_tx_hash: Option<String>,
+) -> Result<HistoryRecord, String> {
+    let submit_intent = erc20_submit_intent_from_native_intent(
+        &intent,
+        submission_record_from_intent(
+            &intent,
+            "0xpending".to_string(),
+            "0".to_string(),
+            kind.clone(),
+            replaces_tx_hash.clone(),
+        )
+        .frozen_key,
+    )?;
+    let wallet = with_session_mnemonic(|mnemonic| derive_wallet(mnemonic, intent.account_index))?
+        .with_chain_id(intent.chain_id);
+    let provider = Provider::<Http>::try_from(intent.rpc_url.clone()).map_err(|e| e.to_string())?;
+    let (_, token_contract, _recipient, calldata) =
+        preflight_erc20_replacement_intent(&submit_intent, wallet.address(), &provider).await?;
+    if let Err(error) = load_history_records() {
+        record_transaction_diagnostic(
+            DiagnosticLevel::Error,
+            "erc20TransferHistoryPreloadFailed",
+            Some(intent.chain_id),
+            Some(intent.account_index),
+            None,
+            Some(error.clone()),
+            json!({ "kind": kind }),
+        );
+        return Err(error);
+    }
+    let signer = SignerMiddleware::new(provider, wallet);
+    let tx = Eip1559TransactionRequest::new()
+        .to(token_contract)
+        .from(intent.from.parse::<Address>().map_err(|e| format!("{e}"))?)
+        .value(U256::zero())
+        .data(calldata)
+        .nonce(U256::from(intent.nonce))
+        .gas(U256::from_dec_str(&intent.gas_limit).map_err(|e| e.to_string())?)
+        .max_fee_per_gas(U256::from_dec_str(&intent.max_fee_per_gas).map_err(|e| e.to_string())?)
+        .max_priority_fee_per_gas(
+            U256::from_dec_str(&intent.max_priority_fee_per_gas).map_err(|e| e.to_string())?,
+        )
+        .chain_id(intent.chain_id);
+    let pending = signer.send_transaction(tx, None).await.map_err(|e| {
+        let error = e.to_string();
+        record_transaction_diagnostic(
+            DiagnosticLevel::Error,
+            "erc20TransferBroadcastFailed",
+            Some(intent.chain_id),
+            Some(intent.account_index),
+            None,
+            Some(error.clone()),
+            json!({ "kind": kind, "nonce": intent.nonce }),
+        );
+        error
+    })?;
+    let tx_hash = format!("{:#x}", pending.tx_hash());
+    let recovery_intent = intent.clone();
+    let recovery_kind = kind.clone();
+    let recovery_replaces_tx_hash = replaces_tx_hash.clone();
+    let broadcasted_at = now_unix_seconds()?;
+    let history_intent = sanitized_erc20_history_intent(&intent);
+    let recovery_frozen_key = submission_record_from_intent(
+        &history_intent,
+        tx_hash.clone(),
+        broadcasted_at.clone(),
+        kind.clone(),
+        replaces_tx_hash.clone(),
+    )
+    .frozen_key;
+    persist_pending_history_with_kind_at(
+        history_intent,
+        tx_hash.clone(),
+        kind,
+        replaces_tx_hash,
+        broadcasted_at.clone(),
+    )
+    .map_err(|error| {
+        let _ = history_recovery_intent_from_broadcast_failure_with_frozen_key(
+            &recovery_intent,
+            tx_hash.clone(),
+            recovery_kind,
+            recovery_replaces_tx_hash,
+            broadcasted_at,
+            error.clone(),
+            Some(recovery_frozen_key.clone()),
+        )
+        .and_then(record_history_recovery_intent);
+        erc20_history_intent_broadcast_history_write_error(
+            &tx_hash,
+            &recovery_intent,
+            &recovery_frozen_key,
+            &error,
+        )
+    })
 }
 
 pub async fn submit_native_transfer_with_history_kind(
@@ -2653,6 +3481,9 @@ pub async fn submit_native_transfer_with_history_kind(
     kind: SubmissionKind,
     replaces_tx_hash: Option<String>,
 ) -> Result<HistoryRecord, String> {
+    if intent.typed_transaction.transaction_type == TransactionType::Erc20Transfer {
+        return submit_erc20_history_intent_with_kind(intent, kind, replaces_tx_hash).await;
+    }
     let wallet = with_session_mnemonic(|mnemonic| derive_wallet(mnemonic, intent.account_index))?
         .with_chain_id(intent.chain_id);
     let provider = Provider::<Http>::try_from(intent.rpc_url.clone()).map_err(|e| {

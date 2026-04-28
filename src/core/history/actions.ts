@@ -83,7 +83,8 @@ function firstMissingMutationField(entry: HistoryReadModel) {
   const { intent, submission } = entry.record;
   if (
     submission.transaction_type !== "nativeTransfer" &&
-    submission.transaction_type !== "legacy"
+    submission.transaction_type !== "legacy" &&
+    submission.transaction_type !== "erc20Transfer"
   ) {
     return `Replace/cancel for ${submission.transaction_type} history records is not implemented yet.`;
   }
@@ -120,6 +121,14 @@ function firstMissingMutationField(entry: HistoryReadModel) {
   if (!hasText(submission.gas_limit)) return "Missing frozen submission gas limit.";
   if (!hasText(submission.max_fee_per_gas) || !hasText(submission.max_priority_fee_per_gas)) return "Missing frozen submission fee fields.";
   if (!hasText(submission.to)) return "Missing frozen submission destination.";
+  if (submission.transaction_type === "erc20Transfer") {
+    if (!hasText(submission.token_contract)) return "Missing frozen ERC-20 token contract.";
+    if (!hasText(submission.recipient)) return "Missing frozen ERC-20 recipient.";
+    if (!hasText(submission.amount_raw)) return "Missing frozen ERC-20 amount.";
+    if (!hasNumber(submission.decimals)) return "Missing frozen ERC-20 decimals.";
+    if (!hasText(submission.value_wei) || submission.value_wei !== "0") return "Missing frozen ERC-20 native value.";
+    return null;
+  }
   if (!hasText(submission.value_wei)) return "Missing frozen submission value.";
   return null;
 }

@@ -6,13 +6,17 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use ethers::types::U64;
+use ethers::abi::{encode, Token};
+use ethers::middleware::SignerMiddleware;
+use ethers::providers::{Http, Middleware, Provider};
+use ethers::signers::Signer;
+use ethers::types::{Address, Bytes, TransactionRequest, U256, U64};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use wallet_workbench_lib::diagnostics::read_diagnostic_events_from_path;
 use wallet_workbench_lib::storage::{diagnostics_path, history_path};
 use wallet_workbench_lib::transactions::{
-    apply_pending_history_updates, broadcast_history_write_error,
+    apply_pending_history_updates, broadcast_history_write_error, build_erc20_transfer_calldata,
     chain_outcome_from_receipt_status, dropped_state_for_missing_receipt, inspect_history_storage,
     load_history_records, load_history_recovery_intents, mark_prior_history_state,
     mark_prior_history_state_with_replacement, next_nonce_with_pending_history, nonce_thread_key,
@@ -112,6 +116,155 @@ fn native_transfer_intent(nonce: u64, value_wei: &str) -> NativeTransferIntent {
         max_fee_per_gas: "40000000000".into(),
         max_priority_fee_per_gas: "1500000000".into(),
     }
+}
+
+fn erc20_transfer_intent() -> wallet_workbench_lib::models::Erc20TransferIntent {
+    let from = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8".to_string();
+    let token_contract = "0x3333333333333333333333333333333333333333".to_string();
+    let recipient = "0x2222222222222222222222222222222222222222".to_string();
+    let amount_raw = "1500000".to_string();
+    let decimals = 6u8;
+    let nonce = 0u64;
+    let gas_limit = "65000".to_string();
+    let max_fee_per_gas = "40000000000".to_string();
+    let max_priority_fee_per_gas = "1500000000".to_string();
+    let latest_base_fee_per_gas = Some("20000000000".to_string());
+    let base_fee_per_gas = "20000000000".to_string();
+    let base_fee_multiplier = "2".to_string();
+    let max_fee_override_per_gas = None;
+    let selector = "0xa9059cbb".to_string();
+    let method = "transfer(address,uint256)".to_string();
+    let native_value_wei = "0".to_string();
+    let token_metadata_source = "onChainCall".to_string();
+    let frozen_key = [
+        "chainId=1".to_string(),
+        format!("from={from}"),
+        format!("tokenContract={token_contract}"),
+        format!("recipient={recipient}"),
+        format!("amountRaw={amount_raw}"),
+        format!("decimals={decimals}"),
+        format!("metadataSource={token_metadata_source}"),
+        format!("nonce={nonce}"),
+        format!("gasLimit={gas_limit}"),
+        format!(
+            "latestBaseFee={}",
+            latest_base_fee_per_gas.as_deref().unwrap()
+        ),
+        format!("baseFee={base_fee_per_gas}"),
+        format!("baseFeeMultiplier={base_fee_multiplier}"),
+        format!("maxFee={max_fee_per_gas}"),
+        "maxFeeOverride=auto".to_string(),
+        format!("priorityFee={max_priority_fee_per_gas}"),
+        format!("selector={selector}"),
+        format!("method={method}"),
+        format!("nativeValueWei={native_value_wei}"),
+    ]
+    .join("|");
+    wallet_workbench_lib::models::Erc20TransferIntent {
+        rpc_url: "http://127.0.0.1:8545".into(),
+        account_index: 1,
+        chain_id: 1,
+        from,
+        token_contract,
+        recipient,
+        amount_raw,
+        decimals,
+        token_symbol: Some("USDC".into()),
+        token_name: Some("USD Coin".into()),
+        token_metadata_source,
+        nonce,
+        gas_limit,
+        max_fee_per_gas,
+        max_priority_fee_per_gas,
+        latest_base_fee_per_gas,
+        base_fee_per_gas,
+        base_fee_multiplier,
+        max_fee_override_per_gas,
+        selector,
+        method,
+        native_value_wei,
+        frozen_key,
+    }
+}
+
+fn erc20_history_intent_from_submit(
+    intent: &wallet_workbench_lib::models::Erc20TransferIntent,
+) -> NativeTransferIntent {
+    NativeTransferIntent {
+        typed_transaction: wallet_workbench_lib::models::TypedTransactionFields::erc20_transfer(
+            intent.token_contract.clone(),
+            intent.recipient.clone(),
+            intent.amount_raw.clone(),
+            intent.decimals,
+            intent.token_symbol.clone(),
+            intent.token_name.clone(),
+            intent.token_metadata_source.clone(),
+        ),
+        rpc_url: intent.rpc_url.clone(),
+        account_index: intent.account_index,
+        chain_id: intent.chain_id,
+        from: intent.from.clone(),
+        to: intent.token_contract.clone(),
+        value_wei: "0".to_string(),
+        nonce: intent.nonce,
+        gas_limit: intent.gas_limit.clone(),
+        max_fee_per_gas: intent.max_fee_per_gas.clone(),
+        max_priority_fee_per_gas: intent.max_priority_fee_per_gas.clone(),
+    }
+}
+
+fn u256_result_hex(value: U256) -> String {
+    let mut bytes = [0u8; 32];
+    value.to_big_endian(&mut bytes);
+    let encoded = bytes
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    format!("\"0x{encoded}\"")
+}
+
+fn decode_hex_bytes(input: &str) -> Vec<u8> {
+    let trimmed = input.trim().trim_start_matches("0x");
+    assert_eq!(trimmed.len() % 2, 0, "hex input must have even length");
+    (0..trimmed.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(&trimmed[index..index + 2], 16).expect("valid hex byte"))
+        .collect()
+}
+
+fn erc20_frozen_key(
+    chain_id: u64,
+    from: &str,
+    token_contract: &str,
+    recipient: &str,
+    amount_raw: &str,
+    decimals: u8,
+    nonce: u64,
+    gas_limit: &str,
+    max_fee_per_gas: &str,
+    max_priority_fee_per_gas: &str,
+) -> String {
+    [
+        format!("chainId={chain_id}"),
+        format!("from={from}"),
+        format!("tokenContract={token_contract}"),
+        format!("recipient={recipient}"),
+        format!("amountRaw={amount_raw}"),
+        format!("decimals={decimals}"),
+        "metadataSource=onChainCall".to_string(),
+        format!("nonce={nonce}"),
+        format!("gasLimit={gas_limit}"),
+        "latestBaseFee=20000000000".to_string(),
+        "baseFee=20000000000".to_string(),
+        "baseFeeMultiplier=2".to_string(),
+        format!("maxFee={max_fee_per_gas}"),
+        "maxFeeOverride=auto".to_string(),
+        format!("priorityFee={max_priority_fee_per_gas}"),
+        "selector=0xa9059cbb".to_string(),
+        "method=transfer(address,uint256)".to_string(),
+        "nativeValueWei=0".to_string(),
+    ]
+    .join("|")
 }
 
 fn history_record(nonce: u64, state: ChainOutcomeState, tx_hash: &str) -> HistoryRecord {
@@ -300,6 +453,75 @@ fn start_history_write_failure_rpc_server(history_path: PathBuf) -> String {
         }
     });
     format!("http://{address}")
+}
+
+fn start_erc20_submit_rpc_server(
+    native_balance: U256,
+    token_balance: U256,
+    history_path_to_turn_into_directory_on_broadcast: Option<PathBuf>,
+) -> (String, Arc<Mutex<Vec<String>>>) {
+    start_erc20_submit_rpc_server_with_call_result(
+        native_balance,
+        u256_result_hex(token_balance),
+        history_path_to_turn_into_directory_on_broadcast,
+    )
+}
+
+fn start_erc20_submit_rpc_server_with_call_result(
+    native_balance: U256,
+    eth_call_result: String,
+    history_path_to_turn_into_directory_on_broadcast: Option<PathBuf>,
+) -> (String, Arc<Mutex<Vec<String>>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind rpc server");
+    let address = listener.local_addr().expect("local addr");
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let seen = Arc::clone(&requests);
+    thread::spawn(move || {
+        for stream in listener.incoming().take(8) {
+            let mut stream = stream.expect("accept rpc request");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .expect("set read timeout");
+            let mut buffer = [0; 8192];
+            let bytes = stream.read(&mut buffer).expect("read rpc request");
+            let mut request = String::from_utf8_lossy(&buffer[..bytes]).to_string();
+            while !request.contains("eth_") {
+                match stream.read(&mut buffer) {
+                    Ok(0) => break,
+                    Ok(bytes) => request.push_str(&String::from_utf8_lossy(&buffer[..bytes])),
+                    Err(_) => break,
+                }
+            }
+            seen.lock().expect("request lock").push(request.clone());
+            let result = if request.contains("eth_chainId") {
+                "\"0x1\"".to_string()
+            } else if request.contains("eth_getBalance") {
+                u256_result_hex(native_balance)
+            } else if request.contains("eth_call") {
+                eth_call_result.clone()
+            } else if request.contains("eth_getTransactionCount") {
+                "\"0x0\"".to_string()
+            } else if request.contains("eth_sendRawTransaction") {
+                if let Some(path) = &history_path_to_turn_into_directory_on_broadcast {
+                    let _ = fs::remove_file(path);
+                    fs::create_dir_all(path).expect("turn history path into directory");
+                }
+                "\"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"".to_string()
+            } else {
+                "null".to_string()
+            };
+            let body = format!(r#"{{"jsonrpc":"2.0","id":1,"result":{result}}}"#);
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("write rpc response");
+        }
+    });
+    (format!("http://{address}"), requests)
 }
 
 fn start_recovery_rpc_server(
@@ -881,6 +1103,363 @@ async fn broadcast_history_write_failure_records_recovery_intent_without_rpc_sec
     assert!(events
         .iter()
         .any(|event| event.event == "nativeTransferHistoryWriteAfterBroadcastFailed"));
+}
+
+#[test]
+fn erc20_transfer_calldata_uses_standard_selector_recipient_and_amount() {
+    let recipient: Address = "0x2222222222222222222222222222222222222222"
+        .parse()
+        .expect("recipient address");
+    let calldata = build_erc20_transfer_calldata(recipient, U256::from(1_500_000u64));
+    let encoded = calldata
+        .as_ref()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+
+    assert_eq!(&encoded[..8], "a9059cbb");
+    assert_eq!(
+        &encoded[8..72],
+        "0000000000000000000000002222222222222222222222222222222222222222"
+    );
+    assert_eq!(
+        &encoded[72..],
+        "000000000000000000000000000000000000000000000000000000000016e360"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn submit_erc20_transfer_writes_typed_pending_history() {
+    let _guard = test_lock().lock().expect("test lock");
+    let _app_dir_guard = TestAppDirGuard::new("erc20-submit-history");
+    wallet_workbench_lib::session::write_session_mnemonic(
+        "test test test test test test test test test test test junk".into(),
+    );
+    let (rpc_url, requests) = start_erc20_submit_rpc_server(
+        U256::from_dec_str("1000000000000000000").expect("native balance"),
+        U256::from(2_000_000u64),
+        None,
+    );
+    let mut intent = erc20_transfer_intent();
+    intent.rpc_url = format!("{rpc_url}/v1?apiKey=super-secret");
+
+    let record = wallet_workbench_lib::transactions::submit_erc20_transfer(intent)
+        .await
+        .expect("submit erc20");
+    let joined_requests = requests.lock().expect("requests lock").join("\n");
+    let raw_history = fs::read_to_string(history_path().expect("history path"))
+        .expect("read erc20 success history");
+
+    assert!(joined_requests.contains("eth_sendRawTransaction"));
+    assert_eq!(record.intent.rpc_url, rpc_url);
+    assert!(!raw_history.contains("super-secret"));
+    assert!(!raw_history.contains("apiKey"));
+    assert!(!raw_history.contains("/v1"));
+    assert_eq!(
+        record.submission.kind,
+        wallet_workbench_lib::models::SubmissionKind::Erc20Transfer
+    );
+    assert_eq!(
+        record.submission.typed_transaction.transaction_type,
+        wallet_workbench_lib::models::TransactionType::Erc20Transfer
+    );
+    assert_eq!(
+        record.submission.to.as_deref(),
+        Some("0x3333333333333333333333333333333333333333")
+    );
+    assert_eq!(
+        record
+            .submission
+            .typed_transaction
+            .token_contract
+            .as_deref(),
+        Some("0x3333333333333333333333333333333333333333")
+    );
+    assert_eq!(
+        record.submission.typed_transaction.recipient.as_deref(),
+        Some("0x2222222222222222222222222222222222222222")
+    );
+    assert_eq!(
+        record.submission.typed_transaction.amount_raw.as_deref(),
+        Some("1500000")
+    );
+    assert_eq!(record.submission.typed_transaction.decimals, Some(6));
+    assert_eq!(
+        record.submission.typed_transaction.selector.as_deref(),
+        Some("0xa9059cbb")
+    );
+    assert_eq!(record.submission.value_wei.as_deref(), Some("0"));
+    assert_eq!(record.outcome.state, ChainOutcomeState::Pending);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn submit_erc20_transfer_rejects_insufficient_token_balance_before_broadcast() {
+    let _guard = test_lock().lock().expect("test lock");
+    let _app_dir_guard = TestAppDirGuard::new("erc20-token-insufficient");
+    wallet_workbench_lib::session::write_session_mnemonic(
+        "test test test test test test test test test test test junk".into(),
+    );
+    let (rpc_url, requests) = start_erc20_submit_rpc_server(
+        U256::from_dec_str("1000000000000000000").expect("native balance"),
+        U256::from(1_000_000u64),
+        None,
+    );
+    let mut intent = erc20_transfer_intent();
+    intent.rpc_url = rpc_url;
+
+    let error = wallet_workbench_lib::transactions::submit_erc20_transfer(intent)
+        .await
+        .expect_err("token balance should fail");
+    let joined_requests = requests.lock().expect("requests lock").join("\n");
+
+    assert!(error.contains("token balance insufficient"));
+    assert!(!joined_requests.contains("eth_sendRawTransaction"));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn submit_erc20_transfer_rejects_malformed_token_balance_response_before_broadcast() {
+    let _guard = test_lock().lock().expect("test lock");
+    let _app_dir_guard = TestAppDirGuard::new("erc20-token-balance-malformed");
+    wallet_workbench_lib::session::write_session_mnemonic(
+        "test test test test test test test test test test test junk".into(),
+    );
+    let long_uint256_response = format!("\"0x{}\"", "11".repeat(33));
+    let (rpc_url, requests) = start_erc20_submit_rpc_server_with_call_result(
+        U256::from_dec_str("1000000000000000000").expect("native balance"),
+        long_uint256_response,
+        None,
+    );
+    let mut intent = erc20_transfer_intent();
+    intent.rpc_url = rpc_url;
+
+    let error = wallet_workbench_lib::transactions::submit_erc20_transfer(intent)
+        .await
+        .expect_err("malformed balanceOf response should fail");
+    let joined_requests = requests.lock().expect("requests lock").join("\n");
+
+    assert!(error.contains("balanceOf returned 33 bytes"));
+    assert!(error.contains("expected 32-byte uint256"));
+    assert!(!joined_requests.contains("eth_sendRawTransaction"));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn submit_erc20_transfer_rejects_insufficient_native_gas_before_broadcast() {
+    let _guard = test_lock().lock().expect("test lock");
+    let _app_dir_guard = TestAppDirGuard::new("erc20-native-gas-insufficient");
+    wallet_workbench_lib::session::write_session_mnemonic(
+        "test test test test test test test test test test test junk".into(),
+    );
+    let (rpc_url, requests) =
+        start_erc20_submit_rpc_server(U256::from(1u64), U256::from(2_000_000u64), None);
+    let mut intent = erc20_transfer_intent();
+    intent.rpc_url = rpc_url;
+
+    let error = wallet_workbench_lib::transactions::submit_erc20_transfer(intent)
+        .await
+        .expect_err("native gas should fail");
+    let joined_requests = requests.lock().expect("requests lock").join("\n");
+
+    assert!(error.contains("native gas balance insufficient"));
+    assert!(!joined_requests.contains("eth_sendRawTransaction"));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn erc20_history_write_failure_recovery_keeps_frozen_params_without_rpc_secret() {
+    let _guard = test_lock().lock().expect("test lock");
+    let _app_dir_guard = TestAppDirGuard::new("erc20-history-write-recovery");
+    wallet_workbench_lib::session::write_session_mnemonic(
+        "test test test test test test test test test test test junk".into(),
+    );
+    let path = history_path().expect("history path");
+    let (rpc_url, _requests) = start_erc20_submit_rpc_server(
+        U256::from_dec_str("1000000000000000000").expect("native balance"),
+        U256::from(2_000_000u64),
+        Some(path),
+    );
+    let mut intent = erc20_transfer_intent();
+    intent.rpc_url = format!("{rpc_url}/?apiKey=super-secret");
+
+    let error = wallet_workbench_lib::transactions::submit_erc20_transfer(intent)
+        .await
+        .expect_err("history write should fail after broadcast");
+    let intents = load_history_recovery_intents().expect("load recovery intents");
+    let raw_intents = serde_json::to_string(&intents).expect("serialize recovery intents");
+
+    assert!(error.contains("transaction broadcast"));
+    assert!(error.contains("tokenContract=0x3333333333333333333333333333333333333333"));
+    assert!(error.contains("recipient=0x2222222222222222222222222222222222222222"));
+    assert!(error.contains("amountRaw=1500000"));
+    assert!(error.contains("frozenKey=chainId=1"));
+    assert_eq!(intents.len(), 1);
+    assert_eq!(
+        intents[0].tx_hash,
+        "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    );
+    assert_eq!(
+        intents[0].kind,
+        wallet_workbench_lib::models::SubmissionKind::Erc20Transfer
+    );
+    assert_eq!(
+        intents[0].token_contract.as_deref(),
+        Some("0x3333333333333333333333333333333333333333")
+    );
+    assert_eq!(
+        intents[0].recipient.as_deref(),
+        Some("0x2222222222222222222222222222222222222222")
+    );
+    assert_eq!(intents[0].amount_raw.as_deref(), Some("1500000"));
+    assert_eq!(intents[0].decimals, Some(6));
+    assert_eq!(intents[0].selector.as_deref(), Some("0xa9059cbb"));
+    assert_eq!(
+        intents[0].method_name.as_deref(),
+        Some("transfer(address,uint256)")
+    );
+    assert!(intents[0].frozen_key.as_deref().is_some_and(|key| {
+        key.contains("chainId=1")
+            && key.contains("tokenContract=0x3333333333333333333333333333333333333333")
+            && key.contains("amountRaw=1500000")
+            && key.contains("method=transfer(address,uint256)")
+    }));
+    assert!(!raw_intents.contains("rpc_url"));
+    assert!(!raw_intents.contains("super-secret"));
+}
+
+#[test]
+fn erc20_replacement_requires_a_fee_increase() {
+    with_test_app_dir("erc20-replace-fee-increase", |_| {
+        let submit_intent = erc20_transfer_intent();
+        let history_intent = erc20_history_intent_from_submit(&submit_intent);
+        persist_pending_history_with_kind(
+            history_intent,
+            "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+            wallet_workbench_lib::models::SubmissionKind::Erc20Transfer,
+            None,
+        )
+        .expect("persist erc20 pending");
+
+        let same_fee = wallet_workbench_lib::commands::transactions::PendingMutationRequest {
+            tx_hash: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+            rpc_url: "http://127.0.0.1:8545".into(),
+            account_index: submit_intent.account_index,
+            chain_id: submit_intent.chain_id,
+            from: submit_intent.from.clone(),
+            nonce: submit_intent.nonce,
+            gas_limit: submit_intent.gas_limit.clone(),
+            max_fee_per_gas: submit_intent.max_fee_per_gas.clone(),
+            max_priority_fee_per_gas: submit_intent.max_priority_fee_per_gas.clone(),
+            to: Some(submit_intent.token_contract.clone()),
+            value_wei: Some("0".into()),
+        };
+        let error =
+            wallet_workbench_lib::commands::transactions::build_replace_intent_from_pending_request(
+                same_fee.clone(),
+            )
+            .expect_err("same-fee ERC-20 replace must fail");
+        assert!(error.contains("must increase max_fee_per_gas or max_priority_fee_per_gas"));
+
+        let mut bumped = same_fee;
+        bumped.max_fee_per_gas = "40000000001".into();
+        let intent =
+            wallet_workbench_lib::commands::transactions::build_replace_intent_from_pending_request(
+                bumped,
+            )
+            .expect("bumped ERC-20 replace intent");
+        assert_eq!(
+            intent.typed_transaction.transaction_type,
+            wallet_workbench_lib::models::TransactionType::Erc20Transfer
+        );
+        assert_eq!(
+            intent.typed_transaction.recipient.as_deref(),
+            Some(submit_intent.recipient.as_str())
+        );
+        assert_eq!(
+            intent.typed_transaction.amount_raw.as_deref(),
+            Some(submit_intent.amount_raw.as_str())
+        );
+    });
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn erc20_replacement_history_write_failure_returns_frozen_params_and_records_recovery() {
+    let _guard = test_lock().lock().expect("test lock");
+    let _app_dir_guard = TestAppDirGuard::new("erc20-replace-history-write-recovery");
+    wallet_workbench_lib::session::write_session_mnemonic(
+        "test test test test test test test test test test test junk".into(),
+    );
+    let submit_intent = erc20_transfer_intent();
+    let history_intent = erc20_history_intent_from_submit(&submit_intent);
+    let original_hash = "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    persist_pending_history_with_kind(
+        history_intent,
+        original_hash.into(),
+        wallet_workbench_lib::models::SubmissionKind::Erc20Transfer,
+        None,
+    )
+    .expect("persist erc20 pending");
+    let path = history_path().expect("history path");
+    let (rpc_url, _requests) = start_erc20_submit_rpc_server(
+        U256::from_dec_str("1000000000000000000").expect("native balance"),
+        U256::from(2_000_000u64),
+        Some(path),
+    );
+
+    let request = wallet_workbench_lib::commands::transactions::PendingMutationRequest {
+        tx_hash: original_hash.into(),
+        rpc_url,
+        account_index: submit_intent.account_index,
+        chain_id: submit_intent.chain_id,
+        from: submit_intent.from.clone(),
+        nonce: submit_intent.nonce,
+        gas_limit: submit_intent.gas_limit.clone(),
+        max_fee_per_gas: "40000000001".into(),
+        max_priority_fee_per_gas: submit_intent.max_priority_fee_per_gas.clone(),
+        to: Some(submit_intent.token_contract.clone()),
+        value_wei: Some("0".into()),
+    };
+    let error = wallet_workbench_lib::commands::transactions::replace_pending_transfer(request)
+        .await
+        .expect_err("history write should fail after replacement broadcast");
+    let intents = load_history_recovery_intents().expect("load recovery intents");
+
+    assert!(error
+        .contains("tx_hash=0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
+    assert!(error.contains("chainId=1"));
+    assert!(error.contains("accountIndex=1"));
+    assert!(error.contains("from=0x70997970C51812dc3A010C7d01b50e0d17dc79C8"));
+    assert!(error.contains("nonce=0"));
+    assert!(error.contains("tokenContract=0x3333333333333333333333333333333333333333"));
+    assert!(error.contains("recipient=0x2222222222222222222222222222222222222222"));
+    assert!(error.contains("amountRaw=1500000"));
+    assert!(error.contains("decimals=6"));
+    assert!(error.contains("selector=0xa9059cbb"));
+    assert!(error.contains("method=transfer(address,uint256)"));
+    assert!(error.contains("frozenKey=1:0x70997970C51812dc3A010C7d01b50e0d17dc79C8"));
+    assert_eq!(intents.len(), 1);
+    assert_eq!(
+        intents[0].kind,
+        wallet_workbench_lib::models::SubmissionKind::Replacement
+    );
+    assert_eq!(intents[0].replaces_tx_hash.as_deref(), Some(original_hash));
+    assert_eq!(
+        intents[0].token_contract.as_deref(),
+        Some("0x3333333333333333333333333333333333333333")
+    );
+    assert_eq!(
+        intents[0].recipient.as_deref(),
+        Some("0x2222222222222222222222222222222222222222")
+    );
+    assert_eq!(intents[0].amount_raw.as_deref(), Some("1500000"));
+    assert_eq!(intents[0].decimals, Some(6));
+    assert_eq!(intents[0].selector.as_deref(), Some("0xa9059cbb"));
+    assert_eq!(
+        intents[0].method_name.as_deref(),
+        Some("transfer(address,uint256)")
+    );
+    assert!(intents[0].frozen_key.as_deref().is_some_and(|key| {
+        key.contains("0x3333333333333333333333333333333333333333")
+            && key.contains("0x2222222222222222222222222222222222222222")
+            && key.contains("1500000")
+    }));
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -2419,4 +2998,140 @@ async fn submit_native_transfer_roundtrip_against_anvil() {
     let records = reconciled.expect("reconcile");
     assert_eq!(records.len(), 1);
     assert_eq!(records[0].outcome.state, ChainOutcomeState::Confirmed);
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires anvil running on 127.0.0.1:8545"]
+async fn submit_erc20_transfer_roundtrip_against_anvil() {
+    let _guard = test_lock().lock().expect("test lock");
+    let dir = unique_test_dir("erc20-transfer-roundtrip");
+    let previous = std::env::var_os(APP_DIR_ENV);
+
+    if dir.exists() {
+        fs::remove_dir_all(&dir).expect("clean temp dir");
+    }
+    fs::create_dir_all(&dir).expect("create temp dir");
+    std::env::set_var(APP_DIR_ENV, &dir);
+    wallet_workbench_lib::session::clear_session_mnemonic();
+    wallet_workbench_lib::session::write_session_mnemonic(
+        "test test test test test test test test test test test junk".into(),
+    );
+
+    let provider = Provider::<Http>::try_from("http://127.0.0.1:8545").expect("anvil provider");
+    let deployer = wallet_workbench_lib::accounts::derive_wallet(
+        "test test test test test test test test test test test junk",
+        0,
+    )
+    .expect("derive deployer")
+    .with_chain_id(31337u64);
+    let signer = SignerMiddleware::new(provider.clone(), deployer);
+    let holder: Address = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8"
+        .parse()
+        .expect("holder");
+    let recipient = "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC";
+    let mut deploy_data = decode_hex_bytes(include_str!("fixtures/test_erc20.bin"));
+    deploy_data.extend_from_slice(&encode(&[
+        Token::Address(holder),
+        Token::Uint(U256::from(2_000_000u64)),
+    ]));
+    let deploy_receipt = signer
+        .send_transaction(
+            TransactionRequest::new()
+                .data(Bytes::from(deploy_data))
+                .gas(U256::from(5_000_000u64)),
+            None,
+        )
+        .await
+        .expect("send deploy")
+        .await
+        .expect("deploy pending")
+        .expect("deploy receipt");
+    let token_contract = deploy_receipt
+        .contract_address
+        .expect("deployed token contract");
+    let nonce = provider
+        .get_transaction_count(holder, None)
+        .await
+        .expect("holder nonce")
+        .as_u64();
+    let token_contract_text = format!("{:#x}", token_contract);
+    let amount_raw = "1000000";
+    let gas_limit = "100000";
+    let max_fee_per_gas = "2000000000";
+    let max_priority_fee_per_gas = "1500000000";
+    let intent = wallet_workbench_lib::models::Erc20TransferIntent {
+        rpc_url: "http://127.0.0.1:8545".into(),
+        account_index: 1,
+        chain_id: 31337,
+        from: format!("{:#x}", holder),
+        token_contract: token_contract_text.clone(),
+        recipient: recipient.into(),
+        amount_raw: amount_raw.into(),
+        decimals: 6,
+        token_symbol: Some("SMK".into()),
+        token_name: Some("Smoke Token".into()),
+        token_metadata_source: "onChainCall".into(),
+        nonce,
+        gas_limit: gas_limit.into(),
+        max_fee_per_gas: max_fee_per_gas.into(),
+        max_priority_fee_per_gas: max_priority_fee_per_gas.into(),
+        latest_base_fee_per_gas: Some("1000000000".into()),
+        base_fee_per_gas: "1000000000".into(),
+        base_fee_multiplier: "2".into(),
+        max_fee_override_per_gas: None,
+        selector: "0xa9059cbb".into(),
+        method: "transfer(address,uint256)".into(),
+        native_value_wei: "0".into(),
+        frozen_key: erc20_frozen_key(
+            31337,
+            &format!("{:#x}", holder),
+            &token_contract_text,
+            recipient,
+            amount_raw,
+            6,
+            nonce,
+            gas_limit,
+            max_fee_per_gas,
+            max_priority_fee_per_gas,
+        )
+        .replace("latestBaseFee=20000000000", "latestBaseFee=1000000000")
+        .replace("baseFee=20000000000", "baseFee=1000000000"),
+    };
+
+    let result = wallet_workbench_lib::transactions::submit_erc20_transfer(intent).await;
+    let pending_record = result.expect("submit erc20");
+    let reconciled = reconcile_pending_history("http://127.0.0.1:8545".into(), 31337).await;
+
+    wallet_workbench_lib::session::clear_session_mnemonic();
+    if let Some(value) = previous {
+        std::env::set_var(APP_DIR_ENV, value);
+    } else {
+        std::env::remove_var(APP_DIR_ENV);
+    }
+    fs::remove_dir_all(&dir).expect("remove temp dir");
+
+    assert_eq!(pending_record.outcome.state, ChainOutcomeState::Pending);
+    let records = reconciled.expect("reconcile");
+    assert_eq!(records.len(), 1);
+    assert_eq!(
+        records[0].submission.kind,
+        wallet_workbench_lib::models::SubmissionKind::Erc20Transfer
+    );
+    assert_eq!(
+        records[0]
+            .submission
+            .typed_transaction
+            .token_contract
+            .as_deref(),
+        Some(token_contract_text.as_str())
+    );
+    assert_eq!(
+        records[0].submission.typed_transaction.recipient.as_deref(),
+        Some(recipient)
+    );
+    assert_eq!(
+        records[0].outcome.state,
+        ChainOutcomeState::Confirmed,
+        "ERC-20 smoke should reconcile to a terminal receipt"
+    );
 }
