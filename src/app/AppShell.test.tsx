@@ -32,6 +32,7 @@ describe("AppShell", () => {
 
     expect(screen.getByRole("tab", { name: "Accounts" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Tokens" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Orchestration" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Transfer" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "History" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Diagnostics" })).toBeInTheDocument();
