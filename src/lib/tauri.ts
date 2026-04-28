@@ -262,6 +262,30 @@ export interface UpsertErc20BalanceSnapshotInput {
   clearResolvedMetadata?: boolean;
 }
 
+export interface ScanWatchlistTokenMetadataInput {
+  rpcUrl: string;
+  chainId: number;
+  tokenContract: string;
+  rpcProfileId?: string | null;
+}
+
+export interface ScanErc20BalanceInput {
+  rpcUrl: string;
+  chainId: number;
+  account: string;
+  tokenContract: string;
+  rpcProfileId?: string | null;
+}
+
+export interface ScanWatchlistBalancesInput {
+  rpcUrl: string;
+  chainId: number;
+  accounts?: string[] | null;
+  tokenContracts?: string[] | null;
+  retryFailedOnly?: boolean;
+  rpcProfileId?: string | null;
+}
+
 export type DiagnosticLevel = "info" | "warn" | "error";
 
 export interface DiagnosticEvent {
@@ -464,6 +488,18 @@ export function upsertTokenScanState(input: UpsertTokenScanStateInput) {
 
 export function upsertErc20BalanceSnapshot(input: UpsertErc20BalanceSnapshotInput) {
   return invoke<TokenWatchlistState>("upsert_erc20_balance_snapshot", { input });
+}
+
+export function scanWatchlistTokenMetadata(input: ScanWatchlistTokenMetadataInput) {
+  return invoke<TokenWatchlistState>("scan_watchlist_token_metadata", { input });
+}
+
+export function scanErc20Balance(input: ScanErc20BalanceInput) {
+  return invoke<TokenWatchlistState>("scan_erc20_balance", { input });
+}
+
+export function scanWatchlistBalances(input: ScanWatchlistBalancesInput) {
+  return invoke<TokenWatchlistState>("scan_watchlist_balances", { input });
 }
 
 export async function createAndScanAccount(index: number, chainId: number, rpcUrl: string) {
