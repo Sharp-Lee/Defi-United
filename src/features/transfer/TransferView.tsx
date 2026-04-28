@@ -17,12 +17,23 @@ import { HistoryErrorCard } from "../history/HistoryErrorCard";
 import type {
   AccountRecord,
   Erc20TransferIntent,
+  Erc20BalanceSnapshotRecord,
   HistoryRecord,
   NativeTransferIntent,
   PendingMutationRequest,
+  ResolvedMetadataStatus,
+  ResolvedTokenMetadataRecord,
+  TokenMetadataCacheRecord,
+  TokenWatchlistState,
+  WatchlistTokenRecord,
 } from "../../lib/tauri";
 import { submitErc20Transfer, submitNativeTransfer } from "../../lib/tauri";
 import type { AccountChainState } from "../../lib/rpc";
+import {
+  metadataBlocksHumanAmount,
+  metadataConflictDetail,
+  tokenIdentityKey,
+} from "../tokens/metadataConflicts";
 
 export interface TransferViewProps {
   draft: TransferDraft | null;
@@ -32,6 +43,7 @@ export interface TransferViewProps {
   rpcUrl: string;
   history?: HistoryRecord[];
   historyStorageIssue?: string | null;
+  tokenWatchlistState?: TokenWatchlistState | null;
   onSubmitFailed?: (error: unknown) => Promise<void> | void;
   onSubmitted: (record: HistoryRecord) => void;
 }
@@ -72,6 +84,77 @@ function ConfirmationRow({ label, value }: { label: string; value: ReactNode }) 
   );
 }
 
+const blockingMetadataStatuses: ResolvedMetadataStatus[] = [
+  "missingDecimals",
+  "decimalsChanged",
+  "sourceConflict",
+  "callFailed",
+  "malformed",
+  "nonErc20",
+];
+
+function balanceKey(account: string, chainId: number, tokenContract: string) {
+  return `${account.toLowerCase()}:${tokenIdentityKey(chainId, tokenContract)}`;
+}
+
+function shortAddress(address: string) {
+  return address.length > 14 ? `${address.slice(0, 10)}...${address.slice(-6)}` : address;
+}
+
+function tokenOptionLabel(token: WatchlistTokenRecord, metadata: ResolvedTokenMetadataRecord | null) {
+  const name = token.label ?? metadata?.symbol ?? metadata?.name ?? shortAddress(token.tokenContract);
+  const status = metadata?.status ?? "unscanned";
+  return `${name} · ${shortAddress(token.tokenContract)} · ${status}`;
+}
+
+function formatSnapshotBalance(
+  snapshot: Erc20BalanceSnapshotRecord | null,
+  metadata: ResolvedTokenMetadataRecord | null,
+) {
+  if (!snapshot) return "No balance snapshot for this account.";
+  const decimals = metadata?.decimals ?? snapshot.resolvedMetadata?.decimals ?? null;
+  const currentStatus = metadata?.status ?? snapshot.resolvedMetadata?.status ?? null;
+  if (
+    decimals === null ||
+    decimals === undefined ||
+    metadataBlocksHumanAmount(currentStatus)
+  ) {
+    return `${snapshot.balanceRaw} raw`;
+  }
+  try {
+    return `${formatUnits(BigInt(snapshot.balanceRaw), decimals)} (${snapshot.balanceRaw} raw)`;
+  } catch {
+    return `${snapshot.balanceRaw} raw`;
+  }
+}
+
+function selectorBlockReason(
+  metadata: ResolvedTokenMetadataRecord | null,
+  snapshot: Erc20BalanceSnapshotRecord | null,
+  conflictDetail: string | null,
+) {
+  if (!metadata) {
+    return "Watchlist metadata has not been scanned yet. Scan metadata or use the manual token contract path.";
+  }
+  if (metadata.decimals === null || metadata.decimals === undefined) {
+    return `${metadata.status}: decimals are unavailable. Scan again or edit the watchlist with a user-confirmed decimals override.`;
+  }
+  if (blockingMetadataStatuses.includes(metadata.status)) {
+    return conflictDetail
+      ? `${metadata.status}: ${conflictDetail} Manual token contract entry remains available.`
+      : `${metadata.status}: resolve metadata from the Tokens tab or switch to the manual token contract path.`;
+  }
+  if (
+    snapshot &&
+    ["balanceCallFailed", "malformedBalance", "rpcFailed", "chainMismatch"].includes(
+      snapshot.balanceStatus,
+    )
+  ) {
+    return `${snapshot.balanceStatus}: rescan the selected account balance or use the manual token contract path.`;
+  }
+  return null;
+}
+
 export function TransferView({
   draft: initialDraft,
   accounts,
@@ -80,6 +163,7 @@ export function TransferView({
   rpcUrl,
   history = [],
   historyStorageIssue = null,
+  tokenWatchlistState = null,
   onSubmitFailed,
   onSubmitted,
 }: TransferViewProps) {
@@ -88,9 +172,16 @@ export function TransferView({
   const [to, setTo] = useState("");
   const [amountEth, setAmountEth] = useState("");
   const [tokenContract, setTokenContract] = useState("");
+  const [tokenContractSource, setTokenContractSource] = useState<"manual" | "selector">(
+    "manual",
+  );
   const [erc20Recipient, setErc20Recipient] = useState("");
   const [erc20Amount, setErc20Amount] = useState("");
   const [confirmedDecimals, setConfirmedDecimals] = useState("");
+  const [confirmedDecimalsSource, setConfirmedDecimalsSource] = useState<"manual" | "selector">(
+    "manual",
+  );
+  const [selectedWatchlistTokenKey, setSelectedWatchlistTokenKey] = useState("");
   const [nonce, setNonce] = useState("");
   const [nativeGasLimit, setNativeGasLimit] = useState("21000");
   const [erc20GasLimit, setErc20GasLimit] = useState("");
@@ -130,6 +221,78 @@ export function TransferView({
     () => accounts.find((account) => account.index.toString() === selectedIndex) ?? null,
     [accounts, selectedIndex],
   );
+  const watchlistMetadataByToken = useMemo(() => {
+    const map = new Map<string, ResolvedTokenMetadataRecord>();
+    for (const item of tokenWatchlistState?.resolvedTokenMetadata ?? []) {
+      map.set(tokenIdentityKey(item.chainId, item.tokenContract), item);
+    }
+    return map;
+  }, [tokenWatchlistState]);
+  const watchlistMetadataCacheByToken = useMemo(() => {
+    const map = new Map<string, TokenMetadataCacheRecord>();
+    for (const item of tokenWatchlistState?.tokenMetadataCache ?? []) {
+      map.set(tokenIdentityKey(item.chainId, item.tokenContract), item);
+    }
+    return map;
+  }, [tokenWatchlistState]);
+  const watchlistBalanceByIdentity = useMemo(() => {
+    const map = new Map<string, Erc20BalanceSnapshotRecord>();
+    for (const item of tokenWatchlistState?.erc20BalanceSnapshots ?? []) {
+      map.set(balanceKey(item.account, item.chainId, item.tokenContract), item);
+    }
+    return map;
+  }, [tokenWatchlistState]);
+  const watchlistTokenOptions = useMemo(
+    () =>
+      (tokenWatchlistState?.watchlistTokens ?? []).filter(
+        (token) => token.chainId === Number(chainId) && !token.hidden,
+      ),
+    [chainId, tokenWatchlistState],
+  );
+  const selectedWatchlistToken = useMemo(
+    () =>
+      watchlistTokenOptions.find(
+        (token) =>
+          tokenIdentityKey(token.chainId, token.tokenContract) === selectedWatchlistTokenKey,
+      ) ?? null,
+    [selectedWatchlistTokenKey, watchlistTokenOptions],
+  );
+  const selectedWatchlistMetadata = selectedWatchlistToken
+    ? watchlistMetadataByToken.get(
+        tokenIdentityKey(selectedWatchlistToken.chainId, selectedWatchlistToken.tokenContract),
+      ) ?? null
+    : null;
+  const selectedWatchlistMetadataCache = selectedWatchlistToken
+    ? watchlistMetadataCacheByToken.get(
+        tokenIdentityKey(selectedWatchlistToken.chainId, selectedWatchlistToken.tokenContract),
+      ) ?? null
+    : null;
+  const selectedWatchlistConflictDetail = selectedWatchlistToken
+    ? metadataConflictDetail(
+        selectedWatchlistToken,
+        selectedWatchlistMetadataCache,
+        selectedWatchlistMetadata?.status,
+      )
+    : null;
+  const selectedWatchlistBalance =
+    selectedWatchlistToken && selectedAccount
+      ? watchlistBalanceByIdentity.get(
+          balanceKey(
+            selectedAccount.address,
+            selectedWatchlistToken.chainId,
+            selectedWatchlistToken.tokenContract,
+          ),
+        ) ?? null
+      : null;
+  const watchlistSelectorBlockReason = selectedWatchlistToken
+    ? selectorBlockReason(
+        selectedWatchlistMetadata,
+        selectedWatchlistBalance,
+        selectedWatchlistConflictDetail,
+      )
+    : null;
+  const activeWatchlistSelectorBlockReason =
+    transferMode === "erc20" ? watchlistSelectorBlockReason : null;
   const maxGasCostWei = draft
     ? draft.submission.gasLimit * draft.submission.maxFeePerGas
     : 0n;
@@ -159,6 +322,17 @@ export function TransferView({
   useEffect(() => {
     resetBaseFeeReference();
     clearDraft();
+    if (selectedWatchlistTokenKey) {
+      if (tokenContractSource === "selector") {
+        setTokenContract("");
+        setTokenContractSource("manual");
+      }
+      if (confirmedDecimalsSource === "selector") {
+        setConfirmedDecimals("");
+        setConfirmedDecimalsSource("manual");
+      }
+    }
+    setSelectedWatchlistTokenKey("");
   }, [selectedIndex, chainId, rpcUrl]);
 
   async function buildDraft() {
@@ -274,6 +448,9 @@ export function TransferView({
     try {
       if (!rpcUrl.trim()) throw new Error("RPC URL is required.");
       if (!selectedAccount) throw new Error("Select a sender account.");
+      if (selectedWatchlistToken && activeWatchlistSelectorBlockReason) {
+        throw new Error(activeWatchlistSelectorBlockReason);
+      }
       if (!isAddress(tokenContract)) throw new Error("Token contract address is invalid.");
       if (!isAddress(erc20Recipient)) throw new Error("Recipient address is invalid.");
 
@@ -530,10 +707,92 @@ export function TransferView({
       ) : (
         <>
           <label>
+            Watchlist token
+            <select
+              onChange={(event) => {
+                const nextKey = event.target.value;
+                setSelectedWatchlistTokenKey(nextKey);
+                clearDraft();
+                const nextToken =
+                  watchlistTokenOptions.find(
+                    (token) =>
+                      tokenIdentityKey(token.chainId, token.tokenContract) === nextKey,
+                  ) ?? null;
+                if (!nextToken) {
+                  if (selectedWatchlistTokenKey) {
+                    if (tokenContractSource === "selector") {
+                      setTokenContract("");
+                      setTokenContractSource("manual");
+                    }
+                    if (confirmedDecimalsSource === "selector") {
+                      setConfirmedDecimals("");
+                      setConfirmedDecimalsSource("manual");
+                    }
+                  }
+                  return;
+                }
+                const nextMetadata =
+                  watchlistMetadataByToken.get(
+                    tokenIdentityKey(nextToken.chainId, nextToken.tokenContract),
+                  ) ?? null;
+                setTokenContract(nextToken.tokenContract);
+                setTokenContractSource("selector");
+                setConfirmedDecimals(nextMetadata?.decimals?.toString() ?? "");
+                setConfirmedDecimalsSource("selector");
+              }}
+              value={selectedWatchlistTokenKey}
+            >
+              <option value="">Manual token contract</option>
+              {watchlistTokenOptions.map((token) => {
+                const key = tokenIdentityKey(token.chainId, token.tokenContract);
+                const metadata = watchlistMetadataByToken.get(key) ?? null;
+                return (
+                  <option key={key} value={key}>
+                    {tokenOptionLabel(token, metadata)}
+                  </option>
+                );
+              })}
+            </select>
+          </label>
+          {selectedWatchlistToken && (
+            <div className="token-selector-summary">
+              <div>
+                <strong>{selectedWatchlistMetadata?.symbol ?? selectedWatchlistToken.label ?? "Unknown token"}</strong>
+                <span className="muted">
+                  {selectedWatchlistMetadata?.name ?? "Unknown name"} · source{" "}
+                  {selectedWatchlistMetadata?.source ?? "unknown"} · status{" "}
+                  {selectedWatchlistMetadata?.status ?? "unscanned"}
+                </span>
+              </div>
+              <div className="mono">Transaction to = {selectedWatchlistToken.tokenContract}</div>
+              <div className="muted">
+                Current account balance:{" "}
+                {formatSnapshotBalance(selectedWatchlistBalance, selectedWatchlistMetadata)}
+              </div>
+              {selectedWatchlistConflictDetail && (
+                <div className="token-error">{selectedWatchlistConflictDetail}</div>
+              )}
+              {watchlistSelectorBlockReason && (
+                <div className="inline-warning" role="alert">
+                  {watchlistSelectorBlockReason}
+                </div>
+              )}
+              {selectedWatchlistBalance?.lastErrorSummary && (
+                <div className="token-error">{selectedWatchlistBalance.lastErrorSummary}</div>
+              )}
+            </div>
+          )}
+          <label>
             Token contract
             <input
               onChange={(event) => {
                 setTokenContract(event.target.value);
+                setTokenContractSource("manual");
+                if (selectedWatchlistTokenKey && confirmedDecimalsSource === "selector") {
+                  setConfirmedDecimals("");
+                  setConfirmedDecimalsSource("manual");
+                }
+                setSelectedWatchlistTokenKey("");
                 clearDraft();
               }}
               value={tokenContract}
@@ -567,6 +826,7 @@ export function TransferView({
                 inputMode="numeric"
                 onChange={(event) => {
                   setConfirmedDecimals(event.target.value);
+                  setConfirmedDecimalsSource("manual");
                   clearDraft();
                 }}
                 value={confirmedDecimals}
@@ -655,9 +915,14 @@ export function TransferView({
       </div>
       <div className="button-row">
         <button
-          disabled={busy || accounts.length === 0 || historyStorageIssue !== null}
+          disabled={
+            busy ||
+            accounts.length === 0 ||
+            historyStorageIssue !== null ||
+            activeWatchlistSelectorBlockReason !== null
+          }
           onClick={() => void (transferMode === "native" ? buildDraft() : buildErc20Draft())}
-          title={historyStorageIssue ?? undefined}
+          title={historyStorageIssue ?? activeWatchlistSelectorBlockReason ?? undefined}
           type="button"
         >
           Build Draft

@@ -12,6 +12,7 @@ import {
   loadAppConfig,
   loadAccounts,
   loadHistoryRecoveryIntents,
+  loadTokenWatchlistState,
   loadTransactionHistory,
   lockVault,
   cancelPendingTransfer,
@@ -23,17 +24,26 @@ import {
   reviewDroppedHistoryRecord,
   saveAccountSyncError,
   saveScannedAccount,
+  addWatchlistToken,
+  editWatchlistToken,
+  removeWatchlistToken,
+  scanErc20Balance,
+  scanWatchlistBalances,
+  scanWatchlistTokenMetadata,
   unlockVault,
 } from "./lib/tauri";
 import type {
   AccountRecord,
+  AddWatchlistTokenInput,
   AppConfig,
+  EditWatchlistTokenInput,
   HistoryRecord,
   HistoryRecoveryIntent,
   HistoryStorageInspection,
   HistoryStorageQuarantineResult,
   PendingMutationRequest,
   StoredAccountRecord,
+  TokenWatchlistState,
 } from "./lib/tauri";
 
 type AccountViewModel = AccountRecord & AccountChainState;
@@ -65,6 +75,14 @@ export function isAccountsRefreshCurrent(
 
 export function canStartAccountsRefresh(inFlightCount: number) {
   return inFlightCount === 0;
+}
+
+export function isTokenOperationCurrent(
+  operationGeneration: number,
+  currentGeneration: number,
+  sessionStatus: "locked" | "ready",
+) {
+  return sessionStatus === "ready" && operationGeneration === currentGeneration;
 }
 
 export async function ensureRpcChainMatchesSelectedChain(
@@ -123,10 +141,15 @@ export function App() {
   const [appError, setAppError] = useState<string | null>(null);
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [historyStorage, setHistoryStorage] = useState<HistoryStorageInspection | null>(null);
+  const [tokenWatchlistState, setTokenWatchlistState] =
+    useState<TokenWatchlistState | null>(null);
+  const [tokenWatchlistError, setTokenWatchlistError] = useState<string | null>(null);
   const [lastHistoryQuarantine, setLastHistoryQuarantine] =
     useState<HistoryStorageQuarantineResult | null>(null);
   const [historyRecoveryIntents, setHistoryRecoveryIntents] = useState<HistoryRecoveryIntent[]>([]);
   const selectedChainIdRef = useRef<bigint>(1n);
+  const sessionStatusRef = useRef<"locked" | "ready">("locked");
+  const tokenOperationGenerationRef = useRef(0);
   const diskAccountsRefreshRequestRef = useRef(0);
   const allowedDiskAccountsRefreshRequestRef = useRef(0);
   const remoteAccountsRefreshRequestRef = useRef(0);
@@ -261,8 +284,12 @@ export function App() {
     const accountsRequestId = ++diskAccountsRefreshRequestRef.current;
     const remoteRequestId = remoteAccountsRefreshRequestRef.current;
     const remoteWasInFlight = remoteAccountsRefreshInFlightRef.current > 0;
-    const [stored, historyResult] = await Promise.all([
+    const tokenGeneration = tokenOperationGenerationRef.current;
+    const [stored, tokenResult, historyResult] = await Promise.all([
       loadAccounts(),
+      loadTokenWatchlistState()
+        .then((state) => ({ state, error: null as string | null }))
+        .catch((err) => ({ state: null as TokenWatchlistState | null, error: errorMessage(err) })),
       loadTransactionHistory()
         .then((records) => ({ records, error: null as string | null }))
         .catch((err) => ({ records: [] as HistoryRecord[], error: errorMessage(err) })),
@@ -275,6 +302,14 @@ export function App() {
       selectedChainIdRef.current === chainId
     ) {
       setAccounts(stored.map((account) => accountFromStored(account, chainId)));
+    }
+    if (isTokenOperationCurrent(
+      tokenGeneration,
+      tokenOperationGenerationRef.current,
+      sessionStatusRef.current,
+    )) {
+      setTokenWatchlistState(tokenResult.state);
+      setTokenWatchlistError(tokenResult.error);
     }
     setHistory([...historyResult.records].reverse());
     setHistoryError(historyResult.error);
@@ -306,6 +341,8 @@ export function App() {
   async function handleUnlock(password: string) {
     setAppError(null);
     await unlockVault(password);
+    tokenOperationGenerationRef.current += 1;
+    sessionStatusRef.current = "ready";
     setSessionStatus("ready");
     await restoreWorkspaceAfterUnlock();
   }
@@ -314,19 +351,29 @@ export function App() {
     setAppError(null);
     await createVault(password);
     await unlockVault(password);
+    tokenOperationGenerationRef.current += 1;
+    sessionStatusRef.current = "ready";
     setSessionStatus("ready");
     await restoreWorkspaceAfterUnlock();
   }
 
   async function handleLock() {
     setBusy(true);
+    const previousSessionStatus = sessionStatusRef.current;
+    tokenOperationGenerationRef.current += 1;
+    sessionStatusRef.current = "locked";
     try {
       await lockVault();
       setSessionStatus("locked");
       setAccounts([]);
       setHistory([]);
+      setTokenWatchlistState(null);
+      setTokenWatchlistError(null);
       setHistoryRecoveryIntents([]);
       setActiveTab("accounts");
+    } catch (err) {
+      sessionStatusRef.current = previousSessionStatus;
+      setAppError(errorMessage(err));
     } finally {
       setBusy(false);
     }
@@ -520,6 +567,209 @@ export function App() {
         remoteAccountsRefreshInFlightRef.current - 1,
       );
       setBusy(false);
+    }
+  }
+
+  function requireTokenRpc(chainId: number) {
+    const tokenRpcUrl = rpcUrl.trim();
+    if (!tokenRpcUrl || settingsStatus.kind !== "ok") {
+      throw new Error("Validate an RPC before scanning token metadata or balances.");
+    }
+    if (chainId !== Number(selectedChainIdRef.current)) {
+      throw new Error(
+        `Switch to chainId ${chainId} and validate its RPC before scanning this token.`,
+      );
+    }
+    return tokenRpcUrl;
+  }
+
+  function isCurrentTokenOperation(operationGeneration: number) {
+    return isTokenOperationCurrent(
+      operationGeneration,
+      tokenOperationGenerationRef.current,
+      sessionStatusRef.current,
+    );
+  }
+
+  function beginTokenOperation() {
+    const operationGeneration = tokenOperationGenerationRef.current;
+    setTokenWatchlistError(null);
+    setBusy(true);
+    return operationGeneration;
+  }
+
+  async function handleAddWatchlistToken(
+    input: AddWatchlistTokenInput,
+    rpcProfileId?: string | null,
+  ) {
+    const operationGeneration = beginTokenOperation();
+    let addSucceeded = false;
+    try {
+      const state = await addWatchlistToken(input);
+      addSucceeded = true;
+      if (!isCurrentTokenOperation(operationGeneration)) return false;
+      setTokenWatchlistState(state);
+      if (
+        input.chainId === Number(selectedChainIdRef.current) &&
+        rpcUrl.trim() &&
+        settingsStatus.kind === "ok"
+      ) {
+        const scanRpcProfileId = rpcProfileId?.trim() || `chain-${input.chainId}`;
+        const scannedState = await scanWatchlistTokenMetadata({
+          rpcUrl: rpcUrl.trim(),
+          chainId: input.chainId,
+          tokenContract: input.tokenContract,
+          rpcProfileId: scanRpcProfileId,
+        });
+        if (!isCurrentTokenOperation(operationGeneration)) return false;
+        setTokenWatchlistState(scannedState);
+      } else if (input.chainId === Number(selectedChainIdRef.current)) {
+        if (isCurrentTokenOperation(operationGeneration)) {
+          setTokenWatchlistError("Added token. Validate an RPC to scan metadata.");
+        }
+      }
+      return true;
+    } catch (err) {
+      const message = errorMessage(err);
+      if (isCurrentTokenOperation(operationGeneration)) {
+        setTokenWatchlistError(message);
+      }
+      return addSucceeded;
+    } finally {
+      if (isCurrentTokenOperation(operationGeneration)) {
+        setBusy(false);
+      }
+    }
+  }
+
+  async function handleEditWatchlistToken(input: EditWatchlistTokenInput) {
+    const operationGeneration = beginTokenOperation();
+    try {
+      const state = await editWatchlistToken(input);
+      if (!isCurrentTokenOperation(operationGeneration)) return false;
+      setTokenWatchlistState(state);
+      return true;
+    } catch (err) {
+      const message = errorMessage(err);
+      if (isCurrentTokenOperation(operationGeneration)) {
+        setTokenWatchlistError(message);
+      }
+      return false;
+    } finally {
+      if (isCurrentTokenOperation(operationGeneration)) {
+        setBusy(false);
+      }
+    }
+  }
+
+  async function handleRemoveWatchlistToken(chainId: number, tokenContract: string) {
+    const operationGeneration = beginTokenOperation();
+    try {
+      const state = await removeWatchlistToken({
+        chainId,
+        tokenContract,
+        clearMetadataCache: false,
+        clearScanState: false,
+        clearSnapshots: false,
+      });
+      if (!isCurrentTokenOperation(operationGeneration)) return false;
+      setTokenWatchlistState(state);
+      return true;
+    } catch (err) {
+      const message = errorMessage(err);
+      if (isCurrentTokenOperation(operationGeneration)) {
+        setTokenWatchlistError(message);
+      }
+      return false;
+    } finally {
+      if (isCurrentTokenOperation(operationGeneration)) {
+        setBusy(false);
+      }
+    }
+  }
+
+  async function handleScanWatchlistTokenMetadata(chainId: number, tokenContract: string) {
+    const operationGeneration = beginTokenOperation();
+    try {
+      const tokenRpcUrl = requireTokenRpc(chainId);
+      const state = await scanWatchlistTokenMetadata({
+        rpcUrl: tokenRpcUrl,
+        chainId,
+        tokenContract,
+        rpcProfileId: `chain-${chainId}`,
+      });
+      if (!isCurrentTokenOperation(operationGeneration)) return false;
+      setTokenWatchlistState(state);
+      return true;
+    } catch (err) {
+      const message = errorMessage(err);
+      if (isCurrentTokenOperation(operationGeneration)) {
+        setTokenWatchlistError(message);
+      }
+      return false;
+    } finally {
+      if (isCurrentTokenOperation(operationGeneration)) {
+        setBusy(false);
+      }
+    }
+  }
+
+  async function handleScanErc20Balance(
+    account: string,
+    chainId: number,
+    tokenContract: string,
+  ) {
+    const operationGeneration = beginTokenOperation();
+    try {
+      const tokenRpcUrl = requireTokenRpc(chainId);
+      const state = await scanErc20Balance({
+        rpcUrl: tokenRpcUrl,
+        chainId,
+        account,
+        tokenContract,
+        rpcProfileId: `chain-${chainId}`,
+      });
+      if (!isCurrentTokenOperation(operationGeneration)) return false;
+      setTokenWatchlistState(state);
+      return true;
+    } catch (err) {
+      const message = errorMessage(err);
+      if (isCurrentTokenOperation(operationGeneration)) {
+        setTokenWatchlistError(message);
+      }
+      return false;
+    } finally {
+      if (isCurrentTokenOperation(operationGeneration)) {
+        setBusy(false);
+      }
+    }
+  }
+
+  async function handleScanWatchlistBalances(account: string, retryFailedOnly = false) {
+    const operationGeneration = beginTokenOperation();
+    try {
+      const chainId = Number(selectedChainIdRef.current);
+      const tokenRpcUrl = requireTokenRpc(chainId);
+      const state = await scanWatchlistBalances({
+        rpcUrl: tokenRpcUrl,
+        chainId,
+        accounts: [account],
+        retryFailedOnly,
+        rpcProfileId: `chain-${chainId}`,
+      });
+      if (!isCurrentTokenOperation(operationGeneration)) return false;
+      setTokenWatchlistState(state);
+      return true;
+    } catch (err) {
+      const message = errorMessage(err);
+      if (isCurrentTokenOperation(operationGeneration)) {
+        setTokenWatchlistError(message);
+      }
+      return false;
+    } finally {
+      if (isCurrentTokenOperation(operationGeneration)) {
+        setBusy(false);
+      }
     }
   }
 
@@ -741,6 +991,12 @@ export function App() {
       historyStorage={historyStorage}
       lastHistoryQuarantine={lastHistoryQuarantine}
       onAddAccount={handleAddAccount}
+      onAddWatchlistToken={handleAddWatchlistToken}
+      onEditWatchlistToken={handleEditWatchlistToken}
+      onRemoveWatchlistToken={handleRemoveWatchlistToken}
+      onScanErc20Balance={handleScanErc20Balance}
+      onScanWatchlistBalances={handleScanWatchlistBalances}
+      onScanWatchlistTokenMetadata={handleScanWatchlistTokenMetadata}
       onChainChange={handleChainChange}
       onCreateVault={handleCreateVault}
       onLock={handleLock}
@@ -766,6 +1022,8 @@ export function App() {
       session={{ status: sessionStatus }}
       settingsStatusKind={settingsStatus.kind}
       settingsStatusMessage={settingsStatus.message}
+      tokenWatchlistError={tokenWatchlistError}
+      tokenWatchlistState={tokenWatchlistState}
     />
   );
 }
