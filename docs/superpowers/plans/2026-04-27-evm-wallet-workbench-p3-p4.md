@@ -683,7 +683,7 @@
 7. P4-11 批量分发/归集 spec。
 8. P4-12 batch native 分发/归集。
 9. P4-13 batch ERC-20 分发/归集。
-10. P5-1 ABI 管理 fetch/import/paste/cache。
+10. P5-1 ABI 管理 fetch/import/paste/cache，先 P5-1a spec/design，再拆 P5-1b 到 P5-1e 实现与测试。
 11. P5-2 ABI read/write 调用器。
 12. P5-3 raw calldata 发送与预览。
 13. P5-4 资产/授权扫描与 revoke 工作流。
@@ -1088,10 +1088,139 @@
 
 #### Task P5-1: ABI 管理 fetch/import/paste/cache
 
-- 目标：提供 ABI 来源管理，支持按合约地址获取、导入文件、粘贴 ABI JSON 和本地缓存。
-- 依赖：P4-9 或基础 chain config；P4-2 诊断脱敏。
-- 关键边界：普通 RPC 通常拿不到 ABI；按合约地址获取 ABI 需要 explorer/indexer API 或类似数据源，并需要 chain-specific 配置、失败处理、缓存失效和 API key 脱敏；示例不得包含真实 key。
-- 是否先 spec/design：是，先定义数据源配置和失败状态。
+P5-1 提供 ABI source/cache/read model，不实现 ABI 调用器、raw calldata、revoke、hot tx 解析、代理自动解析完整方案或任意交易广播。普通 RPC 通常拿不到 ABI；按合约地址 fetch 必须通过 chain-specific explorer、indexer 或类似数据源配置完成。所有 API key、认证 URL、query token 和 provider secret 都必须通过 Rust/Tauri 层引用和脱敏，不能进入 React state、diagnostics、history 或 export。Data source config 只能保存 secret reference/label；真实 secret value 必须来自 OS keychain、secure secret store、环境变量或用户会话输入。
+
+##### Task P5-1a: ABI management spec/design（状态：本任务，doc-only）
+
+**目标**
+
+补齐项目级 ABI 管理设计，明确 fetch/import/paste/cache、数据源配置、ABI identity、validation、失败状态、cache refresh、脱敏和 Rust/Tauri 边界。
+
+**依赖**
+
+- P4-2 诊断脱敏基线。
+- P4-9 或基础 chain config 的 `chainId`/RPC profile 概念。
+- P4-13 已合并的 ERC-20 batch 现状，避免把 batch 后续能力误写为未完成。
+
+**边界**
+
+- 只改文档，不改 `src` 或 `src-tauri`。
+- 不实现 ABI read/write 调用器、raw calldata、revoke、hot tx 解析、代理自动解析完整方案或任意交易广播。
+- 不把 P5-2/P5-3/P6 能力写成当前已完成。
+
+**验收/测试建议**
+
+- `docs/specs/evm-wallet-workbench.md` 覆盖 ABI source/cache/read model、failure states、validation 和 Tauri 边界。
+- 文档明确 snake_case 是 Rust/storage schema，camelCase 是 TS/read model/UI；fetch response 永不进入 React，paste/import 只允许前端短暂预检或走 Rust path/stream。
+- 本计划文件把 P5-1 拆成可执行子任务，并标明依赖、边界和验收。
+- 验证命令：`git diff --check`。
+
+##### Task P5-1b: Rust storage/schema/commands for ABI sources/cache
+
+**目标**
+
+实现 ABI data source config、ABI cache entry、fetch/import/paste command 的本地 schema 和 Rust/Tauri command 边界，让 UI 能读取 ABI library/cache/failure read model。
+
+**依赖**
+
+- P5-1a spec/design。
+- P4-2 诊断脱敏工具或等价 helper。
+- 现有 app config/storage 约定和 chainId/RPC profile 模型。
+
+**边界**
+
+- 只做 ABI source/cache 配置和 read model，不做 ABI 调用器或交易发送。
+- API key 只通过 secret label/reference 解析；secret value 来自 OS keychain、secure secret store、环境变量或用户会话输入，完整 key、认证 URL、query token 不返回 React，不写 app config/cache/history/diagnostics/export。
+- ABI cache 是可重建数据，不与 vault、助记词、私钥或签名材料混存。
+
+**验收/测试建议**
+
+- Storage 能表达 data source config：`chainId`、provider kind、base URL、optional API key ref/secret label、rate-limit/failure metadata。
+- Logical source key 至少包含 `chainId + normalized/checksum contractAddress + sourceKind + providerConfigId/userSourceId`；`abiHash`、`sourceFingerprint`、version 和 attempt id 是 immutable cache version/conflict detection/selected pointer，不是逻辑 source slot。
+- Commands 能 list/get/save source config、list/get ABI cache、delete/mark stale cache，并输出脱敏 read model。
+- Provider proxy hint 或 implementation ABI 线索只能保存为 `providerProxyHint`/`proxyDetected` 等非身份 metadata，不得暗示 ABI 一定对应 current address runtime。
+- 损坏 cache/config、unsupported provider kind、missing secret ref 都有可见错误状态。
+- 建议验证：`cargo test --manifest-path src-tauri/Cargo.toml`、`npm run typecheck`、`git diff --check`。
+
+##### Task P5-1c: explorer fetch/import/paste validation and diagnostics
+
+**目标**
+
+实现 ABI fetch/import/paste 的 parse、validation、size limit、selector summary、source fingerprint 和脱敏 diagnostics。
+
+**依赖**
+
+- P5-1b storage/schema/commands。
+- Chain-specific data source config。
+- P4-2 diagnostics export 脱敏边界。
+
+**边界**
+
+- Fetch 只支持已配置 provider kind；普通 RPC 不作为 ABI 来源。
+- Fetch response 永不进入 React；fetch payload size limit、parse/validate、canonicalization、hash 和 cache write 均在 Rust/Tauri command 层完成。
+- Import/paste 只接受 standard JSON ABI array 或 explorer 返回的 ABI string parse 结果；不做代理自动解析完整方案。
+- Paste/import 可以由 React 做固定小上限预检并短暂传入 command，或文件 import 走 Rust file path/stream；前端不得持久化、日志、diagnostics、export、history 或 test snapshot ABI 内容。
+- 不把用户导入/粘贴自动标记为 verified explorer ABI。
+
+**验收/测试建议**
+
+- 接受 standard JSON ABI array；接受 explorer 响应中的 ABI string 并 parse/validate。
+- 拒绝 malformed JSON、非 array、无 function/event/error 项、过大 payload、明显 malformed item。
+- 重复/冲突 selector 在 validation summary 中可见，可标记 `selectorConflict` 或阻止成为默认 ABI。
+- 失败/状态 taxonomy 分层覆盖 fetch/source status（`notConfigured`、`fetchFailed`、`rateLimited`、`notVerified`、`malformedResponse`、`unsupportedChain`）、parse/validation status（`parseFailed`、`malformedAbi`、`emptyAbiItems`、`payloadTooLarge`、`selectorConflict`）、cache status（`cacheFresh`、`cacheStale`、`refreshing`、`refreshFailed`、`versionSuperseded`）和 source selection/conflict status（`selected`、`unselected`、`sourceConflict`、`needsUserChoice`）。
+- Diagnostics/export 只含 provider kind、chainId、host/config 摘要、failure class、rate-limit hint 等非敏感信息。
+- 建议验证：`cargo test --manifest-path src-tauri/Cargo.toml`、`npm test -- src/core src/features`、`npm run typecheck`、`git diff --check`。
+
+##### Task P5-1d: desktop UI for ABI library/cache/failure states
+
+**目标**
+
+提供 Tauri desktop 主线的 ABI library/cache UI，支持按 chainId + contract address 查看 ABI 来源、fetch/import/paste/manual refresh、缓存状态、validation summary 和失败恢复。
+
+**依赖**
+
+- P5-1b command/read model。
+- P5-1c validation/fetch diagnostics。
+- P4-2 diagnostics 面板导出边界。
+
+**边界**
+
+- React 只表达用户意图和展示 read model，不持有 API key、认证 URL、完整 provider secret 或大 payload 响应。
+- UI 不提供 ABI read/write 调用器、raw calldata 发送或任意交易广播入口。
+- 用户导入/粘贴 ABI 显示为 `userImported`/`userPasted`，不能包装成 verified explorer ABI。
+
+**验收/测试建议**
+
+- ABI library 能显示 source kind、fingerprint/hash、function/event/error count、selector summary、status、fetchedAt/importedAt/updatedAt、stale/cache failure。
+- Failure/status states 可见：`notConfigured`、`fetchFailed`、`rateLimited`、`notVerified`、`malformedResponse`、`parseFailed`、`sourceConflict`、`cacheStale`、`unsupportedChain`、`selectorConflict`。
+- Manual refresh、TTL/staleness、source changed、contract changed、chain changed 都会让旧 cache 明确 stale 或要求重建。
+- Source conflict 不静默覆盖；用户必须确认采用哪个来源。
+- 建议验证：`npm test -- src/features src/core`、`npm run typecheck`、`cargo test --manifest-path src-tauri/Cargo.toml`、`git diff --check`。
+
+##### Task P5-1e: selector/read-model integration tests for later P5-2/P5-3
+
+**目标**
+
+为后续 P5-2 ABI 调用器、P5-3 raw calldata 预览和 P6 解析准备 selector/read-model 集成测试，确保 ABI cache 输出稳定且冲突可见。
+
+**依赖**
+
+- P5-1b storage/read model。
+- P5-1c validation/selector summary。
+- P5-1d UI 或至少可消费的 frontend read model。
+
+**边界**
+
+- 只测试 ABI read model 和 selector summary，不实现 P5-2/P5-3/P6 功能。
+- 不把 selector match 当作交易安全背书；冲突、unknown、stale source 必须保持可见。
+- 不引入前端签名或广播出口。
+
+**验收/测试建议**
+
+- Fixtures 覆盖 normal ABI、function selector duplicate/conflict、event topic duplicate、error selector、userImported/userPasted/explorerFetched、cacheStale/sourceConflict。
+- Read model 能被后续调用器按 `chainId + contractAddress + selected source` 稳定读取。
+- Selector summary 输出不依赖 RPC URL，不泄漏 API key/base URL query token。
+- 建议验证：`cargo test --manifest-path src-tauri/Cargo.toml`、`npm test -- src/core src/features`、`npm run typecheck`、`git diff --check`。
 
 #### Task P5-2: ABI read/write 调用器
 

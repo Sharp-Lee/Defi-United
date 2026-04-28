@@ -411,6 +411,80 @@ v1 + P3/P4 已将基础历史列表升级为可筛选、可分组、可审计的
 - P4-13 非目标：不实现 approve、permit、revoke、自动授权交易或 allowance 修改；不保证 fee-on-transfer/rebasing token 的分配结果；不支持 many-source distribution；不支持 `disperseTokenSimple`、用户自定义 batch contract、raw calldata、任意 ABI、swap/bridge/relay。
 - P4-11 作为 doc-only 任务的验证命令为 `git diff --check`。
 
+### 9.6 ABI 管理 fetch/import/paste/cache（P5-1 设计）
+
+本小节定义 P5-1 的 ABI 来源、验证、缓存和失败状态契约。P5-1 只输出 ABI source/cache/read model，不实现 ABI read/write 调用器、raw calldata、revoke、hot 交易解析、代理自动解析完整方案或任意交易广播。后续 P5-2/P5-3/P6 可以消费这里的 ABI read model 和 selector summary，但不得把这些后续能力写成 P5-1 已完成。
+
+**目标**
+
+- 支持按合约地址 fetch ABI、导入 ABI 文件、粘贴 ABI JSON，并把通过验证的 ABI 写入本地缓存。
+- 明确普通 JSON-RPC 通常拿不到合约 ABI；按地址 fetch 必须通过 chain-specific explorer、indexer 或类似数据源配置完成。
+- 让 ABI 的来源、fingerprint/hash、函数/事件/error 数量、selector 摘要、缓存时间、刷新状态和失败原因都可见。
+- 为后续 ABI 调用器、selector 解析和交易解析提供可审计的 ABI read model，但不在 P5-1 中创建签名、广播或任意 calldata 发送路径。
+
+**数据源配置模型**
+
+- `AbiDataSourceConfig` 至少包含：`chain_id`、`provider_kind`、`base_url`、可选 `api_key_ref` 或 secret label、rate-limit metadata、failure metadata、`created_at`、`updated_at`、`enabled`。
+- 字段命名示例中 snake_case 表示 Rust/storage schema；TS/read model/UI 可以使用 camelCase，但语义必须一一对应。
+- `provider_kind` 可以是 `etherscanCompatible`、`blockscoutCompatible`、`customIndexer`、`localOnly` 或后续 additive enum。未知 provider kind 必须显示 unsupported，不能猜请求格式。
+- `base_url` 只保存服务基址或配置引用；示例只能使用占位值，例如 `https://api.example-explorer.local/api`、`api_key_ref = "ETHERSCAN_MAINNET_KEY"`，不得包含真实 key。
+- Data source config 只能保存 secret reference/label。真实 API key/secret value 必须来自 OS keychain、secure secret store、环境变量或用户会话输入，不能随 app config/export 输出，也不能进入普通 cache/config/history/diagnostics。
+- API key、认证 URL、query token、basic auth、bearer token 或带 secret 的完整 URL 不得进入 diagnostics、history、export、前端状态快照或测试快照。日志和导出只能保留非敏感摘要，例如 provider kind、chainId、host 摘要、配置 id、key label/hash suffix、rate-limit status 和错误分类。
+- Rate-limit/failure metadata 至少能表达 last success、last failure、failure count、cooldown until、`rateLimited` hint 和脱敏 error summary。它是排障状态，不是 ABI identity。
+
+**ABI cache identity 与元数据**
+
+- ABI logical source key 至少由 `chain_id + contract_address + source_kind + provider_config_id/user_source_id` 组成。`contract_address` 必须先通过 EVM 地址校验，并按统一 checksum/normalized 策略保存。这个 key 表示同一合约同一来源的逻辑 source slot。
+- `abi_hash`、`source_fingerprint`、provider result version、response fingerprint、fetch/import attempt id 是 immutable cache version/attempt、conflict detection 和 selected source pointer 的材料，不应被当作唯一的逻辑 source slot。相同 logical source 下 ABI 内容变化时应产生新的 version/attempt，并让当前 selected version 明确可见。
+- `source_kind` 至少包含 `explorerFetched`、`userImported`、`userPasted`，后续可扩展 `indexerFetched`、`systemKnown`。用户导入/粘贴不得自动标记为 verified explorer ABI。
+- `source_fingerprint` 建议为 canonicalized ABI JSON 的 hash；fetch 来源还应记录 provider config id、provider kind、脱敏 endpoint 摘要、explorer result version 或 response fingerprint。用户导入/粘贴还应记录 user source id、文件名摘要或 paste session id 摘要，但不得保存本地绝对路径中的敏感部分。
+- Cache entry 建议字段：`chain_id`、`contract_address`、`source_kind`、`provider_config_id` 或 `user_source_id`、`source_fingerprint`、`abi_hash`、`version_id`、`attempt_id`、`selected`、`status`、`metadata`、`function_count`、`event_count`、`error_count`、`selector_summary`、`fetched_at` 可选、`imported_at` 可选、`updated_at`、`last_validated_at`、`stale_after` 可选、`last_error_summary` 可选。
+- Metadata/source/status 必须在 UI/read model 可见。缺失 ABI 是 `notConfigured`、`notVerified`、`fetchFailed` 等显式状态之一，不能当作空 ABI。
+- Provider 返回 proxy ABI、implementation ABI、proxy implementation address 或类似线索时，只能记录为 `providerProxyHint`、`proxyDetected` 等非身份 metadata；不得暗示该 ABI 一定对应 current address runtime，也不得因此改写 logical source key。
+
+**ABI validation**
+
+- 必须接受 standard JSON ABI array。Explorer 常见返回是 JSON string 包在响应字段里，允许 parse 后再按 ABI array 验证。
+- 必须拒绝 malformed JSON、非 array、array 中无 `function`/`event`/`error` 项、超过大小上限的 payload，以及明显 malformed 的 ABI item。
+- Validation 应生成 selector summary：function selector、event topic hash、error selector 的数量和冲突摘要。重复/冲突 selector 必须可见；实现可先允许保存但标为 `selectorConflict`，或阻止作为默认 ABI，不能静默吞掉。
+- ABI item 的 name、inputs、outputs、stateMutability、anonymous 等字段来自不可信来源；UI 可展示但不得把 explorer metadata 当作安全背书。
+- 过大 payload 必须在 Rust/Tauri command 层尽早拒绝，避免 React 持有大响应或日志误写完整 ABI。
+
+**失败状态与刷新**
+
+- P5-1 状态 taxonomy 分层如下，UI/read model 必须能同时展示相关层级，不能用一个空 ABI 或单一 unknown 状态吞掉细节。
+- Fetch/source status：`notConfigured`、`unsupportedChain`、`fetchFailed`、`rateLimited`、`notVerified`、`malformedResponse`。其中 `notConfigured` 表示当前 chain 没有可用 ABI data source；`unsupportedChain` 表示配置或 provider 明确不支持该 chain；两者不能混成普通 fetch failure。
+- Parse/validation status：`parseFailed`、`malformedAbi`、`emptyAbiItems`、`payloadTooLarge`、`ok`、`selectorConflict`。`selectorConflict` 表示 ABI 可解析但存在重复/冲突 selector 或 topic，必须在 validation summary 和 UI 中可见。
+- Cache status：`cacheFresh`、`cacheStale`、`refreshing`、`refreshFailed`、`versionSuperseded`。失败刷新应保留旧可用 version，并标记 stale/failure。
+- Source selection/conflict status：`selected`、`unselected`、`sourceConflict`、`needsUserChoice`。不同 provider/user source 的 ABI hash 或 selector summary 冲突时，必须进入 `sourceConflict`/`needsUserChoice`，不能静默覆盖 selected version。
+- P5-1 至少需要可见状态：`notConfigured`、`fetchFailed`、`rateLimited`、`notVerified`、`malformedResponse`、`parseFailed`、`sourceConflict`、`cacheStale`、`unsupportedChain`、`selectorConflict`。
+- `notConfigured` 表示当前 chain 没有可用 ABI data source；`unsupportedChain` 表示配置或 provider 明确不支持该 chain；两者不能混成普通 fetch failure。
+- `notVerified` 表示 explorer/indexer 找到了合约但没有 verified ABI 或只返回 placeholder；不能写成空 ABI。
+- `malformedResponse` 表示 provider 响应结构不符合预期；`parseFailed` 表示 ABI JSON 或 ABI string 解析失败。错误摘要必须脱敏。
+- Cache invalidation/refresh 至少覆盖 manual refresh、TTL/staleness、source changed、contract address changed、chain changed。旧 ABI 不应静默覆盖新来源；不同 source fingerprint 或 provider 结果冲突时必须进入 `sourceConflict` 并要求用户确认采用哪个来源。
+- Manual refresh 应生成新的 cache attempt 和状态摘要；失败时保留旧可用 ABI 但标记 stale/failure，不能把旧 ABI 删除后表现为空。
+
+**Import / paste 行为**
+
+- 用户导入文件或粘贴 ABI JSON 时，source 必须分别保存为 `userImported` 或 `userPasted`，并显示 fingerprint/hash、函数/事件/error 数量、selector summary、导入/粘贴时间和 validation status。
+- 文件导入只接受 ABI JSON 内容，不把文件路径作为可信来源。路径、文件名和错误消息进入诊断前必须最小化或脱敏。实现可以让 React 用固定小上限做预检后把内容短暂传入 command，也可以走 Rust file path/stream import；无论哪种路径，完整解析、validation、canonicalization、hash、最终 size limit 和缓存写入都以 Rust/Tauri 为准。
+- Paste 输入同样可以在前端固定小上限预检并短暂传入 command，但不得持久化到 React state、local storage、diagnostics、export、history、日志或 test snapshot。Paste 的完整 parse/validate/size limit/selector summary 仍由 Rust/Tauri command 执行；失败状态可见，不能把 malformed ABI 保存成可用 cache。
+- 用户来源 ABI 可以作为后续调用器的显式选择，但不能自动提升为 verified explorer ABI，也不能覆盖 explorer fetched ABI，除非用户确认 source conflict。
+
+**Rust/Tauri 边界**
+
+- React 只表达 fetch/import/paste/refresh/choose source 的意图，并展示 ABI read model、validation summary 和失败状态。
+- Fetch response 永不进入 React；网络请求、API key 引用解析、URL 组装、脱敏、fetch payload size limit、parse/validate、cache 存储应在 Rust/Tauri command 层处理。敏感配置不得进入 React state、日志、history 或 diagnostics export。
+- Paste/import 是用户主动输入，前端可以短暂接触 ABI 内容用于小上限预检或 file picker，但不得长期保存、记录、导出或写入测试快照；Rust/Tauri command 仍是最终安全边界和真相来源。
+- ABI cache 是可重建的本地数据，不得与 vault、助记词、私钥、签名材料混存。P5-1 不创建交易历史，也不签名、不广播。
+- 后续 write transaction 仍必须走 Rust/Tauri command 签名广播；ABI 管理只提供 ABI 和 selector/read model 输入，不提供前端签名出口。
+
+**后续关系**
+
+- P5-2 ABI read/write 调用器消费 ABI source/cache/read model，并在 write path 中复用 Intent/Submission/ChainOutcome、确认页和 Rust 签名广播边界。
+- P5-3 raw calldata 可以使用 selector summary 辅助解释 calldata，但未匹配或冲突 selector 必须显示 unknown/conflict。
+- P6 tx hash/contract hot 解析可以消费 ABI cache 和 source metadata，但解析结果仍是依赖数据源的推断，不能把未验证 ABI 或冲突 selector 展示为确定事实。
+
 ## 10. P3/P4 已完成范围与后续 P4+ 方向
 
 ### 10.1 P3 History UX hardening 已完成
