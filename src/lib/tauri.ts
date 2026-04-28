@@ -67,6 +67,162 @@ export interface AppConfig {
   };
 }
 
+export type AbiProviderKind =
+  | "etherscanCompatible"
+  | "blockscoutCompatible"
+  | "customIndexer"
+  | "localOnly";
+export type AbiSourceKind = "explorerFetched" | "userImported" | "userPasted";
+export type AbiFetchSourceStatus =
+  | "ok"
+  | "notConfigured"
+  | "unsupportedChain"
+  | "fetchFailed"
+  | "rateLimited"
+  | "notVerified"
+  | "malformedResponse";
+export type AbiValidationStatus =
+  | "notValidated"
+  | "parseFailed"
+  | "malformedAbi"
+  | "emptyAbiItems"
+  | "payloadTooLarge"
+  | "ok"
+  | "selectorConflict";
+export type AbiCacheStatus =
+  | "cacheFresh"
+  | "cacheStale"
+  | "refreshing"
+  | "refreshFailed"
+  | "versionSuperseded";
+export type AbiSelectionStatus =
+  | "selected"
+  | "unselected"
+  | "sourceConflict"
+  | "needsUserChoice";
+
+export interface AbiDataSourceConfigRecord {
+  id: string;
+  chainId: number;
+  providerKind: AbiProviderKind;
+  baseUrl?: string | null;
+  apiKeyRef?: string | null;
+  enabled: boolean;
+  lastSuccessAt?: string | null;
+  lastFailureAt?: string | null;
+  failureCount: number;
+  cooldownUntil?: string | null;
+  rateLimited: boolean;
+  lastErrorSummary?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AbiSelectorSummaryRecord {
+  functionSelectorCount?: number | null;
+  eventTopicCount?: number | null;
+  errorSelectorCount?: number | null;
+  duplicateSelectorCount?: number | null;
+  conflictCount?: number | null;
+  notes?: string | null;
+}
+
+export interface AbiCacheEntryRecord {
+  chainId: number;
+  contractAddress: string;
+  sourceKind: AbiSourceKind;
+  providerConfigId?: string | null;
+  userSourceId?: string | null;
+  versionId: string;
+  attemptId: string;
+  sourceFingerprint: string;
+  abiHash: string;
+  selected: boolean;
+  fetchSourceStatus: AbiFetchSourceStatus;
+  validationStatus: AbiValidationStatus;
+  cacheStatus: AbiCacheStatus;
+  selectionStatus: AbiSelectionStatus;
+  functionCount?: number | null;
+  eventCount?: number | null;
+  errorCount?: number | null;
+  selectorSummary?: AbiSelectorSummaryRecord | null;
+  fetchedAt?: string | null;
+  importedAt?: string | null;
+  lastValidatedAt?: string | null;
+  staleAfter?: string | null;
+  lastErrorSummary?: string | null;
+  providerProxyHint?: string | null;
+  proxyDetected: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AbiRegistryState {
+  schemaVersion: number;
+  dataSources: AbiDataSourceConfigRecord[];
+  cacheEntries: AbiCacheEntryRecord[];
+}
+
+export interface UpsertAbiDataSourceConfigInput {
+  id: string;
+  chainId: number;
+  providerKind: AbiProviderKind;
+  baseUrl?: string | null;
+  apiKeyRef?: string | null;
+  enabled?: boolean | null;
+  lastSuccessAt?: string | null;
+  clearLastSuccessAt?: boolean;
+  lastFailureAt?: string | null;
+  clearLastFailureAt?: boolean;
+  failureCount?: number | null;
+  cooldownUntil?: string | null;
+  clearCooldownUntil?: boolean;
+  rateLimited?: boolean | null;
+  lastErrorSummary?: string | null;
+  clearLastErrorSummary?: boolean;
+}
+
+export interface RemoveAbiDataSourceConfigInput {
+  id: string;
+}
+
+export interface UpsertAbiCacheEntryInput {
+  chainId: number;
+  contractAddress: string;
+  sourceKind: AbiSourceKind;
+  providerConfigId?: string | null;
+  userSourceId?: string | null;
+  versionId: string;
+  attemptId: string;
+  sourceFingerprint: string;
+  abiHash: string;
+  selected: boolean;
+  fetchSourceStatus: AbiFetchSourceStatus;
+  validationStatus: AbiValidationStatus;
+  cacheStatus: AbiCacheStatus;
+  selectionStatus: AbiSelectionStatus;
+  functionCount?: number | null;
+  eventCount?: number | null;
+  errorCount?: number | null;
+  selectorSummary?: AbiSelectorSummaryRecord | null;
+  fetchedAt?: string | null;
+  importedAt?: string | null;
+  lastValidatedAt?: string | null;
+  staleAfter?: string | null;
+  lastErrorSummary?: string | null;
+  providerProxyHint?: string | null;
+  proxyDetected?: boolean;
+}
+
+export interface AbiCacheEntryIdentityInput {
+  chainId: number;
+  contractAddress: string;
+  sourceKind: AbiSourceKind;
+  providerConfigId?: string | null;
+  userSourceId?: string | null;
+  versionId: string;
+}
+
 export type UserMetadataSource = "userConfirmed";
 export type RawMetadataSource = "onChainCall";
 export type RawMetadataStatus =
@@ -482,6 +638,30 @@ export function rememberValidatedRpc(endpoint: {
   rpcUrl: string;
 }) {
   return invoke<AppConfig>("remember_validated_rpc", { endpoint });
+}
+
+export function loadAbiRegistryState() {
+  return invoke<AbiRegistryState>("load_abi_registry_state");
+}
+
+export function upsertAbiDataSourceConfig(input: UpsertAbiDataSourceConfigInput) {
+  return invoke<AbiRegistryState>("upsert_abi_data_source_config", { input });
+}
+
+export function removeAbiDataSourceConfig(input: RemoveAbiDataSourceConfigInput) {
+  return invoke<AbiRegistryState>("remove_abi_data_source_config", { input });
+}
+
+export function upsertAbiCacheEntry(input: UpsertAbiCacheEntryInput) {
+  return invoke<AbiRegistryState>("upsert_abi_cache_entry", { input });
+}
+
+export function markAbiCacheStale(input: AbiCacheEntryIdentityInput) {
+  return invoke<AbiRegistryState>("mark_abi_cache_stale", { input });
+}
+
+export function deleteAbiCacheEntry(input: AbiCacheEntryIdentityInput) {
+  return invoke<AbiRegistryState>("delete_abi_cache_entry", { input });
 }
 
 export function loadTokenWatchlistState() {

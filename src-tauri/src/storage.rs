@@ -49,6 +49,10 @@ pub fn token_watchlist_path() -> Result<PathBuf, String> {
     Ok(ensure_app_dir()?.join("token-watchlist.json"))
 }
 
+pub fn abi_registry_path() -> Result<PathBuf, String> {
+    Ok(ensure_app_dir()?.join("abi-registry.json"))
+}
+
 pub fn write_new_file_atomic(path: &Path, contents: &str) -> Result<(), String> {
     if path.exists() {
         return Err(format!("{} already exists", path.display()));

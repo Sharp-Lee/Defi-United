@@ -10,6 +10,12 @@ pub mod vault;
 pub fn run() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
+            commands::abi_registry::delete_abi_cache_entry,
+            commands::abi_registry::load_abi_registry_state,
+            commands::abi_registry::mark_abi_cache_stale,
+            commands::abi_registry::remove_abi_data_source_config,
+            commands::abi_registry::upsert_abi_cache_entry,
+            commands::abi_registry::upsert_abi_data_source_config,
             commands::accounts::derive_account,
             commands::accounts::load_accounts,
             commands::accounts::save_account_sync_error,
