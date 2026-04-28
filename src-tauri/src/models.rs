@@ -163,6 +163,30 @@ impl TypedTransactionFields {
             ..Self::default()
         }
     }
+
+    pub fn erc20_transfer(
+        token_contract: impl Into<String>,
+        recipient: impl Into<String>,
+        amount_raw: impl Into<String>,
+        decimals: u8,
+        token_symbol: Option<String>,
+        token_name: Option<String>,
+        token_metadata_source: impl Into<String>,
+    ) -> Self {
+        Self {
+            transaction_type: TransactionType::Erc20Transfer,
+            token_contract: Some(token_contract.into()),
+            recipient: Some(recipient.into()),
+            amount_raw: Some(amount_raw.into()),
+            decimals: Some(decimals),
+            token_symbol,
+            token_name,
+            token_metadata_source: Some(token_metadata_source.into()),
+            selector: Some("0xa9059cbb".to_string()),
+            method_name: Some("transfer(address,uint256)".to_string()),
+            native_value_wei: Some("0".to_string()),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -179,6 +203,37 @@ pub struct NativeTransferIntent {
     pub gas_limit: String,
     pub max_fee_per_gas: String,
     pub max_priority_fee_per_gas: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Erc20TransferIntent {
+    pub rpc_url: String,
+    pub account_index: u32,
+    pub chain_id: u64,
+    pub from: String,
+    pub token_contract: String,
+    pub recipient: String,
+    pub amount_raw: String,
+    pub decimals: u8,
+    #[serde(default)]
+    pub token_symbol: Option<String>,
+    #[serde(default)]
+    pub token_name: Option<String>,
+    pub token_metadata_source: String,
+    pub nonce: u64,
+    pub gas_limit: String,
+    pub max_fee_per_gas: String,
+    pub max_priority_fee_per_gas: String,
+    #[serde(default)]
+    pub latest_base_fee_per_gas: Option<String>,
+    pub base_fee_per_gas: String,
+    pub base_fee_multiplier: String,
+    #[serde(default)]
+    pub max_fee_override_per_gas: Option<String>,
+    pub selector: String,
+    pub method: String,
+    pub native_value_wei: String,
+    pub frozen_key: String,
 }
 
 fn unknown_string() -> String {
@@ -430,6 +485,28 @@ pub struct HistoryRecoveryIntent {
     pub to: Option<String>,
     #[serde(default)]
     pub value_wei: Option<String>,
+    #[serde(default)]
+    pub token_contract: Option<String>,
+    #[serde(default)]
+    pub recipient: Option<String>,
+    #[serde(default)]
+    pub amount_raw: Option<String>,
+    #[serde(default)]
+    pub decimals: Option<u8>,
+    #[serde(default)]
+    pub token_symbol: Option<String>,
+    #[serde(default)]
+    pub token_name: Option<String>,
+    #[serde(default)]
+    pub token_metadata_source: Option<String>,
+    #[serde(default)]
+    pub selector: Option<String>,
+    #[serde(default)]
+    pub method_name: Option<String>,
+    #[serde(default)]
+    pub native_value_wei: Option<String>,
+    #[serde(default)]
+    pub frozen_key: Option<String>,
     #[serde(default)]
     pub gas_limit: Option<String>,
     #[serde(default)]

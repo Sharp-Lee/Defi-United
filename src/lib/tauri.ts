@@ -145,6 +145,17 @@ export interface HistoryRecoveryIntent {
   nonce: number | null;
   to: string | null;
   valueWei: string | null;
+  tokenContract: string | null;
+  recipient: string | null;
+  amountRaw: string | null;
+  decimals: number | null;
+  tokenSymbol: string | null;
+  tokenName: string | null;
+  tokenMetadataSource: string | null;
+  selector: string | null;
+  methodName: string | null;
+  nativeValueWei: string | null;
+  frozenKey: string | null;
   gasLimit: string | null;
   maxFeePerGas: string | null;
   maxPriorityFeePerGas: string | null;
@@ -304,6 +315,37 @@ export async function dismissHistoryRecoveryIntent(recoveryId: string) {
 
 export async function submitNativeTransfer(intent: NormalizedNativeTransferIntent) {
   const raw = await invoke<string>("submit_native_transfer_command", { intent });
+  return normalizeHistoryRecord(JSON.parse(raw));
+}
+
+export interface Erc20TransferIntent {
+  rpc_url: string;
+  account_index: number;
+  chain_id: number;
+  from: string;
+  token_contract: string;
+  recipient: string;
+  amount_raw: string;
+  decimals: number;
+  token_symbol?: string | null;
+  token_name?: string | null;
+  token_metadata_source: string;
+  nonce: number;
+  gas_limit: string;
+  max_fee_per_gas: string;
+  max_priority_fee_per_gas: string;
+  latest_base_fee_per_gas?: string | null;
+  base_fee_per_gas: string;
+  base_fee_multiplier: string;
+  max_fee_override_per_gas?: string | null;
+  selector: string;
+  method: string;
+  native_value_wei: string;
+  frozen_key: string;
+}
+
+export async function submitErc20Transfer(intent: Erc20TransferIntent) {
+  const raw = await invoke<string>("submit_erc20_transfer_command", { intent });
   return normalizeHistoryRecord(JSON.parse(raw));
 }
 

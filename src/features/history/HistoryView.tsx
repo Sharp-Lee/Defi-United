@@ -329,8 +329,14 @@ function pendingRequestFromRecord(record: HistoryRecord, rpcUrl: string): Pendin
     maxPriorityFeePerGas: bumpWei(
       requireFrozenField(submission.max_priority_fee_per_gas, "max_priority_fee_per_gas"),
     ),
-    to: requireFrozenField(submission.to, "to"),
-    valueWei: requireFrozenField(submission.value_wei, "value_wei"),
+    to:
+      submission.transaction_type === "erc20Transfer"
+        ? requireFrozenField(submission.token_contract ?? submission.to, "token_contract")
+        : requireFrozenField(submission.to, "to"),
+    valueWei:
+      submission.transaction_type === "erc20Transfer"
+        ? requireFrozenField(submission.value_wei ?? submission.native_value_wei ?? "0", "value_wei")
+        : requireFrozenField(submission.value_wei, "value_wei"),
   };
 }
 

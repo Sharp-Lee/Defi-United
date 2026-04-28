@@ -1,7 +1,7 @@
 import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { Interface } from "ethers";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { submitNativeTransfer } from "../../lib/tauri";
+import { submitErc20Transfer, submitNativeTransfer } from "../../lib/tauri";
 import { renderScreen } from "../../test/render";
 import { TransferView } from "./TransferView";
 
@@ -35,6 +35,7 @@ vi.mock("../../lib/tauri", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../lib/tauri")>();
   return {
     ...actual,
+    submitErc20Transfer: vi.fn(),
     submitNativeTransfer: vi.fn(),
   };
 });
@@ -42,6 +43,7 @@ vi.mock("../../lib/tauri", async (importOriginal) => {
 describe("TransferView", () => {
   beforeEach(() => {
     vi.mocked(submitNativeTransfer).mockReset();
+    vi.mocked(submitErc20Transfer).mockReset();
     provider.getNetwork.mockResolvedValue({ chainId: 1n });
     provider.getFeeData.mockResolvedValue({
       gasPrice: 30_000_000_000n,
@@ -286,7 +288,7 @@ describe("TransferView", () => {
     expect(screen.getByText(/transaction history storage is unreadable/)).toBeInTheDocument();
   });
 
-  it("builds a read-only ERC-20 draft with transaction target, calldata recipient, raw amount, and metadata source", async () => {
+  it("builds an ERC-20 draft with transaction target, calldata recipient, raw amount, and metadata source", async () => {
     provider.estimateGas.mockResolvedValueOnce(65_000n);
     renderTransfer();
 
@@ -309,7 +311,61 @@ describe("TransferView", () => {
     expect(screen.getByText("6 (onChainCall)")).toBeInTheDocument();
     expect(screen.getByText("0xa9059cbb")).toBeInTheDocument();
     expect(screen.getByText("0 wei")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Submit will be enabled in P4-8c" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Submit" })).toBeEnabled();
+  });
+
+  it("submits ERC-20 frozen draft values through the Rust command and requires rebuild after edits", async () => {
+    const onSubmitted = vi.fn();
+    vi.mocked(submitErc20Transfer).mockResolvedValue({
+      schema_version: 2,
+      intent: {} as never,
+      intent_snapshot: { source: "test", captured_at: null },
+      submission: {} as never,
+      outcome: { state: "Pending", tx_hash: "0xerc20", receipt: null, finalized_at: null, reconciled_at: null, reconcile_summary: null, error_summary: null, dropped_review_history: [] },
+      nonce_thread: {} as never,
+    });
+    provider.estimateGas.mockResolvedValueOnce(65_000n);
+    renderTransfer(onSubmitted);
+
+    fireEvent.click(screen.getByRole("button", { name: "ERC-20" }));
+    fireEvent.change(screen.getByLabelText("Token contract"), {
+      target: { value: "0x3333333333333333333333333333333333333333" },
+    });
+    fireEvent.change(screen.getByLabelText("Recipient"), {
+      target: { value: "0x2222222222222222222222222222222222222222" },
+    });
+    fireEvent.change(screen.getByLabelText("Amount"), { target: { value: "1.5" } });
+    fireEvent.click(screen.getByRole("button", { name: "Build Draft" }));
+
+    await waitFor(() => expect(screen.getByText("Confirm ERC-20 Transfer")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "Submit" }));
+
+    await waitFor(() => expect(submitErc20Transfer).toHaveBeenCalledTimes(1));
+    expect(submitErc20Transfer).toHaveBeenCalledWith(
+      expect.objectContaining({
+        rpc_url: "http://127.0.0.1:8545",
+        account_index: 1,
+        chain_id: 1,
+        from: "0x1111111111111111111111111111111111111111",
+        token_contract: "0x3333333333333333333333333333333333333333",
+        recipient: "0x2222222222222222222222222222222222222222",
+        amount_raw: "1500000",
+        decimals: 6,
+        token_metadata_source: "onChainCall",
+        nonce: 7,
+        gas_limit: "65000",
+        max_fee_per_gas: "41500000000",
+        max_priority_fee_per_gas: "1500000000",
+        selector: "0xa9059cbb",
+        method: "transfer(address,uint256)",
+        native_value_wei: "0",
+        frozen_key: expect.stringContaining("amountRaw=1500000"),
+      }),
+    );
+    expect(onSubmitted).toHaveBeenCalled();
+
+    fireEvent.change(screen.getByLabelText("Amount"), { target: { value: "2.0" } });
+    expect(screen.queryByText("Confirm ERC-20 Transfer")).not.toBeInTheDocument();
   });
 
   it("shows ERC-20 metadata failures as visible draft errors", async () => {
