@@ -7,7 +7,11 @@ export interface TransferDraftInput {
   valueWei: bigint;
   nonce: number;
   gasLimit: bigint;
+  latestBaseFeePerGas: bigint | null;
+  baseFeePerGas: bigint;
+  baseFeeMultiplier: string;
   maxFeePerGas: bigint;
+  maxFeeOverridePerGas: bigint | null;
   maxPriorityFeePerGas: bigint;
   liveMaxFeePerGas: bigint;
   liveMaxPriorityFeePerGas: bigint;
@@ -23,6 +27,10 @@ export interface TransferDraft {
 
 export function createTransferDraft(input: TransferDraftInput): TransferDraft {
   const highFee = input.maxFeePerGas > input.liveMaxFeePerGas * 3n;
+  const highBaseFee =
+    input.latestBaseFeePerGas !== null &&
+    input.latestBaseFeePerGas > 0n &&
+    input.baseFeePerGas > input.latestBaseFeePerGas * 3n;
   const highTip =
     input.liveMaxPriorityFeePerGas > 0n &&
     input.maxPriorityFeePerGas > input.liveMaxPriorityFeePerGas * 3n;
@@ -36,11 +44,15 @@ export function createTransferDraft(input: TransferDraftInput): TransferDraft {
       input.valueWei.toString(),
       input.nonce.toString(),
       input.gasLimit.toString(),
+      input.latestBaseFeePerGas?.toString() ?? "unavailable",
+      input.baseFeePerGas.toString(),
+      input.baseFeeMultiplier,
       input.maxFeePerGas.toString(),
+      input.maxFeeOverridePerGas?.toString() ?? "auto",
       input.maxPriorityFeePerGas.toString(),
     ].join(":"),
-    feeRisk: highFee || highTip || highGasLimit ? "high" : "normal",
-    requiresSecondConfirmation: highFee || highTip || highGasLimit,
+    feeRisk: highFee || highBaseFee || highTip || highGasLimit ? "high" : "normal",
+    requiresSecondConfirmation: highFee || highBaseFee || highTip || highGasLimit,
     submission: input,
   };
 }

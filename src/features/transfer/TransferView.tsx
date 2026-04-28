@@ -45,6 +45,21 @@ function toWeiFromGwei(value: string) {
   return parseUnits(value.trim() || "0", "gwei");
 }
 
+function parseMultiplier(value: string) {
+  const trimmed = value.trim();
+  if (!/^\d+(?:\.\d+)?$/.test(trimmed)) {
+    throw new Error("Base fee multiplier must be a non-negative decimal.");
+  }
+  const [whole, fraction = ""] = trimmed.split(".");
+  const denominator = 10n ** BigInt(fraction.length);
+  const numerator = BigInt(`${whole}${fraction}` || "0");
+  return { numerator, denominator, text: trimmed };
+}
+
+function ceilMultiply(value: bigint, numerator: bigint, denominator: bigint) {
+  return (value * numerator + denominator - 1n) / denominator;
+}
+
 function ConfirmationRow({ label, value }: { label: string; value: ReactNode }) {
   return (
     <>
@@ -70,7 +85,10 @@ export function TransferView({
   const [amountEth, setAmountEth] = useState("");
   const [nonce, setNonce] = useState("");
   const [gasLimit, setGasLimit] = useState("21000");
-  const [maxFeeGwei, setMaxFeeGwei] = useState("");
+  const [baseFeeGwei, setBaseFeeGwei] = useState("");
+  const [baseFeeIsManual, setBaseFeeIsManual] = useState(false);
+  const [baseFeeMultiplier, setBaseFeeMultiplier] = useState("2");
+  const [maxFeeOverrideGwei, setMaxFeeOverrideGwei] = useState("");
   const [priorityFeeGwei, setPriorityFeeGwei] = useState("");
   const [draft, setDraft] = useState<TransferDraft | null>(initialDraft);
   const [secondConfirm, setSecondConfirm] = useState(false);
@@ -112,6 +130,11 @@ export function TransferView({
     setSecondConfirm(false);
   }
 
+  function resetBaseFeeReference() {
+    setBaseFeeGwei("");
+    setBaseFeeIsManual(false);
+  }
+
   useEffect(() => {
     if (!selectedIndex && accounts.length > 0) {
       setSelectedIndex(accounts[0].index.toString());
@@ -119,6 +142,7 @@ export function TransferView({
   }, [accounts, selectedIndex]);
 
   useEffect(() => {
+    resetBaseFeeReference();
     clearDraft();
   }, [selectedIndex, chainId, rpcUrl]);
 
@@ -143,6 +167,8 @@ export function TransferView({
       const valueWei = parseEther(amountEth.trim() || "0");
       if (valueWei <= 0n) throw new Error("Amount must be greater than zero.");
       const feeData = await provider.getFeeData();
+      const latestBlock = await provider.getBlock("latest");
+      const latestBaseFeePerGas = latestBlock?.baseFeePerGas ?? null;
       const liveMaxFeePerGas = feeData.maxFeePerGas ?? feeData.gasPrice ?? 0n;
       const livePriorityFee = feeData.maxPriorityFeePerGas ?? 1_500_000_000n;
       const onChainNonce = await provider.getTransactionCount(selectedAccount.address, "pending");
@@ -168,14 +194,34 @@ export function TransferView({
             selectedAccount.address,
           );
       const nextGasLimit = gasLimit.trim() ? BigInt(gasLimit) : estimatedGasLimit;
-      const nextMaxFee = maxFeeGwei.trim() ? toWeiFromGwei(maxFeeGwei) : liveMaxFeePerGas;
       const nextPriorityFee = priorityFeeGwei.trim()
         ? toWeiFromGwei(priorityFeeGwei)
         : livePriorityFee;
+      let nextBaseFee: bigint;
+      if (baseFeeIsManual) {
+        nextBaseFee = toWeiFromGwei(baseFeeGwei);
+      } else {
+        if (latestBaseFeePerGas === null) {
+          throw new Error(
+            "Latest block did not provide baseFeePerGas. Enter a Base fee (gwei) manually before building the draft.",
+          );
+        }
+        nextBaseFee = latestBaseFeePerGas;
+      }
+      const multiplier = parseMultiplier(baseFeeMultiplier || "2");
+      const automaticMaxFee =
+        ceilMultiply(nextBaseFee, multiplier.numerator, multiplier.denominator) + nextPriorityFee;
+      const maxFeeOverride = maxFeeOverrideGwei.trim()
+        ? toWeiFromGwei(maxFeeOverrideGwei)
+        : null;
+      const nextMaxFee = maxFeeOverride ?? automaticMaxFee;
 
       setNonce(nextNonce.toString());
       setGasLimit(nextGasLimit.toString());
-      setMaxFeeGwei(formatGwei(nextMaxFee));
+      if (!baseFeeIsManual) {
+        setBaseFeeGwei(formatGwei(nextBaseFee));
+      }
+      setBaseFeeMultiplier(multiplier.text);
       setPriorityFeeGwei(formatGwei(nextPriorityFee));
       setDraft(
         createTransferDraft({
@@ -185,7 +231,11 @@ export function TransferView({
           valueWei,
           nonce: nextNonce,
           gasLimit: nextGasLimit,
+          latestBaseFeePerGas,
+          baseFeePerGas: nextBaseFee,
+          baseFeeMultiplier: multiplier.text,
           maxFeePerGas: nextMaxFee,
+          maxFeeOverridePerGas: maxFeeOverride,
           maxPriorityFeePerGas: nextPriorityFee,
           liveMaxFeePerGas,
           liveMaxPriorityFeePerGas: livePriorityFee,
@@ -311,16 +361,31 @@ export function TransferView({
       </div>
       <div className="field-row">
         <label>
-          Max fee (gwei)
+          Base fee (gwei)
           <input
             inputMode="decimal"
             onChange={(event) => {
-              setMaxFeeGwei(event.target.value);
+              const nextValue = event.target.value;
+              setBaseFeeGwei(nextValue);
+              setBaseFeeIsManual(nextValue.trim() !== "");
               clearDraft();
             }}
-            value={maxFeeGwei}
+            value={baseFeeGwei}
           />
         </label>
+        <label>
+          Base fee multiplier
+          <input
+            inputMode="decimal"
+            onChange={(event) => {
+              setBaseFeeMultiplier(event.target.value);
+              clearDraft();
+            }}
+            value={baseFeeMultiplier}
+          />
+        </label>
+      </div>
+      <div className="field-row">
         <label>
           Priority fee (gwei)
           <input
@@ -330,6 +395,17 @@ export function TransferView({
               clearDraft();
             }}
             value={priorityFeeGwei}
+          />
+        </label>
+        <label>
+          Max fee override (gwei)
+          <input
+            inputMode="decimal"
+            onChange={(event) => {
+              setMaxFeeOverrideGwei(event.target.value);
+              clearDraft();
+            }}
+            value={maxFeeOverrideGwei}
           />
         </label>
       </div>
@@ -358,7 +434,8 @@ export function TransferView({
           </header>
           {draft.feeRisk === "high" && (
             <div className="inline-warning" role="alert">
-              Gas settings are far above the live network reference. Review total cost before signing.
+              Fee or gas settings are far above the live network reference. Review total cost before
+              signing.
             </div>
           )}
           <div className="confirmation-grid">
@@ -371,6 +448,22 @@ export function TransferView({
             />
             <ConfirmationRow label="Nonce" value={draft.submission.nonce.toString()} />
             <ConfirmationRow label="Gas limit" value={draft.submission.gasLimit.toString()} />
+            <ConfirmationRow
+              label="Latest base fee reference"
+              value={
+                draft.submission.latestBaseFeePerGas === null
+                  ? "Unavailable"
+                  : `${formatGwei(draft.submission.latestBaseFeePerGas)} gwei`
+              }
+            />
+            <ConfirmationRow
+              label="Base fee used"
+              value={`${formatGwei(draft.submission.baseFeePerGas)} gwei`}
+            />
+            <ConfirmationRow
+              label="Base fee multiplier"
+              value={draft.submission.baseFeeMultiplier}
+            />
             <ConfirmationRow
               label="Max fee"
               value={`${formatGwei(draft.submission.maxFeePerGas)} gwei`}
