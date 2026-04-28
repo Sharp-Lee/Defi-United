@@ -11,11 +11,15 @@ pub fn run() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
             commands::abi_registry::delete_abi_cache_entry,
+            commands::abi_registry::fetch_explorer_abi,
+            commands::abi_registry::import_abi_payload,
             commands::abi_registry::load_abi_registry_state,
             commands::abi_registry::mark_abi_cache_stale,
+            commands::abi_registry::paste_abi_payload,
             commands::abi_registry::remove_abi_data_source_config,
             commands::abi_registry::upsert_abi_cache_entry,
             commands::abi_registry::upsert_abi_data_source_config,
+            commands::abi_registry::validate_abi_payload,
             commands::accounts::derive_account,
             commands::accounts::load_accounts,
             commands::accounts::save_account_sync_error,

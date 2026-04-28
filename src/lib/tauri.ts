@@ -223,6 +223,51 @@ export interface AbiCacheEntryIdentityInput {
   versionId: string;
 }
 
+export interface ValidateAbiPayloadInput {
+  payload: string;
+}
+
+export interface UserAbiPayloadInput {
+  chainId: number;
+  contractAddress: string;
+  payload: string;
+  userSourceId?: string | null;
+}
+
+export interface FetchExplorerAbiInput {
+  chainId: number;
+  contractAddress: string;
+  providerConfigId?: string | null;
+}
+
+export interface AbiProviderDiagnosticsRecord {
+  providerKind?: AbiProviderKind | null;
+  chainId?: number | null;
+  providerConfigId?: string | null;
+  host?: string | null;
+  configSummary?: string | null;
+  failureClass?: string | null;
+  rateLimitHint?: string | null;
+}
+
+export interface AbiPayloadValidationReadModel {
+  fetchSourceStatus: AbiFetchSourceStatus;
+  validationStatus: AbiValidationStatus;
+  abiHash?: string | null;
+  sourceFingerprint?: string | null;
+  functionCount: number;
+  eventCount: number;
+  errorCount: number;
+  selectorSummary: AbiSelectorSummaryRecord;
+  diagnostics: AbiProviderDiagnosticsRecord;
+}
+
+export interface AbiRegistryMutationResult {
+  state: AbiRegistryState;
+  validation: AbiPayloadValidationReadModel;
+  cacheEntry?: AbiCacheEntryRecord | null;
+}
+
 export type UserMetadataSource = "userConfirmed";
 export type RawMetadataSource = "onChainCall";
 export type RawMetadataStatus =
@@ -662,6 +707,22 @@ export function markAbiCacheStale(input: AbiCacheEntryIdentityInput) {
 
 export function deleteAbiCacheEntry(input: AbiCacheEntryIdentityInput) {
   return invoke<AbiRegistryState>("delete_abi_cache_entry", { input });
+}
+
+export function validateAbiPayload(input: ValidateAbiPayloadInput) {
+  return invoke<AbiPayloadValidationReadModel>("validate_abi_payload", { input });
+}
+
+export function importAbiPayload(input: UserAbiPayloadInput) {
+  return invoke<AbiRegistryMutationResult>("import_abi_payload", { input });
+}
+
+export function pasteAbiPayload(input: UserAbiPayloadInput) {
+  return invoke<AbiRegistryMutationResult>("paste_abi_payload", { input });
+}
+
+export function fetchExplorerAbi(input: FetchExplorerAbiInput) {
+  return invoke<AbiRegistryMutationResult>("fetch_explorer_abi", { input });
 }
 
 export function loadTokenWatchlistState() {

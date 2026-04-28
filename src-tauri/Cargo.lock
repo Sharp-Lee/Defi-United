@@ -6789,6 +6789,7 @@ dependencies = [
  "ethers",
  "libc",
  "rand 0.8.6",
+ "reqwest 0.11.27",
  "secrecy",
  "serde",
  "serde_json",

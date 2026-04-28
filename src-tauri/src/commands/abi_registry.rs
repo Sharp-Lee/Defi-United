@@ -1,18 +1,24 @@
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::io::ErrorKind;
+use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::{Mutex, OnceLock};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use ethers::types::Address;
-use ethers::utils::to_checksum;
+use ethers::utils::{keccak256, to_checksum};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::diagnostics::sanitize_diagnostic_message;
-use crate::storage::{abi_registry_path, write_file_atomic};
+use crate::storage::{abi_registry_path, ensure_app_dir, write_file_atomic};
 
 const ABI_REGISTRY_SCHEMA_VERSION: u8 = 1;
+pub const ABI_PAYLOAD_SIZE_LIMIT_BYTES: usize = 1_048_576;
+const EXPLORER_ABI_REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
+const EXPLORER_ABI_RESPONSE_SIZE_LIMIT_BYTES: usize = ABI_PAYLOAD_SIZE_LIMIT_BYTES;
+const STALE_FETCH_PROVIDER_CONFIG_ERROR: &str = "fetchProviderConfigChanged";
 const INVALID_ABI_REGISTRY_STATE_ERROR: &str =
     "abi-registry.json contains invalid ABI registry state; fix or remove it before loading ABI registry";
 
@@ -327,6 +333,69 @@ pub struct AbiCacheEntryIdentityInput {
     pub version_id: String,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ValidateAbiPayloadInput {
+    pub payload: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UserAbiPayloadInput {
+    #[serde(alias = "chain_id")]
+    pub chain_id: u64,
+    #[serde(alias = "contract_address")]
+    pub contract_address: String,
+    pub payload: String,
+    #[serde(default, alias = "user_source_id")]
+    pub user_source_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FetchExplorerAbiInput {
+    #[serde(alias = "chain_id")]
+    pub chain_id: u64,
+    #[serde(alias = "contract_address")]
+    pub contract_address: String,
+    #[serde(default, alias = "provider_config_id")]
+    pub provider_config_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct AbiProviderDiagnosticsRecord {
+    pub provider_kind: Option<String>,
+    pub chain_id: Option<u64>,
+    pub provider_config_id: Option<String>,
+    pub host: Option<String>,
+    pub config_summary: Option<String>,
+    pub failure_class: Option<String>,
+    pub rate_limit_hint: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AbiPayloadValidationReadModel {
+    pub fetch_source_status: String,
+    pub validation_status: String,
+    pub abi_hash: Option<String>,
+    pub source_fingerprint: Option<String>,
+    pub function_count: u32,
+    pub event_count: u32,
+    pub error_count: u32,
+    pub selector_summary: AbiSelectorSummaryRecord,
+    pub diagnostics: AbiProviderDiagnosticsRecord,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AbiRegistryMutationResult {
+    pub state: AbiRegistryState,
+    pub validation: AbiPayloadValidationReadModel,
+    pub cache_entry: Option<AbiCacheEntryRecord>,
+}
+
 #[tauri::command]
 pub fn load_abi_registry_state() -> Result<AbiRegistryState, String> {
     read_abi_registry_state().map(into_read_state)
@@ -542,6 +611,168 @@ pub fn delete_abi_cache_entry(
     Ok(into_read_state(state))
 }
 
+#[tauri::command]
+pub fn validate_abi_payload(
+    input: ValidateAbiPayloadInput,
+) -> Result<AbiPayloadValidationReadModel, String> {
+    Ok(validate_abi_payload_read_model(&input.payload, None))
+}
+
+#[tauri::command]
+pub fn import_abi_payload(input: UserAbiPayloadInput) -> Result<AbiRegistryMutationResult, String> {
+    persist_user_abi_payload(input, "userImported")
+}
+
+#[tauri::command]
+pub fn paste_abi_payload(input: UserAbiPayloadInput) -> Result<AbiRegistryMutationResult, String> {
+    persist_user_abi_payload(input, "userPasted")
+}
+
+#[tauri::command]
+pub async fn fetch_explorer_abi(
+    input: FetchExplorerAbiInput,
+) -> Result<AbiRegistryMutationResult, String> {
+    let chain_id = normalize_chain_id(input.chain_id)?;
+    let contract_address = normalize_evm_address(&input.contract_address, "contract address")?;
+    let provider_config_id = input.provider_config_id.and_then(non_empty_string);
+
+    let provider = {
+        let _guard = abi_registry_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let state = read_abi_registry_state_for_update()?;
+        select_fetch_provider(&state, chain_id, provider_config_id.as_deref())
+    };
+
+    let provider = match provider {
+        Ok(provider) => provider,
+        Err((status, diagnostics)) => {
+            let state = load_abi_registry_state()?;
+            return Ok(AbiRegistryMutationResult {
+                state,
+                validation: failure_validation(status, "notValidated", diagnostics, None),
+                cache_entry: None,
+            });
+        }
+    };
+
+    let provider_config_fingerprint = fetch_provider_config_fingerprint(&provider);
+
+    if provider.provider_kind == "localOnly" {
+        let diagnostics = provider_diagnostics(&provider, Some("unsupportedProvider"), None);
+        if !update_fetch_provider_failure(
+            &provider.id,
+            &provider_config_fingerprint,
+            "unsupportedChain",
+            false,
+            None,
+        )? {
+            return stale_fetch_provider_config_result(&provider);
+        }
+        let state = load_abi_registry_state()?;
+        return Ok(AbiRegistryMutationResult {
+            state,
+            validation: failure_validation("unsupportedChain", "notValidated", diagnostics, None),
+            cache_entry: None,
+        });
+    }
+
+    let api_key = match resolve_api_key_ref(provider.api_key_ref.as_deref()) {
+        Ok(api_key) => api_key,
+        Err(failure_class) => {
+            let diagnostics = provider_diagnostics(&provider, Some(failure_class), None);
+            if !update_fetch_provider_failure(
+                &provider.id,
+                &provider_config_fingerprint,
+                "fetchFailed",
+                false,
+                None,
+            )? {
+                return stale_fetch_provider_config_result(&provider);
+            }
+            let state = load_abi_registry_state()?;
+            return Ok(AbiRegistryMutationResult {
+                state,
+                validation: failure_validation("fetchFailed", "notValidated", diagnostics, None),
+                cache_entry: None,
+            });
+        }
+    };
+
+    let response =
+        fetch_explorer_abi_response(&provider, &contract_address, api_key.as_deref()).await;
+    let response = match response {
+        Ok(response) => response,
+        Err(fetch_error) => {
+            let rate_limited = fetch_error.status == "rateLimited";
+            if !update_fetch_provider_failure(
+                &provider.id,
+                &provider_config_fingerprint,
+                &fetch_error.status,
+                rate_limited,
+                fetch_error.rate_limit_hint.clone(),
+            )? {
+                return stale_fetch_provider_config_result(&provider);
+            }
+            let diagnostics = provider_diagnostics(
+                &provider,
+                Some(&fetch_error.failure_class),
+                fetch_error.rate_limit_hint.as_deref(),
+            );
+            let state = load_abi_registry_state()?;
+            return Ok(AbiRegistryMutationResult {
+                state,
+                validation: failure_validation(
+                    &fetch_error.status,
+                    fetch_error.validation_status(),
+                    diagnostics,
+                    None,
+                ),
+                cache_entry: None,
+            });
+        }
+    };
+
+    let diagnostics = provider_diagnostics(&provider, None, None);
+    let validation = validate_abi_payload_read_model(&response.payload, Some(diagnostics));
+    if validation.validation_status != "ok" && validation.validation_status != "selectorConflict" {
+        if !update_fetch_provider_failure(
+            &provider.id,
+            &provider_config_fingerprint,
+            "malformedResponse",
+            false,
+            None,
+        )? {
+            return stale_fetch_provider_config_result(&provider);
+        }
+        let state = load_abi_registry_state()?;
+        return Ok(AbiRegistryMutationResult {
+            state,
+            validation: AbiPayloadValidationReadModel {
+                fetch_source_status: "malformedResponse".to_string(),
+                ..validation
+            },
+            cache_entry: None,
+        });
+    }
+
+    let validated = validate_abi_payload_internal(&response.payload)
+        .map_err(|_| "validated explorer ABI could not be re-read".to_string())?;
+    let mut result = persist_validated_abi(
+        chain_id,
+        &contract_address,
+        "explorerFetched",
+        Some(provider.id.clone()),
+        None,
+        validated,
+        Some("ok"),
+        Some(provider_diagnostics(&provider, None, None)),
+        Some(&provider_config_fingerprint),
+    )?;
+    result.state = load_abi_registry_state()?;
+    Ok(result)
+}
+
 fn read_abi_registry_state() -> Result<StoredAbiRegistryState, String> {
     let path = abi_registry_path()?;
     match fs::read_to_string(&path) {
@@ -564,6 +795,1170 @@ fn read_abi_registry_state_for_update() -> Result<StoredAbiRegistryState, String
 fn write_abi_registry_state(state: &StoredAbiRegistryState) -> Result<(), String> {
     let raw = serde_json::to_string_pretty(state).map_err(|e| e.to_string())?;
     write_file_atomic(&abi_registry_path()?, &raw)
+}
+
+fn persist_user_abi_payload(
+    input: UserAbiPayloadInput,
+    source_kind: &str,
+) -> Result<AbiRegistryMutationResult, String> {
+    let chain_id = normalize_chain_id(input.chain_id)?;
+    let contract_address = normalize_evm_address(&input.contract_address, "contract address")?;
+    let user_source_id = input
+        .user_source_id
+        .and_then(sanitize_user_source_id)
+        .unwrap_or_else(|| match source_kind {
+            "userImported" => "user-imported".to_string(),
+            _ => "user-pasted".to_string(),
+        });
+
+    let validation = validate_abi_payload_read_model(&input.payload, None);
+    if validation.validation_status != "ok" && validation.validation_status != "selectorConflict" {
+        let state = load_abi_registry_state()?;
+        return Ok(AbiRegistryMutationResult {
+            state,
+            validation,
+            cache_entry: None,
+        });
+    }
+
+    let validated = validate_abi_payload_internal(&input.payload)
+        .map_err(|_| "validated ABI payload could not be re-read".to_string())?;
+    persist_validated_abi(
+        chain_id,
+        &contract_address,
+        source_kind,
+        None,
+        Some(user_source_id),
+        validated,
+        Some("ok"),
+        None,
+        None,
+    )
+}
+
+fn validate_abi_payload_read_model(
+    payload: &str,
+    diagnostics: Option<AbiProviderDiagnosticsRecord>,
+) -> AbiPayloadValidationReadModel {
+    let diagnostics = diagnostics.unwrap_or_default();
+    match validate_abi_payload_internal(payload) {
+        Ok(validated) => validation_read_model_from_validated("ok", validated, diagnostics),
+        Err(error) => failure_validation(
+            "ok",
+            error.validation_status,
+            diagnostics,
+            Some(error.summary),
+        ),
+    }
+}
+
+fn validation_read_model_from_validated(
+    fetch_source_status: &str,
+    validated: ValidatedAbiPayload,
+    diagnostics: AbiProviderDiagnosticsRecord,
+) -> AbiPayloadValidationReadModel {
+    AbiPayloadValidationReadModel {
+        fetch_source_status: fetch_source_status.to_string(),
+        validation_status: validated.validation_status,
+        abi_hash: Some(validated.abi_hash),
+        source_fingerprint: None,
+        function_count: validated.function_count,
+        event_count: validated.event_count,
+        error_count: validated.error_count,
+        selector_summary: validated.selector_summary,
+        diagnostics,
+    }
+}
+
+fn failure_validation(
+    fetch_source_status: &str,
+    validation_status: &str,
+    diagnostics: AbiProviderDiagnosticsRecord,
+    selector_summary: Option<AbiSelectorSummaryRecord>,
+) -> AbiPayloadValidationReadModel {
+    AbiPayloadValidationReadModel {
+        fetch_source_status: fetch_source_status.to_string(),
+        validation_status: validation_status.to_string(),
+        abi_hash: None,
+        source_fingerprint: None,
+        function_count: 0,
+        event_count: 0,
+        error_count: 0,
+        selector_summary: selector_summary.unwrap_or_else(empty_selector_summary),
+        diagnostics,
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ValidationFailure {
+    validation_status: &'static str,
+    summary: AbiSelectorSummaryRecord,
+}
+
+#[derive(Debug, Clone)]
+struct ValidatedAbiPayload {
+    canonical_abi: String,
+    abi_hash: String,
+    validation_status: String,
+    function_count: u32,
+    event_count: u32,
+    error_count: u32,
+    selector_summary: AbiSelectorSummaryRecord,
+}
+
+fn validate_abi_payload_internal(payload: &str) -> Result<ValidatedAbiPayload, ValidationFailure> {
+    if payload.as_bytes().len() > ABI_PAYLOAD_SIZE_LIMIT_BYTES {
+        return Err(validation_failure(
+            "payloadTooLarge",
+            "ABI payload exceeds size limit",
+        ));
+    }
+
+    let parsed = serde_json::from_str::<Value>(payload)
+        .map_err(|_| validation_failure("parseFailed", "ABI payload is not valid JSON"))?;
+    let abi = extract_abi_array(parsed)?;
+    if abi.is_empty() {
+        return Err(validation_failure("emptyAbiItems", "ABI array is empty"));
+    }
+
+    let mut signatures = Vec::new();
+    let mut function_count = 0u32;
+    let mut event_count = 0u32;
+    let mut error_count = 0u32;
+    let mut saw_callable_item = false;
+
+    for item in &abi {
+        let Value::Object(object) = item else {
+            return Err(validation_failure(
+                "malformedAbi",
+                "ABI item must be an object",
+            ));
+        };
+        let item_type = object
+            .get("type")
+            .and_then(Value::as_str)
+            .ok_or_else(|| validation_failure("malformedAbi", "ABI item is missing type"))?;
+        match item_type {
+            "function" | "event" | "error" => {
+                saw_callable_item = true;
+                let name = object
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .filter(|value| is_valid_abi_name(value))
+                    .ok_or_else(|| {
+                        validation_failure("malformedAbi", "ABI item is missing a valid name")
+                    })?;
+                let inputs = canonical_param_list(object.get("inputs"))?;
+                if item_type == "function" {
+                    let _ = canonical_param_list(object.get("outputs"))?;
+                    function_count += 1;
+                } else if item_type == "event" {
+                    event_count += 1;
+                } else {
+                    error_count += 1;
+                }
+                signatures.push(AbiSignature {
+                    kind: item_type.to_string(),
+                    selector_key: selector_key(item_type, &format!("{name}({})", inputs.join(","))),
+                    signature: format!("{name}({})", inputs.join(",")),
+                });
+            }
+            "constructor" | "fallback" | "receive" => {
+                let _ = canonical_param_list(object.get("inputs"))?;
+                let _ = canonical_param_list(object.get("outputs"))?;
+            }
+            _ => {
+                return Err(validation_failure(
+                    "malformedAbi",
+                    "ABI item has unsupported type",
+                ));
+            }
+        }
+    }
+
+    if !saw_callable_item {
+        return Err(validation_failure(
+            "emptyAbiItems",
+            "ABI has no function, event, or error items",
+        ));
+    }
+
+    let selector_summary = selector_summary(&signatures);
+    let validation_status = if selector_summary.conflict_count.unwrap_or(0) > 0
+        || selector_summary.duplicate_selector_count.unwrap_or(0) > 0
+    {
+        "selectorConflict"
+    } else {
+        "ok"
+    }
+    .to_string();
+    let canonical_abi = canonical_json(&Value::Array(abi));
+    let abi_hash = hash_text(&canonical_abi);
+
+    Ok(ValidatedAbiPayload {
+        canonical_abi,
+        abi_hash,
+        validation_status,
+        function_count,
+        event_count,
+        error_count,
+        selector_summary,
+    })
+}
+
+fn extract_abi_array(value: Value) -> Result<Vec<Value>, ValidationFailure> {
+    match value {
+        Value::Array(items) => Ok(items),
+        Value::String(raw_abi) => {
+            if raw_abi.as_bytes().len() > ABI_PAYLOAD_SIZE_LIMIT_BYTES {
+                return Err(validation_failure(
+                    "payloadTooLarge",
+                    "ABI payload exceeds size limit",
+                ));
+            }
+            match serde_json::from_str::<Value>(&raw_abi) {
+                Ok(Value::Array(items)) => Ok(items),
+                Ok(_) => Err(validation_failure(
+                    "malformedAbi",
+                    "ABI JSON must be an array",
+                )),
+                Err(_) => Err(validation_failure(
+                    "parseFailed",
+                    "Explorer ABI string is not valid JSON",
+                )),
+            }
+        }
+        Value::Object(mut object) => {
+            let Some(result) = object.remove("result") else {
+                return Err(validation_failure(
+                    "malformedAbi",
+                    "Explorer response is missing result",
+                ));
+            };
+            extract_abi_array(result)
+        }
+        _ => Err(validation_failure(
+            "malformedAbi",
+            "ABI JSON must be an array",
+        )),
+    }
+}
+
+fn validation_failure(status: &'static str, note: &str) -> ValidationFailure {
+    ValidationFailure {
+        validation_status: status,
+        summary: AbiSelectorSummaryRecord {
+            notes: Some(sanitize_diagnostic_message(note)),
+            ..empty_selector_summary()
+        },
+    }
+}
+
+fn empty_selector_summary() -> AbiSelectorSummaryRecord {
+    AbiSelectorSummaryRecord {
+        function_selector_count: Some(0),
+        event_topic_count: Some(0),
+        error_selector_count: Some(0),
+        duplicate_selector_count: Some(0),
+        conflict_count: Some(0),
+        notes: None,
+    }
+}
+
+#[derive(Debug, Clone)]
+struct AbiSignature {
+    kind: String,
+    selector_key: String,
+    signature: String,
+}
+
+fn canonical_param_list(value: Option<&Value>) -> Result<Vec<String>, ValidationFailure> {
+    let Some(value) = value else {
+        return Ok(Vec::new());
+    };
+    let Value::Array(items) = value else {
+        return Err(validation_failure(
+            "malformedAbi",
+            "ABI inputs or outputs must be arrays",
+        ));
+    };
+    items.iter().map(canonical_param_type).collect()
+}
+
+fn canonical_param_type(value: &Value) -> Result<String, ValidationFailure> {
+    let Value::Object(object) = value else {
+        return Err(validation_failure(
+            "malformedAbi",
+            "ABI parameter must be an object",
+        ));
+    };
+    let raw_type = object
+        .get("type")
+        .and_then(Value::as_str)
+        .ok_or_else(|| validation_failure("malformedAbi", "ABI parameter is missing type"))?;
+    if !is_valid_abi_type(raw_type) {
+        return Err(validation_failure(
+            "malformedAbi",
+            "ABI parameter has malformed type",
+        ));
+    }
+
+    if let Some(tuple_suffix) = raw_type.strip_prefix("tuple") {
+        if !is_valid_array_suffix(tuple_suffix) {
+            return Err(validation_failure(
+                "malformedAbi",
+                "ABI tuple has malformed array suffix",
+            ));
+        }
+        let components = object.get("components").ok_or_else(|| {
+            validation_failure("malformedAbi", "ABI tuple parameter is missing components")
+        })?;
+        let Value::Array(component_items) = components else {
+            return Err(validation_failure(
+                "malformedAbi",
+                "ABI tuple components must be an array",
+            ));
+        };
+        if component_items.is_empty() {
+            return Err(validation_failure(
+                "malformedAbi",
+                "ABI tuple components cannot be empty",
+            ));
+        }
+        let component_types = component_items
+            .iter()
+            .map(canonical_param_type)
+            .collect::<Result<Vec<_>, _>>()?;
+        return Ok(format!("({}){tuple_suffix}", component_types.join(",")));
+    }
+
+    if object.contains_key("components") {
+        return Err(validation_failure(
+            "malformedAbi",
+            "ABI non-tuple parameter cannot have components",
+        ));
+    }
+    canonical_scalar_or_array_type(raw_type)
+}
+
+fn canonical_scalar_or_array_type(raw_type: &str) -> Result<String, ValidationFailure> {
+    let suffix_start = array_suffix_start(raw_type).unwrap_or(raw_type.len());
+    let base_type = &raw_type[..suffix_start];
+    let array_suffix = &raw_type[suffix_start..];
+    let canonical_base = match base_type {
+        "uint" => "uint256",
+        "int" => "int256",
+        "fixed" => "fixed128x18",
+        "ufixed" => "ufixed128x18",
+        _ => base_type,
+    };
+    Ok(format!("{canonical_base}{array_suffix}"))
+}
+
+fn is_valid_abi_name(value: &str) -> bool {
+    let mut chars = value.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    (first == '_' || first.is_ascii_alphabetic())
+        && chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
+}
+
+fn is_valid_abi_type(value: &str) -> bool {
+    if value.is_empty()
+        || value.len() > 256
+        || value
+            .chars()
+            .any(|ch| ch.is_whitespace() || matches!(ch, '(' | ')' | ','))
+    {
+        return false;
+    }
+    if let Some(suffix) = value.strip_prefix("tuple") {
+        return is_valid_array_suffix(suffix);
+    }
+
+    let suffix_start = array_suffix_start(value).unwrap_or(value.len());
+    let base_type = &value[..suffix_start];
+    let array_suffix = &value[suffix_start..];
+    !base_type.is_empty()
+        && is_valid_abi_base_type(base_type)
+        && is_valid_array_suffix(array_suffix)
+}
+
+fn array_suffix_start(value: &str) -> Option<usize> {
+    value.find('[')
+}
+
+fn is_valid_abi_base_type(value: &str) -> bool {
+    match value {
+        "address" | "bool" | "string" | "bytes" | "function" | "int" | "uint" | "fixed"
+        | "ufixed" => return true,
+        _ => {}
+    }
+
+    if let Some(bits) = value.strip_prefix("uint") {
+        return is_valid_int_bit_width(bits);
+    }
+    if let Some(bits) = value.strip_prefix("int") {
+        return is_valid_int_bit_width(bits);
+    }
+    if let Some(size) = value.strip_prefix("bytes") {
+        return parse_decimal_u16(size)
+            .map(|size| (1..=32).contains(&size))
+            .unwrap_or(false);
+    }
+    if let Some(size) = value.strip_prefix("fixed") {
+        return is_valid_fixed_size(size);
+    }
+    if let Some(size) = value.strip_prefix("ufixed") {
+        return is_valid_fixed_size(size);
+    }
+    false
+}
+
+fn is_valid_int_bit_width(value: &str) -> bool {
+    parse_decimal_u16(value)
+        .map(|bits| (8..=256).contains(&bits) && bits % 8 == 0)
+        .unwrap_or(false)
+}
+
+fn is_valid_fixed_size(value: &str) -> bool {
+    let Some((bits, scale)) = value.split_once('x') else {
+        return false;
+    };
+    let Some(bits) = parse_decimal_u16(bits) else {
+        return false;
+    };
+    let Some(scale) = parse_decimal_u16(scale) else {
+        return false;
+    };
+    (8..=256).contains(&bits) && bits % 8 == 0 && (1..=80).contains(&scale)
+}
+
+fn parse_decimal_u16(value: &str) -> Option<u16> {
+    if value.is_empty() || !value.chars().all(|ch| ch.is_ascii_digit()) {
+        return None;
+    }
+    value.parse::<u16>().ok()
+}
+
+fn is_valid_array_suffix(value: &str) -> bool {
+    let mut remaining = value;
+    while !remaining.is_empty() {
+        let Some(after_open) = remaining.strip_prefix('[') else {
+            return false;
+        };
+        let Some(close_index) = after_open.find(']') else {
+            return false;
+        };
+        let len = &after_open[..close_index];
+        if !len.chars().all(|ch| ch.is_ascii_digit()) {
+            return false;
+        }
+        if !len.is_empty() && len.parse::<u64>().ok().filter(|len| *len > 0).is_none() {
+            return false;
+        }
+        remaining = &after_open[close_index + 1..];
+    }
+    true
+}
+
+fn selector_key(kind: &str, signature: &str) -> String {
+    let hash = keccak256(signature.as_bytes());
+    match kind {
+        "event" => format!("0x{}", hex_lower(&hash)),
+        _ => format!("0x{}", hex_lower(&hash[..4])),
+    }
+}
+
+fn selector_summary(signatures: &[AbiSignature]) -> AbiSelectorSummaryRecord {
+    let mut function_selectors = HashSet::new();
+    let mut event_topics = HashSet::new();
+    let mut error_selectors = HashSet::new();
+    let mut by_selector: HashMap<(&str, &str), Vec<&str>> = HashMap::new();
+    let mut exact = HashSet::new();
+    let mut duplicate_count = 0u32;
+
+    for signature in signatures {
+        match signature.kind.as_str() {
+            "function" => {
+                function_selectors.insert(signature.selector_key.as_str());
+            }
+            "event" => {
+                event_topics.insert(signature.selector_key.as_str());
+            }
+            "error" => {
+                error_selectors.insert(signature.selector_key.as_str());
+            }
+            _ => {}
+        }
+        if !exact.insert((
+            signature.kind.as_str(),
+            signature.selector_key.as_str(),
+            signature.signature.as_str(),
+        )) {
+            duplicate_count += 1;
+        }
+        by_selector
+            .entry((signature.kind.as_str(), signature.selector_key.as_str()))
+            .or_default()
+            .push(signature.signature.as_str());
+    }
+
+    let conflict_count = by_selector
+        .values()
+        .filter(|items| {
+            let distinct = items.iter().copied().collect::<HashSet<_>>();
+            distinct.len() > 1
+        })
+        .count() as u32;
+
+    let notes = if conflict_count > 0 || duplicate_count > 0 {
+        Some(sanitize_diagnostic_message(&format!(
+            "duplicate selectors: {duplicate_count}; selector conflicts: {conflict_count}"
+        )))
+    } else {
+        None
+    };
+
+    AbiSelectorSummaryRecord {
+        function_selector_count: Some(function_selectors.len() as u32),
+        event_topic_count: Some(event_topics.len() as u32),
+        error_selector_count: Some(error_selectors.len() as u32),
+        duplicate_selector_count: Some(duplicate_count),
+        conflict_count: Some(conflict_count),
+        notes,
+    }
+}
+
+fn canonical_json(value: &Value) -> String {
+    match value {
+        Value::Null => "null".to_string(),
+        Value::Bool(value) => value.to_string(),
+        Value::Number(value) => value.to_string(),
+        Value::String(value) => serde_json::to_string(value).unwrap_or_else(|_| "\"\"".to_string()),
+        Value::Array(items) => {
+            let parts = items.iter().map(canonical_json).collect::<Vec<_>>();
+            format!("[{}]", parts.join(","))
+        }
+        Value::Object(object) => {
+            let sorted = object.iter().collect::<BTreeMap<_, _>>();
+            let parts = sorted
+                .into_iter()
+                .map(|(key, value)| {
+                    format!(
+                        "{}:{}",
+                        serde_json::to_string(key).unwrap_or_else(|_| "\"\"".to_string()),
+                        canonical_json(value)
+                    )
+                })
+                .collect::<Vec<_>>();
+            format!("{{{}}}", parts.join(","))
+        }
+    }
+}
+
+fn hash_text(value: &str) -> String {
+    format!("0x{}", hex_lower(&keccak256(value.as_bytes())))
+}
+
+fn hex_lower(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        output.push(HEX[(byte >> 4) as usize] as char);
+        output.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    output
+}
+
+fn persist_validated_abi(
+    chain_id: u64,
+    contract_address: &str,
+    source_kind: &str,
+    provider_config_id: Option<String>,
+    user_source_id: Option<String>,
+    validated: ValidatedAbiPayload,
+    fetch_source_status: Option<&str>,
+    diagnostics: Option<AbiProviderDiagnosticsRecord>,
+    expected_fetch_provider_fingerprint: Option<&str>,
+) -> Result<AbiRegistryMutationResult, String> {
+    let _guard = abi_registry_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut state = read_abi_registry_state_for_update()?;
+    if let Some(expected_fingerprint) = expected_fetch_provider_fingerprint {
+        let Some(provider_id) = provider_config_id.as_deref() else {
+            return Err("explorer ABI persistence requires providerConfigId".to_string());
+        };
+        if !has_current_fetch_provider_config(&state, provider_id, expected_fingerprint) {
+            return Ok(stale_fetch_provider_config_result_from_state(
+                state,
+                diagnostics.unwrap_or_default(),
+            ));
+        }
+    }
+    write_abi_artifact(&validated.abi_hash, &validated.canonical_abi)?;
+
+    let source_fingerprint = source_fingerprint(
+        chain_id,
+        contract_address,
+        source_kind,
+        provider_config_id.as_deref(),
+        user_source_id.as_deref(),
+        &validated.abi_hash,
+    );
+    let version_id = format!("abi-{}", validated.abi_hash.trim_start_matches("0x"));
+    let attempt_id = format!(
+        "attempt-{}-{}",
+        now_unix_seconds()?,
+        validated
+            .abi_hash
+            .trim_start_matches("0x")
+            .chars()
+            .take(12)
+            .collect::<String>()
+    );
+    let now = now_unix_seconds()?;
+    let logical_source = LogicalSourceRef {
+        chain_id,
+        contract_address,
+        source_kind,
+        provider_config_id: provider_config_id.as_deref(),
+        user_source_id: user_source_id.as_deref(),
+    };
+    supersede_same_logical_source(&mut state, &logical_source, &version_id, &now);
+    let (selected, selection_status) = selection_for_new_entry(&state, &logical_source, &validated);
+
+    let record = AbiCacheEntryRecord {
+        chain_id,
+        contract_address: contract_address.to_string(),
+        source_kind: source_kind.to_string(),
+        provider_config_id,
+        user_source_id,
+        version_id: version_id.clone(),
+        attempt_id,
+        source_fingerprint: source_fingerprint.clone(),
+        abi_hash: validated.abi_hash.clone(),
+        selected,
+        fetch_source_status: fetch_source_status.unwrap_or("ok").to_string(),
+        validation_status: validated.validation_status.clone(),
+        cache_status: "cacheFresh".to_string(),
+        selection_status: selection_status.to_string(),
+        function_count: Some(validated.function_count),
+        event_count: Some(validated.event_count),
+        error_count: Some(validated.error_count),
+        selector_summary: Some(validated.selector_summary.clone()),
+        fetched_at: if source_kind == "explorerFetched" {
+            Some(now.clone())
+        } else {
+            None
+        },
+        imported_at: if source_kind == "explorerFetched" {
+            None
+        } else {
+            Some(now.clone())
+        },
+        last_validated_at: Some(now.clone()),
+        stale_after: None,
+        last_error_summary: None,
+        provider_proxy_hint: None,
+        proxy_detected: false,
+        created_at: now.clone(),
+        updated_at: now,
+    };
+
+    let existing_index = cache_entry_index(
+        &state.cache_entries,
+        chain_id,
+        contract_address,
+        source_kind,
+        record.provider_config_id.as_deref(),
+        record.user_source_id.as_deref(),
+        &version_id,
+    );
+    upsert_by_index(&mut state.cache_entries, existing_index, record.clone());
+    if expected_fetch_provider_fingerprint.is_some() {
+        if let Some(provider_id) = record.provider_config_id.as_deref() {
+            update_fetch_provider_success_in_state(&mut state, provider_id)?;
+        }
+    }
+    sort_state(&mut state);
+    write_abi_registry_state(&state)?;
+
+    let mut validation =
+        validation_read_model_from_validated("ok", validated, diagnostics.unwrap_or_default());
+    validation.source_fingerprint = Some(source_fingerprint);
+    Ok(AbiRegistryMutationResult {
+        state: into_read_state(state),
+        validation,
+        cache_entry: Some(record),
+    })
+}
+
+fn write_abi_artifact(abi_hash: &str, canonical_abi: &str) -> Result<PathBuf, String> {
+    let dir = ensure_app_dir()?.join("abi-artifacts");
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let filename = format!("{}.json", abi_hash.trim_start_matches("0x"));
+    let path = dir.join(filename);
+    write_file_atomic(&path, canonical_abi)?;
+    Ok(path)
+}
+
+struct LogicalSourceRef<'a> {
+    chain_id: u64,
+    contract_address: &'a str,
+    source_kind: &'a str,
+    provider_config_id: Option<&'a str>,
+    user_source_id: Option<&'a str>,
+}
+
+fn supersede_same_logical_source(
+    state: &mut StoredAbiRegistryState,
+    source: &LogicalSourceRef<'_>,
+    new_version_id: &str,
+    now: &str,
+) {
+    for entry in &mut state.cache_entries {
+        if entry.chain_id == source.chain_id
+            && entry.contract_address == source.contract_address
+            && entry.source_kind == source.source_kind
+            && entry.provider_config_id.as_deref() == source.provider_config_id
+            && entry.user_source_id.as_deref() == source.user_source_id
+            && entry.version_id != new_version_id
+        {
+            entry.selected = false;
+            entry.cache_status = "versionSuperseded".to_string();
+            entry.selection_status = "unselected".to_string();
+            entry.updated_at = now.to_string();
+        }
+    }
+}
+
+fn selection_for_new_entry(
+    state: &StoredAbiRegistryState,
+    source: &LogicalSourceRef<'_>,
+    validated: &ValidatedAbiPayload,
+) -> (bool, &'static str) {
+    if validated.validation_status == "selectorConflict" {
+        return (false, "needsUserChoice");
+    }
+
+    let has_cross_source_selected_conflict = state.cache_entries.iter().any(|entry| {
+        entry.chain_id == source.chain_id
+            && entry.contract_address == source.contract_address
+            && entry.selected
+            && (entry.source_kind != source.source_kind
+                || entry.provider_config_id.as_deref() != source.provider_config_id
+                || entry.user_source_id.as_deref() != source.user_source_id)
+            && entry.abi_hash != validated.abi_hash
+    });
+
+    if has_cross_source_selected_conflict {
+        (false, "sourceConflict")
+    } else {
+        (true, "selected")
+    }
+}
+
+fn source_fingerprint(
+    chain_id: u64,
+    contract_address: &str,
+    source_kind: &str,
+    provider_config_id: Option<&str>,
+    user_source_id: Option<&str>,
+    abi_hash: &str,
+) -> String {
+    hash_text(&format!(
+        "{chain_id}:{contract_address}:{source_kind}:{}:{}:{abi_hash}",
+        provider_config_id.unwrap_or(""),
+        user_source_id.unwrap_or("")
+    ))
+}
+
+fn select_fetch_provider(
+    state: &StoredAbiRegistryState,
+    chain_id: u64,
+    provider_config_id: Option<&str>,
+) -> Result<AbiDataSourceConfigRecord, (&'static str, AbiProviderDiagnosticsRecord)> {
+    let candidate = if let Some(provider_config_id) = provider_config_id {
+        state
+            .data_sources
+            .iter()
+            .find(|source| source.id == provider_config_id && source.chain_id == chain_id)
+    } else {
+        state
+            .data_sources
+            .iter()
+            .find(|source| source.chain_id == chain_id && source.enabled)
+    };
+
+    let Some(candidate) = candidate else {
+        return Err((
+            "notConfigured",
+            AbiProviderDiagnosticsRecord {
+                chain_id: Some(chain_id),
+                failure_class: Some("notConfigured".to_string()),
+                ..AbiProviderDiagnosticsRecord::default()
+            },
+        ));
+    };
+    if !candidate.enabled {
+        return Err((
+            "notConfigured",
+            provider_diagnostics(candidate, Some("disabledProvider"), None),
+        ));
+    }
+    Ok(candidate.clone())
+}
+
+fn fetch_provider_config_fingerprint(provider: &AbiDataSourceConfigRecord) -> String {
+    hash_text(&format!(
+        "{}:{}:{}:{}:{}:{}",
+        provider.id,
+        provider.chain_id,
+        provider.provider_kind,
+        provider.base_url.as_deref().unwrap_or_default(),
+        provider.api_key_ref.as_deref().unwrap_or_default(),
+        provider.enabled
+    ))
+}
+
+fn has_current_fetch_provider_config(
+    state: &StoredAbiRegistryState,
+    provider_id: &str,
+    expected_fingerprint: &str,
+) -> bool {
+    state
+        .data_sources
+        .iter()
+        .find(|provider| provider.id == provider_id)
+        .map(|provider| {
+            provider.enabled && fetch_provider_config_fingerprint(provider) == expected_fingerprint
+        })
+        .unwrap_or(false)
+}
+
+fn stale_fetch_provider_config_result(
+    provider: &AbiDataSourceConfigRecord,
+) -> Result<AbiRegistryMutationResult, String> {
+    let state = load_abi_registry_state()?;
+    let diagnostics = provider_diagnostics(provider, Some(STALE_FETCH_PROVIDER_CONFIG_ERROR), None);
+    Ok(AbiRegistryMutationResult {
+        state,
+        validation: failure_validation("fetchFailed", "notValidated", diagnostics, None),
+        cache_entry: None,
+    })
+}
+
+fn stale_fetch_provider_config_result_from_state(
+    state: StoredAbiRegistryState,
+    mut diagnostics: AbiProviderDiagnosticsRecord,
+) -> AbiRegistryMutationResult {
+    diagnostics.failure_class = Some(sanitize_diagnostic_message(
+        STALE_FETCH_PROVIDER_CONFIG_ERROR,
+    ));
+    AbiRegistryMutationResult {
+        state: into_read_state(state),
+        validation: failure_validation("fetchFailed", "notValidated", diagnostics, None),
+        cache_entry: None,
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ExplorerFetchResponse {
+    payload: String,
+}
+
+#[derive(Debug, Clone)]
+struct ExplorerFetchError {
+    status: String,
+    failure_class: String,
+    rate_limit_hint: Option<String>,
+}
+
+impl ExplorerFetchError {
+    fn validation_status(&self) -> &'static str {
+        if self.failure_class == "payloadTooLarge" {
+            "payloadTooLarge"
+        } else {
+            "notValidated"
+        }
+    }
+}
+
+async fn fetch_explorer_abi_response(
+    provider: &AbiDataSourceConfigRecord,
+    contract_address: &str,
+    api_key: Option<&str>,
+) -> Result<ExplorerFetchResponse, ExplorerFetchError> {
+    let base_url = provider
+        .base_url
+        .as_deref()
+        .ok_or_else(|| ExplorerFetchError {
+            status: "notConfigured".to_string(),
+            failure_class: "missingBaseUrl".to_string(),
+            rate_limit_hint: None,
+        })?;
+    let client = reqwest::Client::builder()
+        .timeout(EXPLORER_ABI_REQUEST_TIMEOUT)
+        .build()
+        .map_err(|_| ExplorerFetchError {
+            status: "fetchFailed".to_string(),
+            failure_class: "clientBuildFailed".to_string(),
+            rate_limit_hint: None,
+        })?;
+    // customIndexer providers use the same configured ABI endpoint contract here:
+    // GET baseUrl?module=contract&action=getabi&address=<address>, accepting only
+    // direct ABI arrays/strings or explorer-style JSON with a result field.
+    let mut request = client.get(base_url).query(&[
+        ("module", "contract"),
+        ("action", "getabi"),
+        ("address", contract_address),
+    ]);
+    if let Some(api_key) = api_key {
+        request = request.query(&[("apikey", api_key)]);
+    }
+    let response = request.send().await.map_err(fetch_request_error)?;
+    let status = response.status();
+    if status.as_u16() == 429 {
+        return Err(ExplorerFetchError {
+            status: "rateLimited".to_string(),
+            failure_class: "rateLimited".to_string(),
+            rate_limit_hint: Some("HTTP 429".to_string()),
+        });
+    }
+    if !status.is_success() {
+        return Err(ExplorerFetchError {
+            status: "fetchFailed".to_string(),
+            failure_class: format!("http{}", status.as_u16()),
+            rate_limit_hint: None,
+        });
+    }
+    if response
+        .content_length()
+        .filter(|len| *len > EXPLORER_ABI_RESPONSE_SIZE_LIMIT_BYTES as u64)
+        .is_some()
+    {
+        return Err(payload_too_large_fetch_error());
+    }
+    let text = read_response_text_limited(response, EXPLORER_ABI_RESPONSE_SIZE_LIMIT_BYTES).await?;
+    classify_explorer_response_text(&text)
+}
+
+fn payload_too_large_fetch_error() -> ExplorerFetchError {
+    ExplorerFetchError {
+        status: "malformedResponse".to_string(),
+        failure_class: "payloadTooLarge".to_string(),
+        rate_limit_hint: None,
+    }
+}
+
+fn fetch_request_error(error: reqwest::Error) -> ExplorerFetchError {
+    ExplorerFetchError {
+        status: "fetchFailed".to_string(),
+        failure_class: if error.is_timeout() {
+            "timeout".to_string()
+        } else {
+            "networkError".to_string()
+        },
+        rate_limit_hint: None,
+    }
+}
+
+async fn read_response_text_limited(
+    mut response: reqwest::Response,
+    max_bytes: usize,
+) -> Result<String, ExplorerFetchError> {
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|error| ExplorerFetchError {
+        status: "fetchFailed".to_string(),
+        failure_class: if error.is_timeout() {
+            "timeout".to_string()
+        } else {
+            "responseReadFailed".to_string()
+        },
+        rate_limit_hint: None,
+    })? {
+        if body.len().saturating_add(chunk.len()) > max_bytes {
+            return Err(payload_too_large_fetch_error());
+        }
+        body.extend_from_slice(&chunk);
+    }
+    String::from_utf8(body).map_err(|_| ExplorerFetchError {
+        status: "malformedResponse".to_string(),
+        failure_class: "invalidUtf8".to_string(),
+        rate_limit_hint: None,
+    })
+}
+
+fn classify_explorer_response_text(
+    text: &str,
+) -> Result<ExplorerFetchResponse, ExplorerFetchError> {
+    let value = serde_json::from_str::<Value>(text).map_err(|_| ExplorerFetchError {
+        status: "malformedResponse".to_string(),
+        failure_class: "invalidJson".to_string(),
+        rate_limit_hint: None,
+    })?;
+    match &value {
+        Value::Array(_) | Value::String(_) => Ok(ExplorerFetchResponse {
+            payload: text.to_string(),
+        }),
+        Value::Object(object) => {
+            let message = object
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let status = object
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let result = object.get("result");
+            let result_text = result.and_then(Value::as_str).unwrap_or_default();
+            let combined = format!("{message} {result_text}").to_ascii_lowercase();
+            if status == "0" || message.eq_ignore_ascii_case("NOTOK") {
+                if combined.contains("rate") || combined.contains("limit") {
+                    return Err(ExplorerFetchError {
+                        status: "rateLimited".to_string(),
+                        failure_class: "rateLimited".to_string(),
+                        rate_limit_hint: Some("explorer rate limit".to_string()),
+                    });
+                }
+                if combined.contains("not verified")
+                    || combined.contains("source code not verified")
+                    || combined.contains("contract source code")
+                {
+                    return Err(ExplorerFetchError {
+                        status: "notVerified".to_string(),
+                        failure_class: "notVerified".to_string(),
+                        rate_limit_hint: None,
+                    });
+                }
+            }
+            if result.is_none() {
+                return Err(ExplorerFetchError {
+                    status: "malformedResponse".to_string(),
+                    failure_class: "missingResult".to_string(),
+                    rate_limit_hint: None,
+                });
+            }
+            Ok(ExplorerFetchResponse {
+                payload: text.to_string(),
+            })
+        }
+        _ => Err(ExplorerFetchError {
+            status: "malformedResponse".to_string(),
+            failure_class: "unexpectedJsonShape".to_string(),
+            rate_limit_hint: None,
+        }),
+    }
+}
+
+fn resolve_api_key_ref(api_key_ref: Option<&str>) -> Result<Option<String>, &'static str> {
+    let Some(api_key_ref) = api_key_ref else {
+        return Ok(None);
+    };
+    let env_name = if let Some(name) = api_key_ref.strip_prefix("env:") {
+        Some(name)
+    } else if let Some(name) = api_key_ref
+        .strip_prefix("${")
+        .and_then(|v| v.strip_suffix('}'))
+    {
+        Some(name)
+    } else if let Some(name) = api_key_ref.strip_prefix('$') {
+        Some(name)
+    } else {
+        None
+    };
+    let Some(env_name) = env_name else {
+        return Err("secretStoreUnavailable");
+    };
+    std::env::var(env_name)
+        .ok()
+        .and_then(non_empty_string)
+        .map(Some)
+        .ok_or("missingApiKey")
+}
+
+fn update_fetch_provider_success_in_state(
+    state: &mut StoredAbiRegistryState,
+    provider_id: &str,
+) -> Result<(), String> {
+    if let Some(index) = data_source_index(&state.data_sources, provider_id) {
+        let now = now_unix_seconds()?;
+        let provider = &mut state.data_sources[index];
+        provider.last_success_at = Some(now.clone());
+        provider.last_failure_at = None;
+        provider.failure_count = 0;
+        provider.cooldown_until = None;
+        provider.rate_limited = false;
+        provider.last_error_summary = None;
+        provider.updated_at = now;
+    }
+    Ok(())
+}
+
+fn update_fetch_provider_failure(
+    provider_id: &str,
+    expected_fingerprint: &str,
+    status: &str,
+    rate_limited: bool,
+    rate_limit_hint: Option<String>,
+) -> Result<bool, String> {
+    let _guard = abi_registry_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut state = read_abi_registry_state_for_update()?;
+    if !has_current_fetch_provider_config(&state, provider_id, expected_fingerprint) {
+        return Ok(false);
+    }
+    if let Some(index) = data_source_index(&state.data_sources, provider_id) {
+        let now = now_unix_seconds()?;
+        let provider = &mut state.data_sources[index];
+        provider.last_failure_at = Some(now.clone());
+        provider.failure_count = provider.failure_count.saturating_add(1);
+        provider.rate_limited = rate_limited;
+        provider.last_error_summary = sanitize_optional(Some(match rate_limit_hint {
+            Some(hint) => format!("{status}: {hint}"),
+            None => status.to_string(),
+        }));
+        provider.updated_at = now;
+        write_abi_registry_state(&state)?;
+    }
+    Ok(true)
+}
+
+fn provider_diagnostics(
+    provider: &AbiDataSourceConfigRecord,
+    failure_class: Option<&str>,
+    rate_limit_hint: Option<&str>,
+) -> AbiProviderDiagnosticsRecord {
+    AbiProviderDiagnosticsRecord {
+        provider_kind: Some(provider.provider_kind.clone()),
+        chain_id: Some(provider.chain_id),
+        provider_config_id: Some(provider.id.clone()),
+        host: provider.base_url.as_deref().and_then(base_url_host),
+        config_summary: Some(sanitize_diagnostic_message(&format!(
+            "{} explorer source",
+            provider.provider_kind
+        ))),
+        failure_class: failure_class.map(|value| sanitize_diagnostic_message(value)),
+        rate_limit_hint: rate_limit_hint.map(sanitize_diagnostic_message),
+    }
+}
+
+fn base_url_host(value: &str) -> Option<String> {
+    let after_scheme = value
+        .strip_prefix("https://")
+        .or_else(|| value.strip_prefix("http://"))?;
+    let host = after_scheme
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or_default()
+        .split('@')
+        .last()
+        .unwrap_or_default();
+    non_empty_string(host.to_string())
 }
 
 fn normalize_loaded_state(
@@ -765,7 +2160,7 @@ fn normalize_source_ref(
     user_source_id: Option<String>,
 ) -> Result<(Option<String>, Option<String>), String> {
     let provider_config_id = provider_config_id.and_then(non_empty_string);
-    let user_source_id = user_source_id.and_then(non_empty_string);
+    let user_source_id = user_source_id.and_then(sanitize_user_source_id);
     match source_kind {
         "explorerFetched" => {
             if provider_config_id.is_none() || user_source_id.is_some() {
@@ -1043,6 +2438,32 @@ fn sanitize_optional(value: Option<String>) -> Option<String> {
         .as_deref()
         .map(sanitize_diagnostic_message)
         .and_then(non_empty_string)
+}
+
+fn sanitize_user_source_id(value: String) -> Option<String> {
+    let value = non_empty_string(value)?;
+    if is_safe_user_source_id(&value) {
+        Some(value)
+    } else {
+        Some(format!(
+            "user-source-{}",
+            hash_text(&value)
+                .trim_start_matches("0x")
+                .chars()
+                .take(16)
+                .collect::<String>()
+        ))
+    }
+}
+
+fn is_safe_user_source_id(value: &str) -> bool {
+    value.len() <= 96
+        && !looks_like_secret_value(value)
+        && !value.contains(['/', '\\', ':'])
+        && !value.contains("..")
+        && value
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-'))
 }
 
 fn merge_optional_string(
