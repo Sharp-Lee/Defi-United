@@ -162,6 +162,81 @@ v1 + P3/P4 已将基础历史列表升级为可筛选、可分组、可审计的
 
 当前真实可用交易类型仍只有原生币转账。Rust `HistoryRecord.intent` 当前仍以 `NativeTransferIntent` 为主，`SubmissionKind` 当前只覆盖 legacy、nativeTransfer、replacement、cancellation。ERC-20、批量、ABI 调用、raw calldata 等后续能力必须先扩展 Intent/Submission 的类型契约和历史展示契约，不能把不同交易类型塞进 native transfer 字段里伪装成已支持。
 
+### 9.1 Typed transaction intent 后续设计
+
+后续交易能力必须引入显式的 typed transaction intent，而不是继续假设所有交易都是原生币转账。推荐契约是 additive enum/union，例如 `transaction_type` 或 intent enum：
+
+- `legacy`：旧记录或字段不足记录；UI 只能展示已知字段，不能补猜语义。
+- `nativeTransfer`：当前真实可用的原生币转账。
+- `erc20Transfer`：后续最小 ERC-20 转账能力。
+- 后续可再扩展 `contractCall`、`rawCalldata`、`batch` 等类型。
+
+旧记录兼容要求：
+
+- 已存在的 native transfer 历史必须继续可读。缺失 `transaction_type` 的记录按 legacy/nativeTransfer 兼容路径展示，不能因为新 enum 缺失而崩溃。
+- `SubmissionKind` 可保留 `legacy`、`nativeTransfer`、`replacement`、`cancellation`，并新增普通 `erc20Transfer`；replacement/cancellation 仍是 nonce 线程动作，不应伪装成新的普通 ERC-20 intent。
+- Submission 仍保留通用交易字段：`chainId`、account/from、nonce、tx hash、to、native value wei、gas、fee、broadcast time、draft/frozen key。合约调用类交易以 additive extension 保存 contract/call metadata，避免破坏旧 native records。
+- History UI 先看 typed intent 再渲染字段。未知类型必须显示 unknown/unsupported，而不是落回 native transfer 文案。
+
+### 9.2 ERC-20 转账后续设计（尚未实现）
+
+本小节只是 P4-8 后续设计契约，不表示当前应用已经支持 ERC-20 转账。当前真实可用交易类型仍只有 native transfer；ERC-20 最终签名和广播实现必须在后续任务中通过 Rust/Tauri command 完成。
+
+**目标**
+
+- 支持最小 ERC-20 `transfer(address,uint256)` 普通转账：单 token、单 sender、单 recipient、单笔提交。
+- 用稳定身份 `chainId + tokenContract` 表示 token。`symbol`、`name`、`decimals` 只属于 metadata，不参与 token 身份判断。
+- 在 draft/confirm/submit/history 中清楚区分 token contract 与 recipient。ERC-20 transfer 是合约调用：transaction `to` 是 token contract，recipient 是 calldata 参数。
+- 沿用 native transfer 已有的 fee reference/base fee customization、nonce、pending history、reconcile、replace/cancel、diagnostics 和 history write failure recovery 边界。
+
+**非目标**
+
+- 不做 allowance/approve、permit、revoke、swap、bridge、fee-on-transfer 特判或 batch。
+- 不做任意 ABI 调用器或 raw calldata 发送；ERC-20 最小实现只构造标准 selector `0xa9059cbb` 的 `transfer(address,uint256)` calldata。
+- 不做 token watchlist UI、全账户余额扫描、资产组合展示或授权扫描；这些保留给后续 P4-9/P5 任务。
+- 不为浏览器版补主线能力；Tauri desktop 仍是主线。
+
+**安全边界**
+
+- React 只表达用户意图、只读展示 metadata、展示冻结参数和命令返回结果；不得接触助记词、私钥、raw signed transaction 或签名材料。
+- ERC-20 calldata 构建、nonce/fee 最终冻结、签名、广播和历史写入必须走 Rust/Tauri command。
+- 日志、诊断、历史、导出不得包含助记词、私钥、raw signed tx、完整 RPC token、explorer API key 或签名材料。RPC URL 和错误消息进入诊断前必须脱敏。
+- Metadata、receipt log、explorer/indexer 返回数据都不是签名材料，但仍不能把包含认证凭据的端点或完整 secret 写入日志。
+
+**身份键与 metadata/decimals**
+
+- Token 稳定身份是 `chainId + tokenContract`。`tokenContract` 必须是校验后的 EVM 地址，并按统一大小写/校验显示策略保存。
+- `symbol`、`name`、`decimals` 是 metadata，可来自链上只读 call、用户 watchlist/cache 或用户确认输入；历史中必须记录 metadata source，例如 `onChainCall`、`watchlistCache`、`userConfirmed`、`unknown`。
+- `decimals` 影响用户输入金额到 `amount_raw` 的解析，必须在 draft 中冻结。用户确认页和历史详情必须同时展示 human amount、`amount_raw`、decimals 和 metadata source。
+- metadata call failure 不能让系统猜 decimals。最小实现应要求用户选择可恢复路径：重试、从可信 watchlist/cache 使用已知 decimals，或显式输入/确认 decimals；无法确定 decimals 时不得构建可提交 draft。
+- 如果 draft 构建后 metadata 重新读取发现 decimals 改变或来源冲突，已冻结 draft 必须失效并要求重建，不能用新 decimals 静默重解释旧 amount。
+
+**Draft / freeze / submit**
+
+- Draft 输入包括：sender account/from、chainId、RPC profile、token contract、recipient、human amount、decimals、amount raw、fee inputs、nonce/gas 估算结果和 metadata source。
+- Draft key 必须覆盖 chainId、RPC identity/expected chain、sender、token contract、recipient、amount raw、decimals、fee fields、gas limit、nonce、calldata selector/method name 和 native value wei。
+- Freeze 后确认页展示：transaction `to = tokenContract`、method `transfer(address,uint256)`、selector `0xa9059cbb`、recipient calldata 参数、amount raw、decimals、symbol/name metadata source、native value wei 通常为 `0`、gas/fee/nonce、total native gas cost 和 token balance/gas balance 检查结果。
+- Submit 时 Rust 必须重新验证 chainId、from、nonce/fee/gas、token contract、recipient、amount raw、decimals/frozen key 是否与 frozen draft 一致；验证失败应拒绝提交，不能局部修正后继续广播。
+
+**History 三层模型**
+
+- Intent：`transaction_type = erc20Transfer`、chainId、sender account/from、token_contract、recipient、human amount、amount_raw、decimals、symbol/name、metadata source、fee 输入/偏好、用户选择的 RPC profile。
+- Submission：通用 tx 字段加 ERC-20 call metadata。通用字段包括 tx hash、nonce、gas、fee、transaction `to = token_contract`、native `value_wei = 0`、broadcast time、draft/frozen key。call metadata 包括 token_contract、recipient、amount_raw、decimals、selector `0xa9059cbb`、method name `transfer`、calldata length/summary。历史不得保存 raw signed tx。
+- ChainOutcome：pending、confirmed、failed/reverted、replaced、cancelled、dropped 与 native transfer 保持同一状态语义。receipt 成功时可记录非敏感 receipt 摘要和 Transfer log 摘要；log 缺失或非标准不应把 confirmed 改写为 failed，receipt `status = 0` 才表示链上失败/reverted。
+- History UI 必须把 token contract、recipient、transaction to 分开展示。列表摘要可以写“ERC-20 transfer to recipient”，但详情必须明确“transaction to token contract”。
+
+**错误与恢复路径**
+
+- `chainId mismatch`：保存 RPC、读取 metadata、估算 gas、submit 前都必须拒绝，并显示 expected/actual chainId；不能把 RPC URL 当作 chain identity。
+- `metadata call failure`：允许重试或使用明确来源的 cached/user-confirmed metadata；缺 decimals 时不得提交。
+- `decimals missing/changed`：missing 阻止 draft；changed 使 frozen draft 失效并要求重建。
+- `token balance insufficient`：按 `balanceOf(sender)` 与 frozen `amount_raw` 比较，阻止或在确认页高亮不可提交；余额检查失败不能被 symbol/name 替代。
+- `native gas insufficient`：ERC-20 gas 仍由 sender 支付 native coin；必须独立检查 native balance 是否覆盖 gas/fee 上限。
+- `estimate gas failure`：给出合约调用/余额/recipient/paused token/RPC 等分类摘要；允许用户重试或在后续高级任务中手动 gas override，但最小实现可先拒绝提交。
+- `receipt reverted/failed`：receipt `status = 0` 进入 failed，记录非敏感 revert/receipt 摘要；不得重试签名或广播。
+- `history write failed after broadcast`：必须返回 tx hash、chainId、account/from、nonce、token contract、recipient、amount_raw、decimals、selector/method、frozen draft key 和写入错误；恢复入口只能用 tx hash + frozen params 补录，不能重新签名或广播。
+- `replacement/cancel relationship`：ERC-20 pending 沿用 same account + chainId + nonce 的 nonce thread 语义。cancel 仍是同 nonce、向自身发送 0 native value 的 self-transfer，目的只是取代 pending；它不是 ERC-20 transfer。最小 replace 实现应收窄为保持同 token contract、recipient、amount_raw、decimals 和 calldata，仅提高费用；是否允许修改 recipient/amount 留给后续任务重新设计。
+
 ## 10. P3/P4 已完成范围与后续 P4+ 方向
 
 ### 10.1 P3 History UX hardening 已完成
