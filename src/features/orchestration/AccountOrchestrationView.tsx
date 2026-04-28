@@ -10,6 +10,16 @@ import {
   type ExternalAddressReference,
   type FrozenOrchestrationSummary,
 } from "../../core/accountOrchestration/selection";
+import {
+  buildNativeBatchPlan,
+  freezeNativeBatchPlan,
+  isFrozenNativeBatchPlanValid,
+  type FrozenNativeBatchPlan,
+  type NativeBatchKind,
+  type NativeBatchPlan,
+} from "../../core/batch/nativeBatch";
+import type { HistoryRecord, NativeBatchSubmitResult } from "../../lib/tauri";
+import { submitNativeBatch } from "../../lib/tauri";
 
 type AccountModel = AccountRecord & AccountChainState;
 
@@ -17,7 +27,12 @@ export interface AccountOrchestrationViewProps {
   accounts: AccountModel[];
   selectedChainId: bigint;
   chainName: string;
+  history?: HistoryRecord[];
   tokenWatchlistState: TokenWatchlistState | null;
+  rpcUrl?: string;
+  historyStorageIssue?: string | null;
+  onNativeBatchSubmitted?: (records: HistoryRecord[], result: NativeBatchSubmitResult) => void;
+  onNativeBatchSubmitFailed?: (error: unknown) => Promise<void> | void;
 }
 
 function formatNativeBalance(value: bigint | null) {
@@ -45,11 +60,41 @@ function snapshotText(counts: FrozenOrchestrationSummary["previews"][number]["er
   return `${counts.ok} ok, ${counts.zero} zero, ${counts.stale} stale, ${counts.failure} failed, ${counts.missing} missing`;
 }
 
+function newBatchId() {
+  return `native-batch-${Date.now().toString(36)}`;
+}
+
+function shortAddress(address: string) {
+  return address.length > 14 ? `${address.slice(0, 10)}...${address.slice(-6)}` : address;
+}
+
+function planBlockedReason(
+  plan: NativeBatchPlan,
+  frozenPlan: FrozenNativeBatchPlan | null,
+  rpcUrl: string,
+  historyStorageIssue: string | null,
+) {
+  if (historyStorageIssue) return historyStorageIssue;
+  if (!rpcUrl.trim()) return "Validate an RPC before submitting a native batch.";
+  if (!frozenPlan) return "Freeze the native batch plan before submitting.";
+  if (!isFrozenNativeBatchPlanValid(frozenPlan, plan)) {
+    return "Native batch inputs changed after freeze; rebuild the frozen plan.";
+  }
+  if (plan.status !== "ready") return "Resolve blocked native batch children before submitting.";
+  if (plan.summary.plannedCount === 0) return "No native batch rows are ready to submit.";
+  return null;
+}
+
 export function AccountOrchestrationView({
   accounts,
   selectedChainId,
   chainName,
+  history = [],
   tokenWatchlistState,
+  rpcUrl = "",
+  historyStorageIssue = null,
+  onNativeBatchSubmitted = () => {},
+  onNativeBatchSubmitFailed = async () => {},
 }: AccountOrchestrationViewProps) {
   const [selectedSources, setSelectedSources] = useState<string[]>([]);
   const [selectedLocalTargets, setSelectedLocalTargets] = useState<string[]>([]);
@@ -59,6 +104,16 @@ export function AccountOrchestrationView({
   const [externalTargets, setExternalTargets] = useState<ExternalAddressReference[]>([]);
   const [externalError, setExternalError] = useState<string | null>(null);
   const [frozenSummary, setFrozenSummary] = useState<FrozenOrchestrationSummary | null>(null);
+  const [batchKind, setBatchKind] = useState<NativeBatchKind>("distribute");
+  const [batchAmountWei, setBatchAmountWei] = useState("1000000000000000");
+  const [batchGasLimit, setBatchGasLimit] = useState("21000");
+  const [batchMaxFeePerGas, setBatchMaxFeePerGas] = useState("40000000000");
+  const [batchMaxPriorityFeePerGas, setBatchMaxPriorityFeePerGas] = useState("1500000000");
+  const [batchId] = useState(newBatchId);
+  const [frozenBatchPlan, setFrozenBatchPlan] = useState<FrozenNativeBatchPlan | null>(null);
+  const [batchSubmitting, setBatchSubmitting] = useState(false);
+  const [batchSubmitResult, setBatchSubmitResult] = useState<NativeBatchSubmitResult | null>(null);
+  const [batchSubmitError, setBatchSubmitError] = useState<string | null>(null);
 
   const allPreviews = useMemo(
     () => buildAccountOrchestrationPreviews(accounts, selectedChainId, tokenWatchlistState),
@@ -84,6 +139,47 @@ export function AccountOrchestrationView({
     setFrozenSummary(null);
   }, [draftSignature]);
 
+  const nativeBatchPlan = useMemo(
+    () =>
+      buildNativeBatchPlan({
+        batchKind,
+        chainId: selectedChainId,
+        orchestration: draft,
+        accountSnapshots: accounts.map((account) => ({
+          address: account.address,
+          nativeBalanceWei: account.nativeBalanceWei,
+          nonce: account.nonce,
+        })),
+        localPendingHistory: history,
+        amountWei: batchKind === "collect" ? "0" : batchAmountWei,
+        fees: {
+          gasLimit: batchGasLimit,
+          maxFeePerGas: batchMaxFeePerGas,
+          maxPriorityFeePerGas: batchMaxPriorityFeePerGas,
+        },
+        batchId,
+      }),
+    [
+      accounts,
+      batchAmountWei,
+      batchGasLimit,
+      batchId,
+      batchKind,
+      batchMaxFeePerGas,
+      batchMaxPriorityFeePerGas,
+      draft,
+      history,
+      selectedChainId,
+    ],
+  );
+  const nativeBatchFreezeKey = nativeBatchPlan.freezeKey;
+
+  useEffect(() => {
+    setFrozenBatchPlan(null);
+    setBatchSubmitResult(null);
+    setBatchSubmitError(null);
+  }, [nativeBatchFreezeKey]);
+
   function addExternalTarget() {
     const result = normalizeExternalAddressTarget(
       { address: externalAddress, label: externalLabel, notes: externalNotes },
@@ -103,6 +199,32 @@ export function AccountOrchestrationView({
   function removeExternalTarget(address: string) {
     setExternalTargets((current) => current.filter((target) => target.address !== address));
   }
+
+  async function submitFrozenNativeBatch() {
+    if (!frozenBatchPlan) return;
+    setBatchSubmitting(true);
+    setBatchSubmitError(null);
+    try {
+      const result = await submitNativeBatch(frozenBatchPlan, rpcUrl.trim());
+      setBatchSubmitResult(result);
+      const records = [result.parent?.record, ...result.children.map((child) => child.record)]
+        .filter((record): record is HistoryRecord => Boolean(record));
+      onNativeBatchSubmitted(records, result);
+      setFrozenBatchPlan(null);
+    } catch (err) {
+      setBatchSubmitError(err instanceof Error ? err.message : String(err));
+      await onNativeBatchSubmitFailed(err);
+    } finally {
+      setBatchSubmitting(false);
+    }
+  }
+
+  const submitBlockedReason = planBlockedReason(
+    nativeBatchPlan,
+    frozenBatchPlan,
+    rpcUrl,
+    historyStorageIssue,
+  );
 
   return (
     <section className="workspace-section orchestration-grid">
@@ -369,6 +491,213 @@ export function AccountOrchestrationView({
           </div>
         </section>
       )}
+
+      <section aria-label="Native batch plan" className="orchestration-panel">
+        <div className="token-panel-header">
+          <h3>Native Batch</h3>
+          <span className={`history-status history-status-${nativeBatchPlan.status === "ready" ? "confirmed" : "failed"}`}>
+            {nativeBatchPlan.status}
+          </span>
+        </div>
+        <div className="orchestration-external-form">
+          <label>
+            Batch kind
+            <select
+              onChange={(event) => setBatchKind(event.target.value as NativeBatchKind)}
+              value={batchKind}
+            >
+              <option value="distribute">Distribute</option>
+              <option value="collect">Collect</option>
+            </select>
+          </label>
+          <label>
+            Amount per target wei
+            <input
+              disabled={batchKind === "collect"}
+              onChange={(event) => setBatchAmountWei(event.target.value)}
+              value={batchKind === "collect" ? "auto: balance - gas reserve" : batchAmountWei}
+            />
+          </label>
+          <label>
+            Gas limit
+            <input onChange={(event) => setBatchGasLimit(event.target.value)} value={batchGasLimit} />
+          </label>
+          <label>
+            Max fee wei
+            <input
+              onChange={(event) => setBatchMaxFeePerGas(event.target.value)}
+              value={batchMaxFeePerGas}
+            />
+          </label>
+          <label>
+            Priority fee wei
+            <input
+              onChange={(event) => setBatchMaxPriorityFeePerGas(event.target.value)}
+              value={batchMaxPriorityFeePerGas}
+            />
+          </label>
+        </div>
+        <div className="orchestration-summary-strip">
+          <span>Children: {nativeBatchPlan.summary.childCount}</span>
+          <span>Ready: {nativeBatchPlan.summary.plannedCount}</span>
+          <span>Skipped: {nativeBatchPlan.summary.skippedCount}</span>
+          <span>Blocked: {nativeBatchPlan.summary.blockedCount}</span>
+          <span>Total amount: {nativeBatchPlan.summary.totalPlannedAmountWei} wei</span>
+          <span>Max gas: {nativeBatchPlan.summary.maxGasCostWei} wei</span>
+        </div>
+        {nativeBatchPlan.distributionParent && (
+          <dl className="orchestration-definition-grid" aria-label="Native distribution contract call">
+            <dt>Distribution contract</dt>
+            <dd className="mono">{nativeBatchPlan.distributionParent.distributionContract}</dd>
+            <dt>Selector</dt>
+            <dd className="mono">{nativeBatchPlan.distributionParent.selector}</dd>
+            <dt>Method</dt>
+            <dd className="mono">{nativeBatchPlan.distributionParent.methodName}</dd>
+            <dt>Recipients</dt>
+            <dd>{nativeBatchPlan.distributionParent.recipients.length}</dd>
+            <dt>Total value</dt>
+            <dd className="mono">{nativeBatchPlan.distributionParent.totalValueWei} wei</dd>
+            <dt>Parent nonce</dt>
+            <dd className="mono">{nativeBatchPlan.distributionParent.nonce ?? "missing"}</dd>
+            <dt>Parent gas / fee</dt>
+            <dd className="mono">
+              {nativeBatchPlan.distributionParent.gasLimit} / {nativeBatchPlan.distributionParent.maxFeePerGas}
+            </dd>
+          </dl>
+        )}
+        {batchKind === "distribute" && draft.sourceAccounts.length > 1 && (
+          <div className="inline-warning" role="alert">
+            Native contract distribution is disabled for multiple sources in this release. Split into one batch per payer.
+          </div>
+        )}
+        {[...nativeBatchPlan.errors, ...nativeBatchPlan.warnings].map((message) => (
+          <div className="inline-warning" key={message}>
+            {message}
+          </div>
+        ))}
+        {batchSubmitError && (
+          <div className="inline-error" role="alert">
+            {batchSubmitError}
+          </div>
+        )}
+        <div className="button-row">
+          <button
+            disabled={nativeBatchPlan.summary.childCount === 0 || nativeBatchPlan.status === "empty"}
+            onClick={() => setFrozenBatchPlan(freezeNativeBatchPlan(nativeBatchPlan))}
+            type="button"
+          >
+            Freeze Native Plan
+          </button>
+          <button
+            disabled={batchSubmitting || Boolean(submitBlockedReason)}
+            onClick={() => void submitFrozenNativeBatch()}
+            title={submitBlockedReason ?? undefined}
+            type="button"
+          >
+            {batchSubmitting ? "Submitting..." : "Submit Native Batch"}
+          </button>
+        </div>
+        {submitBlockedReason && <p className="section-subtitle">{submitBlockedReason}</p>}
+        {frozenBatchPlan && (
+          <dl className="orchestration-definition-grid">
+            <dt>Batch id</dt>
+            <dd className="mono">{frozenBatchPlan.batchId}</dd>
+            <dt>Freeze key</dt>
+            <dd className="mono">{frozenBatchPlan.freezeKey}</dd>
+            <dt>Frozen</dt>
+            <dd>{frozenBatchPlan.frozenAt}</dd>
+          </dl>
+        )}
+        <div className="data-table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Status</th>
+                <th>Child</th>
+                <th>Source</th>
+                <th>Target</th>
+                <th>Amount</th>
+                <th>{batchKind === "distribute" ? "Parent tx" : "Nonce"}</th>
+                <th>Gas / Fee</th>
+                <th>Warnings / Errors</th>
+              </tr>
+            </thead>
+            <tbody>
+              {nativeBatchPlan.children.length === 0 && (
+                <tr>
+                  <td colSpan={8}>No native batch children to preview.</td>
+                </tr>
+              )}
+              {nativeBatchPlan.children.map((child) => (
+                <tr key={child.childId}>
+                  <td>{child.status}</td>
+                  <td className="mono">{child.childId}</td>
+                  <td>
+                    <strong>{child.source.label}</strong>
+                    <div className="mono">{shortAddress(child.source.address)}</div>
+                  </td>
+                  <td>
+                    <strong>{child.target.kind}</strong>
+                    <div className="mono">{shortAddress(child.targetAddress)}</div>
+                  </td>
+                  <td className="mono">{child.amountWei} wei</td>
+                  <td className="mono">
+                    {batchKind === "distribute"
+                      ? `recipient row; parent nonce ${nativeBatchPlan.distributionParent?.nonce ?? "missing"}`
+                      : (child.nonce ?? "missing")}
+                  </td>
+                  <td className="mono">
+                    {child.gasLimit} / {child.maxFeePerGas}
+                  </td>
+                  <td>
+                    {[...child.warnings, ...child.errors].join("; ") || "None"}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        {batchSubmitResult && (
+          <div className="data-table-wrap">
+            {batchSubmitResult.parent && (
+              <dl className="orchestration-definition-grid" aria-label="Native distribution submit parent">
+                <dt>Parent tx hash</dt>
+                <dd className="mono">{batchSubmitResult.parent.record?.submission.tx_hash ?? "None"}</dd>
+                <dt>Parent error</dt>
+                <dd>{batchSubmitResult.parent.error ?? "None"}</dd>
+                <dt>Recovery hint</dt>
+                <dd>{batchSubmitResult.parent.recoveryHint ?? "None"}</dd>
+              </dl>
+            )}
+            <table>
+              <thead>
+                <tr>
+                  <th>{batchSubmitResult.parent ? "Recipient row" : "Child"}</th>
+                  <th>{batchSubmitResult.parent ? "Parent tx hash" : "Tx hash"}</th>
+                  {batchSubmitResult.parent && <th>Target</th>}
+                  {batchSubmitResult.parent && <th>Amount</th>}
+                  <th>Error</th>
+                  <th>Recovery hint</th>
+                </tr>
+              </thead>
+              <tbody>
+                {batchSubmitResult.children.map((child) => (
+                  <tr key={child.childId}>
+                    <td className="mono">{child.childId}</td>
+                    <td className="mono">
+                      {child.record?.submission.tx_hash ?? batchSubmitResult.parent?.record?.submission.tx_hash ?? "None"}
+                    </td>
+                    {batchSubmitResult.parent && <td className="mono">{child.targetAddress ?? "unknown"}</td>}
+                    {batchSubmitResult.parent && <td className="mono">{child.amountWei ?? "unknown"} wei</td>}
+                    <td>{child.error ?? "None"}</td>
+                    <td>{child.recoveryHint ?? "None"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
     </section>
   );
 }

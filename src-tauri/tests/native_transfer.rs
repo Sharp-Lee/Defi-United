@@ -16,9 +16,10 @@ use std::os::unix::fs::PermissionsExt;
 use wallet_workbench_lib::diagnostics::read_diagnostic_events_from_path;
 use wallet_workbench_lib::storage::{diagnostics_path, history_path};
 use wallet_workbench_lib::transactions::{
-    apply_pending_history_updates, broadcast_history_write_error, build_erc20_transfer_calldata,
-    chain_outcome_from_receipt_status, dropped_state_for_missing_receipt, inspect_history_storage,
-    load_history_records, load_history_recovery_intents, mark_prior_history_state,
+    apply_pending_history_updates, broadcast_history_write_error, build_disperse_ether_calldata,
+    build_erc20_transfer_calldata, chain_outcome_from_receipt_status,
+    dropped_state_for_missing_receipt, inspect_history_storage, load_history_records,
+    load_history_recovery_intents, mark_prior_history_state,
     mark_prior_history_state_with_replacement, next_nonce_with_pending_history, nonce_thread_key,
     persist_pending_history, persist_pending_history_with_kind, quarantine_history_storage,
     reconcile_pending_history, recover_broadcasted_history_record, review_dropped_history_record,
@@ -326,8 +327,102 @@ fn history_record(nonce: u64, state: ChainOutcomeState, tx_hash: &str) -> Histor
             replaces_tx_hash: None,
             replaced_by_tx_hash: None,
         },
+        batch_metadata: None,
         intent,
     }
+}
+
+#[test]
+fn history_record_accepts_additive_batch_metadata_without_breaking_legacy_json() {
+    let legacy = serde_json::json!({
+        "schema_version": 2,
+        "intent": native_transfer_intent(1, "1"),
+        "intent_snapshot": {
+            "source": "nativeTransferIntent",
+            "captured_at": "1700000000"
+        },
+        "submission": {
+            "frozen_key": "key",
+            "tx_hash": "0xabc",
+            "kind": "nativeTransfer",
+            "source": "submission",
+            "chain_id": 1,
+            "account_index": 1,
+            "from": "0x1111111111111111111111111111111111111111",
+            "to": "0x2222222222222222222222222222222222222222",
+            "value_wei": "1",
+            "nonce": 1,
+            "gas_limit": "21000",
+            "max_fee_per_gas": "40000000000",
+            "max_priority_fee_per_gas": "1500000000",
+            "broadcasted_at": "1700000001"
+        },
+        "outcome": {
+            "state": "Pending",
+            "tx_hash": "0xabc"
+        },
+        "nonce_thread": {
+            "source": "derived",
+            "key": "1:1:0x1111111111111111111111111111111111111111:1",
+            "chain_id": 1,
+            "account_index": 1,
+            "from": "0x1111111111111111111111111111111111111111",
+            "nonce": 1
+        }
+    });
+    let record: HistoryRecord = serde_json::from_value(legacy).expect("legacy record");
+    assert!(record.batch_metadata.is_none());
+
+    let with_batch = serde_json::json!({
+        "schema_version": 2,
+        "intent": native_transfer_intent(2, "2"),
+        "intent_snapshot": {
+            "source": "nativeTransferIntent",
+            "captured_at": "1700000000"
+        },
+        "submission": {
+            "frozen_key": "key",
+            "tx_hash": "0xdef",
+            "kind": "nativeTransfer",
+            "source": "submission",
+            "chain_id": 1,
+            "account_index": 1,
+            "from": "0x1111111111111111111111111111111111111111",
+            "to": "0x2222222222222222222222222222222222222222",
+            "value_wei": "2",
+            "nonce": 2,
+            "gas_limit": "21000",
+            "max_fee_per_gas": "40000000000",
+            "max_priority_fee_per_gas": "1500000000",
+            "broadcasted_at": "1700000001"
+        },
+        "outcome": {
+            "state": "Pending",
+            "tx_hash": "0xdef"
+        },
+        "nonce_thread": {
+            "source": "derived",
+            "key": "1:1:0x1111111111111111111111111111111111111111:2",
+            "chain_id": 1,
+            "account_index": 1,
+            "from": "0x1111111111111111111111111111111111111111",
+            "nonce": 2
+        },
+        "batch_metadata": {
+            "batchId": "batch-1",
+            "childId": "batch-1:child-0001",
+            "batchKind": "collect",
+            "assetKind": "native",
+            "childIndex": 0,
+            "freezeKey": "0xfrozen"
+        }
+    });
+    let record: HistoryRecord = serde_json::from_value(with_batch).expect("batch record");
+    let metadata = record.batch_metadata.expect("batch metadata");
+    assert_eq!(metadata.batch_id, "batch-1");
+    assert_eq!(metadata.child_id, "batch-1:child-0001");
+    assert_eq!(metadata.batch_kind, "collect");
+    assert_eq!(metadata.asset_kind, "native");
 }
 
 fn start_preflight_rpc_server() -> String {
@@ -1126,6 +1221,323 @@ fn erc20_transfer_calldata_uses_standard_selector_recipient_and_amount() {
         &encoded[72..],
         "000000000000000000000000000000000000000000000000000000000016e360"
     );
+}
+
+#[test]
+fn disperse_ether_calldata_uses_fixed_selector_and_abi_arrays() {
+    let recipients = vec![
+        "0x1111111111111111111111111111111111111111"
+            .parse::<Address>()
+            .expect("recipient 1"),
+        "0x2222222222222222222222222222222222222222"
+            .parse::<Address>()
+            .expect("recipient 2"),
+    ];
+    let values = vec![U256::from(1000u64), U256::from(2000u64)];
+    let calldata = build_disperse_ether_calldata(&recipients, &values).expect("calldata");
+    let bytes = calldata.as_ref();
+
+    assert_eq!(&bytes[..4], &[0xe6, 0x3d, 0x38, 0xed]);
+    assert_eq!(
+        &bytes[4..],
+        encode(&[
+            Token::Array(recipients.into_iter().map(Token::Address).collect()),
+            Token::Array(values.into_iter().map(Token::Uint).collect()),
+        ])
+        .as_slice()
+    );
+}
+
+fn native_distribution_submit_input(
+    contract: &str,
+) -> wallet_workbench_lib::models::NativeBatchSubmitInput {
+    let mut intent = native_transfer_intent(7, "3000");
+    intent.typed_transaction = wallet_workbench_lib::models::TypedTransactionFields::contract_call(
+        "0xe63d38ed",
+        "disperseEther(address[],uint256[])",
+        "3000",
+    );
+    intent.to = contract.to_string();
+    intent.value_wei = "3000".to_string();
+    intent.gas_limit = "120000".to_string();
+
+    wallet_workbench_lib::models::NativeBatchSubmitInput {
+        batch_id: "batch-disperse".into(),
+        batch_kind: "distribute".into(),
+        asset_kind: "native".into(),
+        chain_id: 1,
+        freeze_key: "0xfrozen".into(),
+        distribution_parent: Some(
+            wallet_workbench_lib::models::NativeBatchDistributionParent {
+                contract_address: contract.into(),
+                selector: "0xe63d38ed".into(),
+                method_name: "disperseEther(address[],uint256[])".into(),
+                recipients: vec![
+                    wallet_workbench_lib::models::NativeBatchDistributionRecipient {
+                        child_id: "batch-disperse:child-0001".into(),
+                        child_index: 0,
+                        target_kind: "localAccount".into(),
+                        target_address: "0x2222222222222222222222222222222222222222".into(),
+                        value_wei: "1000".into(),
+                    },
+                    wallet_workbench_lib::models::NativeBatchDistributionRecipient {
+                        child_id: "batch-disperse:child-0002".into(),
+                        child_index: 1,
+                        target_kind: "externalAddress".into(),
+                        target_address: "0x3333333333333333333333333333333333333333".into(),
+                        value_wei: "2000".into(),
+                    },
+                ],
+                total_value_wei: "3000".into(),
+                intent,
+            },
+        ),
+        children: Vec::new(),
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn native_distribution_submit_rejects_non_fixed_contract_before_broadcast() {
+    let input = native_distribution_submit_input("0x0000000000000000000000000000000000000001");
+
+    let error = wallet_workbench_lib::commands::transactions::submit_native_batch_command(input)
+        .await
+        .expect_err("non-fixed distribution contract should be rejected");
+
+    assert!(error.contains("fixed Disperse contract"));
+    assert!(error.contains("0xd15fE25eD0Dba12fE05e7029C88b10C25e8880E3"));
+}
+
+fn assert_distribution_validation_error(
+    input: wallet_workbench_lib::models::NativeBatchSubmitInput,
+    expected: &str,
+) {
+    let parent = input
+        .distribution_parent
+        .as_ref()
+        .expect("distribution parent");
+    let error = wallet_workbench_lib::commands::transactions::validate_native_distribution_parent(
+        &input, parent,
+    )
+    .expect_err("malformed distribution should be rejected");
+    assert!(
+        error.contains(expected),
+        "expected error containing {expected:?}, got {error:?}"
+    );
+}
+
+#[test]
+fn native_distribution_validation_rejects_empty_and_zero_recipient_sets() {
+    let fixed = "0xd15fE25eD0Dba12fE05e7029C88b10C25e8880E3";
+
+    let mut empty = native_distribution_submit_input(fixed);
+    empty
+        .distribution_parent
+        .as_mut()
+        .expect("distribution parent")
+        .recipients = Vec::new();
+    assert_distribution_validation_error(empty, "at least one recipient");
+
+    let mut zero_total = native_distribution_submit_input(fixed);
+    {
+        let parent = zero_total
+            .distribution_parent
+            .as_mut()
+            .expect("distribution parent");
+        parent.total_value_wei = "0".into();
+        parent.intent.value_wei = "0".into();
+        parent.intent.typed_transaction.native_value_wei = Some("0".into());
+    }
+    assert_distribution_validation_error(zero_total, "totalValueWei must be greater than zero");
+
+    let mut zero_recipient = native_distribution_submit_input(fixed);
+    zero_recipient
+        .distribution_parent
+        .as_mut()
+        .expect("distribution parent")
+        .recipients[0]
+        .value_wei = "0".into();
+    assert_distribution_validation_error(zero_recipient, "valueWei must be greater than zero");
+}
+
+#[test]
+fn native_distribution_validation_rejects_overflowing_recipient_values() {
+    let fixed = "0xd15fE25eD0Dba12fE05e7029C88b10C25e8880E3";
+    let max_u256 = "115792089237316195423570985008687907853269984665640564039457584007913129639935";
+    let mut overflow = native_distribution_submit_input(fixed);
+    {
+        let parent = overflow
+            .distribution_parent
+            .as_mut()
+            .expect("distribution parent");
+        parent.total_value_wei = max_u256.into();
+        parent.intent.value_wei = max_u256.into();
+        parent.intent.typed_transaction.native_value_wei = Some(max_u256.into());
+        parent.recipients[0].value_wei = max_u256.into();
+        parent.recipients[1].value_wei = "1".into();
+    }
+
+    assert_distribution_validation_error(overflow, "recipient values overflow totalValueWei");
+}
+
+#[test]
+fn native_distribution_validation_rejects_malformed_child_allocations() {
+    let fixed = "0xd15fE25eD0Dba12fE05e7029C88b10C25e8880E3";
+
+    let mut empty_child_id = native_distribution_submit_input(fixed);
+    empty_child_id
+        .distribution_parent
+        .as_mut()
+        .expect("distribution parent")
+        .recipients[0]
+        .child_id = " ".into();
+    assert_distribution_validation_error(empty_child_id, "childId must not be empty");
+
+    let mut duplicate_child_id = native_distribution_submit_input(fixed);
+    {
+        let recipients = &mut duplicate_child_id
+            .distribution_parent
+            .as_mut()
+            .expect("distribution parent")
+            .recipients;
+        recipients[1].child_id = recipients[0].child_id.clone();
+    }
+    assert_distribution_validation_error(duplicate_child_id, "childId values must be unique");
+
+    let mut duplicate_child_index = native_distribution_submit_input(fixed);
+    duplicate_child_index
+        .distribution_parent
+        .as_mut()
+        .expect("distribution parent")
+        .recipients[1]
+        .child_index = 0;
+    assert_distribution_validation_error(duplicate_child_index, "childIndex values must be unique");
+
+    let mut non_contiguous_child_index = native_distribution_submit_input(fixed);
+    non_contiguous_child_index
+        .distribution_parent
+        .as_mut()
+        .expect("distribution parent")
+        .recipients[1]
+        .child_index = 2;
+    assert_distribution_validation_error(
+        non_contiguous_child_index,
+        "contiguous from zero and match recipient order",
+    );
+}
+
+#[test]
+fn native_distribution_validation_rejects_noncanonical_typed_metadata() {
+    let fixed = "0xd15fE25eD0Dba12fE05e7029C88b10C25e8880E3";
+
+    let mut wrong_selector = native_distribution_submit_input(fixed);
+    wrong_selector
+        .distribution_parent
+        .as_mut()
+        .expect("distribution parent")
+        .intent
+        .typed_transaction
+        .selector = Some("0xdeadbeef".into());
+    assert_distribution_validation_error(wrong_selector, "typed selector");
+
+    let mut wrong_method = native_distribution_submit_input(fixed);
+    wrong_method
+        .distribution_parent
+        .as_mut()
+        .expect("distribution parent")
+        .intent
+        .typed_transaction
+        .method_name = Some("disperseToken(address[],uint256[])".into());
+    assert_distribution_validation_error(wrong_method, "typed method_name");
+
+    let mut wrong_native_value = native_distribution_submit_input(fixed);
+    wrong_native_value
+        .distribution_parent
+        .as_mut()
+        .expect("distribution parent")
+        .intent
+        .typed_transaction
+        .native_value_wei = Some("2999".into());
+    assert_distribution_validation_error(wrong_native_value, "typed native_value_wei");
+
+    let mut wrong_type = native_distribution_submit_input(fixed);
+    wrong_type
+        .distribution_parent
+        .as_mut()
+        .expect("distribution parent")
+        .intent
+        .typed_transaction =
+        wallet_workbench_lib::models::TypedTransactionFields::native_transfer("3000");
+    assert_distribution_validation_error(wrong_type, "transaction_type contractCall");
+}
+
+#[test]
+fn recovery_intent_preserves_distribution_batch_metadata_additively() {
+    let metadata = serde_json::json!({
+        "batchId": "batch-disperse",
+        "childId": "batch-disperse:parent",
+        "batchKind": "distribute",
+        "assetKind": "native",
+        "freezeKey": "0xfrozen",
+        "childCount": 2,
+        "contractAddress": "0xd15fE25eD0Dba12fE05e7029C88b10C25e8880E3",
+        "selector": "0xe63d38ed",
+        "methodName": "disperseEther(address[],uint256[])",
+        "totalValueWei": "3000",
+        "recipients": [
+            {
+                "childId": "batch-disperse:child-0001",
+                "childIndex": 0,
+                "targetKind": "localAccount",
+                "targetAddress": "0x2222222222222222222222222222222222222222",
+                "valueWei": "1000"
+            },
+            {
+                "childId": "batch-disperse:child-0002",
+                "childIndex": 1,
+                "targetKind": "externalAddress",
+                "targetAddress": "0x3333333333333333333333333333333333333333",
+                "valueWei": "2000"
+            }
+        ]
+    });
+    let intent: wallet_workbench_lib::models::HistoryRecoveryIntent =
+        serde_json::from_value(serde_json::json!({
+            "schemaVersion": 1,
+            "id": "recovery-1",
+            "status": "active",
+            "createdAt": "1700000000",
+            "txHash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "kind": "nativeTransfer",
+            "chainId": 1,
+            "accountIndex": 1,
+            "from": "0x1111111111111111111111111111111111111111",
+            "nonce": 7,
+            "to": "0xd15fE25eD0Dba12fE05e7029C88b10C25e8880E3",
+            "valueWei": "3000",
+            "selector": "0xe63d38ed",
+            "methodName": "disperseEther(address[],uint256[])",
+            "nativeValueWei": "3000",
+            "frozenKey": "contract-frozen",
+            "gasLimit": "120000",
+            "maxFeePerGas": "40000000000",
+            "maxPriorityFeePerGas": "1500000000",
+            "batchMetadata": metadata,
+            "broadcastedAt": "1700000001",
+            "writeError": "history write failed"
+        }))
+        .expect("recovery intent with batch metadata");
+
+    let batch = intent.batch_metadata.expect("batch metadata");
+    assert_eq!(batch.freeze_key.as_deref(), Some("0xfrozen"));
+    assert_eq!(
+        batch.contract_address.as_deref(),
+        Some("0xd15fE25eD0Dba12fE05e7029C88b10C25e8880E3")
+    );
+    assert_eq!(batch.recipients.len(), 2);
+    assert_eq!(batch.recipients[0].target_kind, "localAccount");
+    assert_eq!(batch.recipients[1].target_kind, "externalAddress");
+    assert_eq!(batch.recipients[1].value_wei, "2000");
 }
 
 #[tokio::test(flavor = "current_thread")]

@@ -164,6 +164,29 @@ export interface NonceThread {
   replaced_by_tx_hash: string | null;
 }
 
+export interface BatchHistoryMetadata {
+  batch_id: string;
+  child_id: string;
+  batch_kind: "distribute" | "collect" | "unknown";
+  asset_kind: "native" | "erc20" | "unknown";
+  child_index: number | null;
+  freeze_key: string | null;
+  child_count: number | null;
+  contract_address: string | null;
+  selector: string | null;
+  method_name: string | null;
+  total_value_wei: string | null;
+  recipients: BatchRecipientAllocation[];
+}
+
+export interface BatchRecipientAllocation {
+  child_id: string;
+  child_index: number;
+  target_kind: "localAccount" | "externalAddress" | "unknown";
+  target_address: string;
+  value_wei: string;
+}
+
 export interface HistoryRecord {
   schema_version: number;
   intent: HistoryTransactionIntent;
@@ -171,6 +194,7 @@ export interface HistoryRecord {
   submission: SubmissionRecord;
   outcome: ChainOutcome;
   nonce_thread: NonceThread;
+  batch_metadata?: BatchHistoryMetadata | null;
 }
 
 const LEGACY = "legacy";
@@ -396,6 +420,54 @@ function normalizeNonceThread(rawNonceThread: unknown): NonceThread {
   };
 }
 
+function normalizeBatchKind(value: unknown): BatchHistoryMetadata["batch_kind"] {
+  return value === "distribute" || value === "collect" ? value : "unknown";
+}
+
+function normalizeBatchAssetKind(value: unknown): BatchHistoryMetadata["asset_kind"] {
+  return value === "native" || value === "erc20" ? value : "unknown";
+}
+
+function normalizeBatchTargetKind(value: unknown): BatchRecipientAllocation["target_kind"] {
+  return value === "localAccount" || value === "externalAddress" ? value : "unknown";
+}
+
+function normalizeBatchRecipientAllocation(rawAllocation: unknown): BatchRecipientAllocation {
+  const allocation = objectOrEmpty(rawAllocation);
+  return {
+    child_id: stringOrDefault(allocation.child_id ?? allocation.childId),
+    child_index: numberOrNull(allocation.child_index ?? allocation.childIndex) ?? 0,
+    target_kind: normalizeBatchTargetKind(allocation.target_kind ?? allocation.targetKind),
+    target_address: stringOrDefault(allocation.target_address ?? allocation.targetAddress),
+    value_wei: stringOrDefault(allocation.value_wei ?? allocation.valueWei),
+  };
+}
+
+function normalizeBatchRecipientAllocations(rawAllocations: unknown): BatchRecipientAllocation[] {
+  return Array.isArray(rawAllocations)
+    ? rawAllocations.map(normalizeBatchRecipientAllocation)
+    : [];
+}
+
+export function normalizeBatchMetadata(rawMetadata: unknown): BatchHistoryMetadata | null {
+  if (rawMetadata == null) return null;
+  const metadata = objectOrEmpty(rawMetadata);
+  return {
+    batch_id: stringOrDefault(metadata.batch_id ?? metadata.batchId),
+    child_id: stringOrDefault(metadata.child_id ?? metadata.childId),
+    batch_kind: normalizeBatchKind(metadata.batch_kind ?? metadata.batchKind),
+    asset_kind: normalizeBatchAssetKind(metadata.asset_kind ?? metadata.assetKind),
+    child_index: numberOrNull(metadata.child_index ?? metadata.childIndex),
+    freeze_key: stringOrNull(metadata.freeze_key ?? metadata.freezeKey),
+    child_count: numberOrNull(metadata.child_count ?? metadata.childCount),
+    contract_address: stringOrNull(metadata.contract_address ?? metadata.contractAddress),
+    selector: stringOrNull(metadata.selector),
+    method_name: stringOrNull(metadata.method_name ?? metadata.methodName),
+    total_value_wei: stringOrNull(metadata.total_value_wei ?? metadata.totalValueWei),
+    recipients: normalizeBatchRecipientAllocations(metadata.recipients),
+  };
+}
+
 export function normalizeHistoryRecord(rawRecord: unknown): HistoryRecord {
   const record = objectOrEmpty(rawRecord);
   const intentSnapshot = objectOrEmpty(record.intent_snapshot);
@@ -409,6 +481,7 @@ export function normalizeHistoryRecord(rawRecord: unknown): HistoryRecord {
     submission: normalizeSubmission(record.submission),
     outcome: normalizeOutcome(record.outcome),
     nonce_thread: normalizeNonceThread(record.nonce_thread),
+    batch_metadata: normalizeBatchMetadata(record.batch_metadata ?? record.batchMetadata),
   };
 }
 

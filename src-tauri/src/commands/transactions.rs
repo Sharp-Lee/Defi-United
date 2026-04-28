@@ -3,17 +3,148 @@ use std::sync::{Mutex, OnceLock};
 
 use crate::diagnostics::{append_diagnostic_event, DiagnosticEventInput, DiagnosticLevel};
 use crate::models::{
-    Erc20TransferIntent, NativeTransferIntent, SubmissionKind, SubmissionRecord, TransactionType,
-    TypedTransactionFields,
+    BatchHistoryMetadata, Erc20TransferIntent, NativeBatchDistributionParent,
+    NativeBatchSubmitChildResult, NativeBatchSubmitInput, NativeBatchSubmitParentResult,
+    NativeBatchSubmitResult, NativeBatchSubmitSummary, NativeTransferIntent, SubmissionKind,
+    SubmissionRecord, TransactionType, TypedTransactionFields,
 };
 use crate::transactions::{
-    dismiss_history_recovery_intent, inspect_history_storage, load_history_records,
-    load_history_recovery_intents, persist_pending_history, quarantine_history_storage,
-    reconcile_pending_history, recover_broadcasted_history_record, review_dropped_history_record,
-    submit_erc20_transfer, submit_native_transfer, submit_native_transfer_with_history_kind,
+    annotate_history_record_batch, build_disperse_ether_calldata, dismiss_history_recovery_intent,
+    inspect_history_storage, load_history_records, load_history_recovery_intents,
+    persist_pending_history, quarantine_history_storage, reconcile_pending_history,
+    recover_broadcasted_history_record, review_dropped_history_record, submit_erc20_transfer,
+    submit_native_contract_call, submit_native_transfer, submit_native_transfer_with_history_kind,
+    DISPERSE_ETHER_METHOD, DISPERSE_ETHER_SELECTOR_HEX,
 };
+use ethers::types::{Address, U256};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+
+const FIXED_NATIVE_DISPERSE_CONTRACT: &str = "0xd15fE25eD0Dba12fE05e7029C88b10C25e8880E3";
+
+pub fn validate_native_distribution_parent(
+    input: &NativeBatchSubmitInput,
+    parent: &NativeBatchDistributionParent,
+) -> Result<(Vec<Address>, Vec<U256>), String> {
+    if parent.selector != DISPERSE_ETHER_SELECTOR_HEX || parent.method_name != DISPERSE_ETHER_METHOD
+    {
+        return Err("native distribution parent must use disperseEther(address[],uint256[]) selector 0xe63d38ed".to_string());
+    }
+    if parent.intent.chain_id != input.chain_id {
+        return Err("distribution parent chainId does not match parent batch chainId".to_string());
+    }
+    if !parent
+        .contract_address
+        .eq_ignore_ascii_case(FIXED_NATIVE_DISPERSE_CONTRACT)
+    {
+        return Err(format!(
+            "native distribution contractAddress must be fixed Disperse contract {FIXED_NATIVE_DISPERSE_CONTRACT}"
+        ));
+    }
+    if !parent
+        .intent
+        .to
+        .eq_ignore_ascii_case(FIXED_NATIVE_DISPERSE_CONTRACT)
+    {
+        return Err(format!(
+            "native distribution intent.to must be fixed Disperse contract {FIXED_NATIVE_DISPERSE_CONTRACT}"
+        ));
+    }
+    if !parent
+        .intent
+        .to
+        .eq_ignore_ascii_case(&parent.contract_address)
+    {
+        return Err("distribution parent intent.to must match contractAddress".to_string());
+    }
+    if parent.intent.value_wei != parent.total_value_wei {
+        return Err("distribution parent value_wei must equal totalValueWei".to_string());
+    }
+
+    let typed = &parent.intent.typed_transaction;
+    if typed.transaction_type != TransactionType::ContractCall {
+        return Err("distribution parent intent must be transaction_type contractCall".to_string());
+    }
+    if typed.selector.as_deref() != Some(DISPERSE_ETHER_SELECTOR_HEX) {
+        return Err("distribution parent typed selector must equal 0xe63d38ed".to_string());
+    }
+    if typed.method_name.as_deref() != Some(DISPERSE_ETHER_METHOD) {
+        return Err(
+            "distribution parent typed method_name must equal disperseEther(address[],uint256[])"
+                .to_string(),
+        );
+    }
+    if typed.native_value_wei.as_deref() != Some(parent.total_value_wei.as_str()) {
+        return Err(
+            "distribution parent typed native_value_wei must equal totalValueWei".to_string(),
+        );
+    }
+
+    let expected_total = U256::from_dec_str(&parent.total_value_wei).map_err(|e| e.to_string())?;
+    if expected_total.is_zero() {
+        return Err("distribution totalValueWei must be greater than zero".to_string());
+    }
+    if parent.recipients.is_empty() {
+        return Err("native distribution requires at least one recipient".to_string());
+    }
+
+    let mut seen_child_ids = HashSet::new();
+    let mut seen_child_indexes = HashSet::new();
+    let mut recipients = Vec::with_capacity(parent.recipients.len());
+    let mut values = Vec::with_capacity(parent.recipients.len());
+
+    for (index, recipient) in parent.recipients.iter().enumerate() {
+        let child_id = recipient.child_id.trim();
+        if child_id.is_empty() {
+            return Err("distribution recipient childId must not be empty".to_string());
+        }
+        if !seen_child_ids.insert(child_id.to_string()) {
+            return Err("distribution recipient childId values must be unique".to_string());
+        }
+        if !seen_child_indexes.insert(recipient.child_index) {
+            return Err("distribution recipient childIndex values must be unique".to_string());
+        }
+        if recipient.child_index as usize != index {
+            return Err("distribution recipient childIndex values must be contiguous from zero and match recipient order".to_string());
+        }
+        if recipient.target_kind != "localAccount" && recipient.target_kind != "externalAddress" {
+            return Err(
+                "distribution recipient targetKind must be localAccount or externalAddress"
+                    .to_string(),
+            );
+        }
+        if recipient.target_address.trim().is_empty() {
+            return Err("distribution recipient targetAddress must not be empty".to_string());
+        }
+        let address = recipient
+            .target_address
+            .parse::<Address>()
+            .map_err(|e| e.to_string())?;
+        let value = U256::from_dec_str(&recipient.value_wei).map_err(|e| e.to_string())?;
+        if value.is_zero() {
+            return Err("distribution recipient valueWei must be greater than zero".to_string());
+        }
+        recipients.push(address);
+        values.push(value);
+    }
+
+    let total = values
+        .iter()
+        .copied()
+        .try_fold(U256::zero(), |acc, value| {
+            let (next, overflowed) = acc.overflowing_add(value);
+            if overflowed {
+                Err("distribution recipient values overflow totalValueWei".to_string())
+            } else {
+                Ok(next)
+            }
+        })?;
+    if total != expected_total {
+        return Err("distribution recipient values do not sum to totalValueWei".to_string());
+    }
+
+    Ok((recipients, values))
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -478,6 +609,237 @@ pub async fn submit_native_transfer_command(
 ) -> Result<String, String> {
     let record = submit_native_transfer(intent).await?;
     serde_json::to_string(&record).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn submit_native_batch_command(input: NativeBatchSubmitInput) -> Result<String, String> {
+    if input.asset_kind != "native" {
+        return Err("native batch submit only accepts assetKind native".to_string());
+    }
+    if input.batch_kind != "distribute" && input.batch_kind != "collect" {
+        return Err("native batch submit only accepts distribute or collect batchKind".to_string());
+    }
+
+    if input.batch_kind == "distribute" {
+        let parent = input.distribution_parent.clone().ok_or_else(|| {
+            "native distribution requires a distributionParent contract call".to_string()
+        })?;
+        if !input.children.is_empty() {
+            return Err("native distribution submits exactly one parent contract transaction; child transfer intents are not accepted".to_string());
+        }
+        let (recipients, values) = validate_native_distribution_parent(&input, &parent)?;
+        let calldata = build_disperse_ether_calldata(&recipients, &values)?;
+        let recipient_allocations = parent
+            .recipients
+            .iter()
+            .map(|recipient| crate::models::BatchRecipientAllocation {
+                child_id: recipient.child_id.clone(),
+                child_index: recipient.child_index,
+                target_kind: recipient.target_kind.clone(),
+                target_address: recipient.target_address.clone(),
+                value_wei: recipient.value_wei.clone(),
+            })
+            .collect::<Vec<_>>();
+        let metadata = BatchHistoryMetadata {
+            batch_id: input.batch_id.clone(),
+            child_id: format!("{}:parent", input.batch_id),
+            batch_kind: input.batch_kind.clone(),
+            asset_kind: input.asset_kind.clone(),
+            child_index: None,
+            freeze_key: Some(input.freeze_key.clone()),
+            child_count: Some(parent.recipients.len() as u32),
+            contract_address: Some(parent.contract_address.clone()),
+            selector: Some(parent.selector.clone()),
+            method_name: Some(parent.method_name.clone()),
+            total_value_wei: Some(parent.total_value_wei.clone()),
+            recipients: recipient_allocations,
+        };
+        let recovery_hint = format!(
+            "broadcast may have succeeded; fixedContract={}; freezeKey={}; selector={}; method={}; totalValueWei={}; childCount={}; recipients={}",
+            FIXED_NATIVE_DISPERSE_CONTRACT,
+            input.freeze_key,
+            parent.selector,
+            parent.method_name,
+            parent.total_value_wei,
+            parent.recipients.len(),
+            serde_json::to_string(&metadata.recipients).unwrap_or_else(|_| "[]".to_string())
+        );
+        let parent_result =
+            match submit_native_contract_call(parent.intent, calldata, Some(metadata)).await {
+                Ok(record) => NativeBatchSubmitParentResult {
+                    record: Some(record),
+                    error: None,
+                    recovery_hint: None,
+                },
+                Err(error) => {
+                    let recovery_hint =
+                        if error.contains("broadcasted") || error.contains("tx_hash") {
+                            Some(recovery_hint)
+                        } else {
+                            None
+                        };
+                    NativeBatchSubmitParentResult {
+                        record: None,
+                        error: Some(error),
+                        recovery_hint,
+                    }
+                }
+            };
+        let children = parent
+            .recipients
+            .into_iter()
+            .map(|recipient| NativeBatchSubmitChildResult {
+                child_id: recipient.child_id,
+                child_index: recipient.child_index,
+                target_address: Some(recipient.target_address),
+                target_kind: Some(recipient.target_kind),
+                amount_wei: Some(recipient.value_wei),
+                record: None,
+                error: parent_result.error.clone(),
+                recovery_hint: parent_result.recovery_hint.clone(),
+            })
+            .collect::<Vec<_>>();
+        let submitted_count = usize::from(parent_result.record.is_some());
+        let failed_count = usize::from(parent_result.error.is_some());
+        let result = NativeBatchSubmitResult {
+            batch_id: input.batch_id,
+            batch_kind: input.batch_kind,
+            asset_kind: input.asset_kind,
+            chain_id: input.chain_id,
+            parent: Some(parent_result),
+            summary: NativeBatchSubmitSummary {
+                child_count: children.len(),
+                submitted_count,
+                failed_count,
+            },
+            children,
+        };
+        return serde_json::to_string(&result).map_err(|e| e.to_string());
+    }
+
+    let mut children = Vec::with_capacity(input.children.len());
+    for child in input.children {
+        let metadata = BatchHistoryMetadata {
+            batch_id: input.batch_id.clone(),
+            child_id: child.child_id.clone(),
+            batch_kind: child.batch_kind.clone(),
+            asset_kind: child.asset_kind.clone(),
+            child_index: Some(child.child_index),
+            freeze_key: Some(child.freeze_key.clone()),
+            child_count: None,
+            contract_address: None,
+            selector: None,
+            method_name: None,
+            total_value_wei: None,
+            recipients: Vec::new(),
+        };
+        if child.asset_kind != "native" || child.batch_kind != input.batch_kind {
+            children.push(NativeBatchSubmitChildResult {
+                child_id: child.child_id,
+                child_index: child.child_index,
+                target_address: None,
+                target_kind: None,
+                amount_wei: None,
+                record: None,
+                error: Some("child batch metadata does not match parent native batch".to_string()),
+                recovery_hint: None,
+            });
+            continue;
+        }
+        if child.intent.chain_id != input.chain_id {
+            children.push(NativeBatchSubmitChildResult {
+                child_id: child.child_id,
+                child_index: child.child_index,
+                target_address: None,
+                target_kind: None,
+                amount_wei: None,
+                record: None,
+                error: Some("child chainId does not match parent batch chainId".to_string()),
+                recovery_hint: None,
+            });
+            continue;
+        }
+
+        let child_id = child.child_id.clone();
+        let child_index = child.child_index;
+        match submit_native_transfer_with_history_kind(
+            child.intent,
+            SubmissionKind::NativeTransfer,
+            None,
+        )
+        .await
+        {
+            Ok(record) => {
+                let tx_hash = record.submission.tx_hash.clone();
+                match annotate_history_record_batch(&tx_hash, metadata) {
+                    Ok(annotated) => children.push(NativeBatchSubmitChildResult {
+                        child_id,
+                        child_index,
+                        target_address: None,
+                        target_kind: None,
+                        amount_wei: None,
+                        record: Some(annotated),
+                        error: None,
+                        recovery_hint: None,
+                    }),
+                    Err(error) => children.push(NativeBatchSubmitChildResult {
+                        child_id,
+                        child_index,
+                        target_address: None,
+                        target_kind: None,
+                        amount_wei: None,
+                        record: Some(record),
+                        error: Some(format!(
+                            "transaction was submitted, but batch history metadata was not written: {error}"
+                        )),
+                        recovery_hint: Some(
+                            "tx hash is in the returned child record; retry history refresh before rebroadcasting"
+                                .to_string(),
+                        ),
+                    }),
+                }
+            }
+            Err(error) => {
+                let recovery_hint = if error.contains("broadcasted") || error.contains("tx_hash") {
+                    Some("broadcast may have succeeded; check recovery intents/history before retrying".to_string())
+                } else {
+                    None
+                };
+                children.push(NativeBatchSubmitChildResult {
+                    child_id,
+                    child_index,
+                    target_address: None,
+                    target_kind: None,
+                    amount_wei: None,
+                    record: None,
+                    error: Some(error),
+                    recovery_hint,
+                });
+            }
+        }
+    }
+    let submitted_count = children
+        .iter()
+        .filter(|child| child.record.is_some())
+        .count();
+    let failed_count = children
+        .iter()
+        .filter(|child| child.error.is_some())
+        .count();
+    let result = NativeBatchSubmitResult {
+        batch_id: input.batch_id,
+        batch_kind: input.batch_kind,
+        asset_kind: input.asset_kind,
+        chain_id: input.chain_id,
+        parent: None,
+        summary: NativeBatchSubmitSummary {
+            child_count: children.len(),
+            submitted_count,
+            failed_count,
+        },
+        children,
+    };
+    serde_json::to_string(&result).map_err(|e| e.to_string())
 }
 
 #[tauri::command]

@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use ethers::abi::{encode, Token};
 use ethers::middleware::SignerMiddleware;
 use ethers::providers::{Http, Middleware, Provider};
 use ethers::signers::Signer;
@@ -22,8 +23,8 @@ use crate::diagnostics::{
     append_diagnostic_event, sanitize_diagnostic_message, DiagnosticEventInput, DiagnosticLevel,
 };
 use crate::models::{
-    ChainOutcome, DroppedReviewSummary, Erc20TransferIntent, HistoryErrorSummary,
-    HistoryRecoveryIntent, HistoryRecoveryIntentStatus, HistoryRecoveryResult,
+    BatchHistoryMetadata, ChainOutcome, DroppedReviewSummary, Erc20TransferIntent,
+    HistoryErrorSummary, HistoryRecoveryIntent, HistoryRecoveryIntentStatus, HistoryRecoveryResult,
     HistoryRecoveryResultStatus, IntentSnapshotMetadata, NonceThread, ReceiptSummary,
     ReconcileSummary, SubmissionKind, SubmissionRecord, TransactionType, TypedTransactionFields,
 };
@@ -39,6 +40,9 @@ const ERC20_TRANSFER_SELECTOR: [u8; 4] = [0xa9, 0x05, 0x9c, 0xbb];
 const ERC20_BALANCE_OF_SELECTOR: [u8; 4] = [0x70, 0xa0, 0x82, 0x31];
 const ERC20_TRANSFER_SELECTOR_HEX: &str = "0xa9059cbb";
 const ERC20_TRANSFER_METHOD: &str = "transfer(address,uint256)";
+const DISPERSE_ETHER_SELECTOR: [u8; 4] = [0xe6, 0x3d, 0x38, 0xed];
+pub const DISPERSE_ETHER_SELECTOR_HEX: &str = "0xe63d38ed";
+pub const DISPERSE_ETHER_METHOD: &str = "disperseEther(address[],uint256[])";
 
 fn history_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -567,6 +571,7 @@ fn history_recovery_intent_from_broadcast_failure(
     replaces_tx_hash: Option<String>,
     broadcasted_at: String,
     write_error: String,
+    batch_metadata: Option<BatchHistoryMetadata>,
 ) -> Result<HistoryRecoveryIntent, String> {
     history_recovery_intent_from_broadcast_failure_with_frozen_key(
         intent,
@@ -576,6 +581,7 @@ fn history_recovery_intent_from_broadcast_failure(
         broadcasted_at,
         write_error,
         None,
+        batch_metadata,
     )
 }
 
@@ -587,6 +593,7 @@ fn history_recovery_intent_from_broadcast_failure_with_frozen_key(
     broadcasted_at: String,
     write_error: String,
     frozen_key_override: Option<String>,
+    batch_metadata: Option<BatchHistoryMetadata>,
 ) -> Result<HistoryRecoveryIntent, String> {
     let created_at = now_unix_seconds()?;
     let id = history_recovery_intent_id(
@@ -633,6 +640,7 @@ fn history_recovery_intent_from_broadcast_failure_with_frozen_key(
         max_fee_per_gas: Some(intent.max_fee_per_gas.clone()),
         max_priority_fee_per_gas: Some(intent.max_priority_fee_per_gas.clone()),
         replaces_tx_hash,
+        batch_metadata,
         broadcasted_at,
         write_error: sanitize_recovery_error(&write_error),
         last_recovery_error: None,
@@ -787,6 +795,22 @@ pub fn build_erc20_transfer_calldata(recipient: Address, amount: U256) -> Bytes 
     Bytes::from(data)
 }
 
+pub fn build_disperse_ether_calldata(
+    recipients: &[Address],
+    values: &[U256],
+) -> Result<Bytes, String> {
+    if recipients.len() != values.len() {
+        return Err("disperseEther recipients and values length mismatch".to_string());
+    }
+    let mut data = Vec::new();
+    data.extend_from_slice(&DISPERSE_ETHER_SELECTOR);
+    data.extend_from_slice(&encode(&[
+        Token::Array(recipients.iter().copied().map(Token::Address).collect()),
+        Token::Array(values.iter().copied().map(Token::Uint).collect()),
+    ]));
+    Ok(Bytes::from(data))
+}
+
 fn build_erc20_balance_of_calldata(owner: Address) -> Bytes {
     let mut data = Vec::with_capacity(36);
     data.extend_from_slice(&ERC20_BALANCE_OF_SELECTOR);
@@ -938,40 +962,62 @@ fn submission_record_from_intent(
     kind: SubmissionKind,
     replaces_tx_hash: Option<String>,
 ) -> SubmissionRecord {
-    let frozen_key = if intent.typed_transaction.transaction_type == TransactionType::Erc20Transfer
-    {
-        format!(
-            "{}:{}:{}:{}:{}:{}:{}:{}",
-            intent.chain_id,
-            intent.from,
-            intent
-                .typed_transaction
-                .token_contract
-                .as_deref()
-                .unwrap_or(&intent.to),
-            intent
-                .typed_transaction
-                .recipient
-                .as_deref()
-                .unwrap_or("unknown"),
-            intent
-                .typed_transaction
-                .amount_raw
-                .as_deref()
-                .unwrap_or("unknown"),
-            intent
-                .typed_transaction
-                .decimals
-                .map(|value| value.to_string())
-                .unwrap_or_else(|| "unknown".to_string()),
-            intent.nonce,
-            ERC20_TRANSFER_SELECTOR_HEX
-        )
-    } else {
-        format!(
-            "{}:{}:{}:{}:{}",
-            intent.chain_id, intent.from, intent.to, intent.value_wei, intent.nonce
-        )
+    let frozen_key = match intent.typed_transaction.transaction_type {
+        TransactionType::Erc20Transfer => {
+            format!(
+                "{}:{}:{}:{}:{}:{}:{}:{}",
+                intent.chain_id,
+                intent.from,
+                intent
+                    .typed_transaction
+                    .token_contract
+                    .as_deref()
+                    .unwrap_or(&intent.to),
+                intent
+                    .typed_transaction
+                    .recipient
+                    .as_deref()
+                    .unwrap_or("unknown"),
+                intent
+                    .typed_transaction
+                    .amount_raw
+                    .as_deref()
+                    .unwrap_or("unknown"),
+                intent
+                    .typed_transaction
+                    .decimals
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "unknown".to_string()),
+                intent.nonce,
+                ERC20_TRANSFER_SELECTOR_HEX
+            )
+        }
+        TransactionType::ContractCall => {
+            format!(
+                "{}:{}:{}:{}:{}:{}:{}",
+                intent.chain_id,
+                intent.from,
+                intent.to,
+                intent.value_wei,
+                intent.nonce,
+                intent
+                    .typed_transaction
+                    .selector
+                    .as_deref()
+                    .unwrap_or("unknown"),
+                intent
+                    .typed_transaction
+                    .method_name
+                    .as_deref()
+                    .unwrap_or("unknown")
+            )
+        }
+        _ => {
+            format!(
+                "{}:{}:{}:{}:{}",
+                intent.chain_id, intent.from, intent.to, intent.value_wei, intent.nonce
+            )
+        }
     };
 
     SubmissionRecord {
@@ -1039,6 +1085,24 @@ fn persist_pending_history_with_kind_at(
     replaces_tx_hash: Option<String>,
     broadcasted_at: String,
 ) -> Result<HistoryRecord, String> {
+    persist_pending_history_with_kind_at_and_batch(
+        intent,
+        tx_hash,
+        kind,
+        replaces_tx_hash,
+        broadcasted_at,
+        None,
+    )
+}
+
+fn persist_pending_history_with_kind_at_and_batch(
+    intent: NativeTransferIntent,
+    tx_hash: String,
+    kind: SubmissionKind,
+    replaces_tx_hash: Option<String>,
+    broadcasted_at: String,
+    batch_metadata: Option<BatchHistoryMetadata>,
+) -> Result<HistoryRecord, String> {
     let _guard = history_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -1070,6 +1134,7 @@ fn persist_pending_history_with_kind_at(
             dropped_review_history: Vec::new(),
         },
         nonce_thread,
+        batch_metadata,
     };
 
     let mut records = load_history_records()?;
@@ -1097,6 +1162,28 @@ fn persist_pending_history_with_kind_at(
     );
 
     Ok(record)
+}
+
+pub fn annotate_history_record_batch(
+    tx_hash: &str,
+    batch_metadata: BatchHistoryMetadata,
+) -> Result<HistoryRecord, String> {
+    let _guard = history_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut records = load_history_records()?;
+    let Some(record) = records
+        .iter_mut()
+        .find(|record| record.submission.tx_hash.eq_ignore_ascii_case(tx_hash))
+    else {
+        return Err(format!(
+            "history record not found for batch annotation tx_hash {tx_hash}"
+        ));
+    };
+    record.batch_metadata = Some(batch_metadata);
+    let annotated = record.clone();
+    write_history_records(&records)?;
+    Ok(annotated)
 }
 
 pub fn mark_prior_history_state(
@@ -2366,6 +2453,10 @@ fn history_record_from_recovery_intent(
     let is_erc20 = intent.kind == SubmissionKind::Erc20Transfer
         || intent.token_contract.is_some()
         || intent.amount_raw.is_some();
+    let is_contract_call = !is_erc20
+        && (intent.selector.is_some()
+            || intent.method_name.is_some()
+            || intent.batch_metadata.is_some());
     let typed_transaction = if is_erc20 {
         TypedTransactionFields {
             transaction_type: TransactionType::Erc20Transfer,
@@ -2389,6 +2480,21 @@ fn history_record_from_recovery_intent(
                 .clone()
                 .or_else(|| Some("0".to_string())),
         }
+    } else if is_contract_call {
+        TypedTransactionFields::contract_call(
+            intent
+                .selector
+                .clone()
+                .unwrap_or_else(|| "unknown".to_string()),
+            intent
+                .method_name
+                .clone()
+                .unwrap_or_else(|| "unknown".to_string()),
+            intent
+                .native_value_wei
+                .clone()
+                .unwrap_or_else(|| value_wei.clone()),
+        )
     } else {
         TypedTransactionFields::native_transfer(value_wei.clone())
     };
@@ -2410,6 +2516,15 @@ fn history_record_from_recovery_intent(
                     .selector
                     .as_deref()
                     .unwrap_or(ERC20_TRANSFER_SELECTOR_HEX)
+            )
+        } else if is_contract_call {
+            format!(
+                "{chain_id}:{from}:{to}:{value_wei}:{nonce}:{}:{}",
+                typed_transaction.selector.as_deref().unwrap_or("unknown"),
+                typed_transaction
+                    .method_name
+                    .as_deref()
+                    .unwrap_or("unknown")
             )
         } else {
             format!("{chain_id}:{from}:{to}:{value_wei}:{nonce}")
@@ -2484,6 +2599,7 @@ fn history_record_from_recovery_intent(
             replaces_tx_hash: intent.replaces_tx_hash.clone(),
             replaced_by_tx_hash: None,
         },
+        batch_metadata: intent.batch_metadata.clone(),
     })
 }
 
@@ -3345,6 +3461,7 @@ pub async fn submit_erc20_transfer(intent: Erc20TransferIntent) -> Result<Histor
             broadcasted_at,
             error.clone(),
             Some(intent.frozen_key.clone()),
+            None,
         )
         .and_then(record_history_recovery_intent);
         let recovery_recorded = recovery_result.is_ok();
@@ -3465,6 +3582,7 @@ async fn submit_erc20_history_intent_with_kind(
             broadcasted_at,
             error.clone(),
             Some(recovery_frozen_key.clone()),
+            None,
         )
         .and_then(record_history_recovery_intent);
         erc20_history_intent_broadcast_history_write_error(
@@ -3473,6 +3591,150 @@ async fn submit_erc20_history_intent_with_kind(
             &recovery_frozen_key,
             &error,
         )
+    })
+}
+
+pub async fn submit_native_contract_call(
+    intent: NativeTransferIntent,
+    calldata: Bytes,
+    batch_metadata: Option<BatchHistoryMetadata>,
+) -> Result<HistoryRecord, String> {
+    if intent.typed_transaction.transaction_type != TransactionType::ContractCall {
+        return Err(
+            "native contract call submit requires transaction_type contractCall".to_string(),
+        );
+    }
+    let wallet = with_session_mnemonic(|mnemonic| derive_wallet(mnemonic, intent.account_index))?
+        .with_chain_id(intent.chain_id);
+    let provider = Provider::<Http>::try_from(intent.rpc_url.clone()).map_err(|e| {
+        let error = e.to_string();
+        record_transaction_diagnostic(
+            DiagnosticLevel::Error,
+            "nativeContractCallProviderInvalid",
+            Some(intent.chain_id),
+            Some(intent.account_index),
+            None,
+            Some(error.clone()),
+            json!({ "selector": intent.typed_transaction.selector }),
+        );
+        error
+    })?;
+    preflight_native_transfer(&intent, wallet.address(), &provider).await?;
+    if let Err(error) = load_history_records() {
+        record_transaction_diagnostic(
+            DiagnosticLevel::Error,
+            "nativeContractCallHistoryPreloadFailed",
+            Some(intent.chain_id),
+            Some(intent.account_index),
+            None,
+            Some(error.clone()),
+            json!({ "selector": intent.typed_transaction.selector }),
+        );
+        return Err(error);
+    }
+    let signer = SignerMiddleware::new(provider, wallet);
+    let tx = Eip1559TransactionRequest::new()
+        .to(parse_native_transfer_address(
+            &intent,
+            "to",
+            &intent.to,
+            "nativeContractCallTransactionFieldInvalid",
+        )?)
+        .from(parse_native_transfer_address(
+            &intent,
+            "from",
+            &intent.from,
+            "nativeContractCallTransactionFieldInvalid",
+        )?)
+        .value(parse_native_transfer_u256(
+            &intent,
+            "value_wei",
+            &intent.value_wei,
+            "nativeContractCallTransactionFieldInvalid",
+        )?)
+        .data(calldata)
+        .nonce(U256::from(intent.nonce))
+        .gas(parse_native_transfer_u256(
+            &intent,
+            "gas_limit",
+            &intent.gas_limit,
+            "nativeContractCallTransactionFieldInvalid",
+        )?)
+        .max_fee_per_gas(parse_native_transfer_u256(
+            &intent,
+            "max_fee_per_gas",
+            &intent.max_fee_per_gas,
+            "nativeContractCallTransactionFieldInvalid",
+        )?)
+        .max_priority_fee_per_gas(parse_native_transfer_u256(
+            &intent,
+            "max_priority_fee_per_gas",
+            &intent.max_priority_fee_per_gas,
+            "nativeContractCallTransactionFieldInvalid",
+        )?)
+        .chain_id(intent.chain_id);
+
+    let pending = signer.send_transaction(tx, None).await.map_err(|e| {
+        let error = e.to_string();
+        record_transaction_diagnostic(
+            DiagnosticLevel::Error,
+            "nativeContractCallBroadcastFailed",
+            Some(intent.chain_id),
+            Some(intent.account_index),
+            None,
+            Some(error.clone()),
+            json!({ "selector": intent.typed_transaction.selector, "nonce": intent.nonce }),
+        );
+        error
+    })?;
+    let tx_hash = format!("{:#x}", pending.tx_hash());
+    record_transaction_diagnostic(
+        DiagnosticLevel::Info,
+        "nativeContractCallBroadcastSucceeded",
+        Some(intent.chain_id),
+        Some(intent.account_index),
+        Some(tx_hash.clone()),
+        None,
+        json!({ "selector": intent.typed_transaction.selector, "nonce": intent.nonce }),
+    );
+
+    let recovery_intent = intent.clone();
+    let recovery_batch_metadata = batch_metadata.clone();
+    let broadcasted_at = now_unix_seconds()?;
+    persist_pending_history_with_kind_at_and_batch(
+        intent,
+        tx_hash.clone(),
+        SubmissionKind::NativeTransfer,
+        None,
+        broadcasted_at.clone(),
+        batch_metadata,
+    )
+    .map_err(|error| {
+        let recovery_result = history_recovery_intent_from_broadcast_failure(
+            &recovery_intent,
+            tx_hash.clone(),
+            SubmissionKind::NativeTransfer,
+            None,
+            broadcasted_at,
+            error.clone(),
+            recovery_batch_metadata,
+        )
+        .and_then(record_history_recovery_intent);
+        let recovery_recorded = recovery_result.is_ok();
+        record_transaction_diagnostic(
+            DiagnosticLevel::Error,
+            "nativeContractCallHistoryWriteAfterBroadcastFailed",
+            Some(recovery_intent.chain_id),
+            Some(recovery_intent.account_index),
+            Some(tx_hash.clone()),
+            Some(error.clone()),
+            json!({
+                "selector": recovery_intent.typed_transaction.selector,
+                "nonce": recovery_intent.nonce,
+                "recoveryRecorded": recovery_recorded,
+            }),
+        );
+        broadcast_history_write_error(&tx_hash, &error)
     })
 }
 
@@ -3598,6 +3860,7 @@ pub async fn submit_native_transfer_with_history_kind(
             recovery_replaces_tx_hash,
             broadcasted_at,
             error.clone(),
+            None,
         )
         .and_then(record_history_recovery_intent);
         let recovery_recorded = recovery_result.is_ok();

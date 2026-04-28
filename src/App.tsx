@@ -786,6 +786,19 @@ export function App() {
     void refreshAccountsFromDisk();
   }
 
+  function handleNativeBatchSubmitted(records: HistoryRecord[]) {
+    if (records.length > 0) {
+      setHistory((current) => [...records].reverse().concat(current));
+    }
+    void inspectTransactionHistoryStorage()
+      .then(setHistoryStorage)
+      .catch(() => {});
+    void loadHistoryRecoveryIntents()
+      .then(setHistoryRecoveryIntents)
+      .catch(() => {});
+    void refreshAccountsFromDisk();
+  }
+
   async function handleReplacePending(request: PendingMutationRequest) {
     setAppError(null);
     setBusy(true);
@@ -1017,6 +1030,8 @@ export function App() {
         setSettingsStatus({ kind: "idle", message: null });
       }}
       onCancelPending={handleCancelPending}
+      onNativeBatchSubmitFailed={handleTransferSubmitFailed}
+      onNativeBatchSubmitted={handleNativeBatchSubmitted}
       onTabChange={setActiveTab}
       onTransferSubmitFailed={handleTransferSubmitFailed}
       onTransferSubmitted={handleTransferSubmitted}

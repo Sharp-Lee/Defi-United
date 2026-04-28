@@ -295,6 +295,72 @@ function erc20Record() {
   };
 }
 
+function nativeDistributionRecord() {
+  const contract = "0xd15fE25eD0Dba12fE05e7029C88b10C25e8880E3";
+  return {
+    ...record({ txHash: "0xdisperse", nonce: 12, submissionValueWei: "300", intentValueWei: "300" }),
+    intent: {
+      ...record({ txHash: "0xdisperse-intent", nonce: 12 }).intent,
+      transaction_type: "contractCall",
+      to: contract,
+      value_wei: "300",
+      native_value_wei: "300",
+      selector: "0xe63d38ed",
+      method_name: "disperseEther(address[],uint256[])",
+    },
+    submission: {
+      ...record({ txHash: "0xdisperse-submission", nonce: 12 }).submission,
+      frozen_key: "disperse-key",
+      tx_hash: "0xdisperse",
+      transaction_type: "contractCall",
+      to: contract,
+      value_wei: "300",
+      native_value_wei: "300",
+      selector: "0xe63d38ed",
+      method_name: "disperseEther(address[],uint256[])",
+      nonce: 12,
+    },
+    outcome: {
+      state: "Pending",
+      tx_hash: "0xdisperse",
+      finalized_at: null,
+      receipt: null,
+      reconciled_at: null,
+      reconcile_summary: null,
+      error_summary: null,
+      dropped_review_history: [],
+    },
+    batch_metadata: {
+      batch_id: "batch-disperse",
+      child_id: "batch-disperse:parent",
+      batch_kind: "distribute",
+      asset_kind: "native",
+      freeze_key: "0xfrozen-disperse",
+      child_count: 2,
+      contract_address: contract,
+      selector: "0xe63d38ed",
+      method_name: "disperseEther(address[],uint256[])",
+      total_value_wei: "300",
+      recipients: [
+        {
+          child_id: "batch-disperse:child-0001",
+          child_index: 0,
+          target_kind: "localAccount",
+          target_address: accountB,
+          value_wei: "100",
+        },
+        {
+          child_id: "batch-disperse:child-0002",
+          child_index: 1,
+          target_kind: "externalAddress",
+          target_address: recipient,
+          value_wei: "200",
+        },
+      ],
+    },
+  };
+}
+
 function recoveryIntent(overrides = {}) {
   return {
     schemaVersion: 1,
@@ -601,6 +667,26 @@ describe("HistoryView", () => {
     expect(within(submissionSection).getByText("transfer")).toBeInTheDocument();
     expect(within(submissionSection).getByText("Metadata source")).toBeInTheDocument();
     expect(within(submissionSection).getByText("userConfirmed")).toBeInTheDocument();
+  });
+
+  it("renders native distribution recipient allocations from persisted batch metadata", () => {
+    renderHistory([nativeDistributionRecord()]);
+
+    const row = screen.getByText("0xdisperse").closest("tr") as HTMLElement;
+    fireEvent.click(within(row).getByText("Details"));
+
+    const panel = within(screen.getByLabelText("History details"));
+    const allocations = within(panel.getByLabelText("Distribution recipient allocations"));
+    expect(allocations.getByText("batch-disperse:child-0001")).toBeInTheDocument();
+    expect(allocations.getByText("batch-disperse:child-0002")).toBeInTheDocument();
+    expect(allocations.getByText("localAccount")).toBeInTheDocument();
+    expect(allocations.getByText("externalAddress")).toBeInTheDocument();
+    expect(allocations.getByText(accountB)).toBeInTheDocument();
+    expect(allocations.getByText(recipient)).toBeInTheDocument();
+    expect(allocations.getByText("100 wei")).toBeInTheDocument();
+    expect(allocations.getByText("200 wei")).toBeInTheDocument();
+    expect(allocations.getAllByText("0xdisperse")).toHaveLength(2);
+    expect(allocations.getAllByText("Pending")).toHaveLength(2);
   });
 
   it("shows unknown typed records as unsupported instead of native transfer copy", () => {

@@ -61,6 +61,7 @@ describe("history schema normalization", () => {
         key: "unknown",
         chain_id: null,
       },
+      batch_metadata: null,
     });
   });
 
@@ -130,6 +131,147 @@ describe("history schema normalization", () => {
     expect(records[0].nonce_thread.key).toBe(
       "1:1:0x1111111111111111111111111111111111111111:7",
     );
+  });
+
+  it("normalizes additive batch metadata without breaking ordinary history rows", () => {
+    const records = normalizeHistoryRecords([
+      {
+        schema_version: 2,
+        intent: legacyIntent,
+        intent_snapshot: {
+          source: "nativeTransferIntent",
+          captured_at: "1700000000",
+        },
+        submission: {
+          frozen_key: "batch-key",
+          tx_hash: "0xbatch",
+          kind: "nativeTransfer",
+          source: "submission",
+          chain_id: 1,
+          account_index: 1,
+          from: legacyIntent.from,
+          to: legacyIntent.to,
+          value_wei: "100",
+          nonce: 7,
+          gas_limit: "21000",
+          max_fee_per_gas: "40000000000",
+          max_priority_fee_per_gas: "1500000000",
+          broadcasted_at: "1700000001",
+          replaces_tx_hash: null,
+        },
+        outcome: {
+          state: "Pending",
+          tx_hash: "0xbatch",
+        },
+        nonce_thread: {
+          source: "derived",
+          key: "1:1:0x1111111111111111111111111111111111111111:7",
+          chain_id: 1,
+          account_index: 1,
+          from: legacyIntent.from,
+          nonce: 7,
+        },
+        batchMetadata: {
+          batchId: "batch-1",
+          childId: "batch-1:child-0001",
+          batchKind: "distribute",
+          assetKind: "native",
+          childIndex: 0,
+          freezeKey: "0xfrozen",
+        },
+      },
+    ]);
+
+    expect(records[0].batch_metadata).toEqual({
+      batch_id: "batch-1",
+      child_id: "batch-1:child-0001",
+      batch_kind: "distribute",
+      asset_kind: "native",
+      child_index: 0,
+      freeze_key: "0xfrozen",
+      child_count: null,
+      contract_address: null,
+      selector: null,
+      method_name: null,
+      total_value_wei: null,
+      recipients: [],
+    });
+  });
+
+  it("normalizes persisted native distribution recipient allocations", () => {
+    const records = normalizeHistoryRecords([
+      {
+        intent: {
+          ...legacyIntent,
+          transaction_type: "contractCall",
+          to: "0xd15fE25eD0Dba12fE05e7029C88b10C25e8880E3",
+          value_wei: "300",
+          native_value_wei: "300",
+          selector: "0xe63d38ed",
+          method_name: "disperseEther(address[],uint256[])",
+        },
+        submission: {
+          frozen_key: "contract-key",
+          tx_hash: "0xcontract",
+          transaction_type: "contractCall",
+          selector: "0xe63d38ed",
+          method_name: "disperseEther(address[],uint256[])",
+          native_value_wei: "300",
+          chain_id: 1,
+          account_index: 1,
+          from: legacyIntent.from,
+          to: "0xd15fE25eD0Dba12fE05e7029C88b10C25e8880E3",
+          value_wei: "300",
+          nonce: 7,
+        },
+        outcome: { state: "Pending", tx_hash: "0xcontract" },
+        batch_metadata: {
+          batch_id: "batch-1",
+          child_id: "batch-1:parent",
+          batch_kind: "distribute",
+          asset_kind: "native",
+          freeze_key: "0xfrozen",
+          child_count: 2,
+          contract_address: "0xd15fE25eD0Dba12fE05e7029C88b10C25e8880E3",
+          selector: "0xe63d38ed",
+          method_name: "disperseEther(address[],uint256[])",
+          total_value_wei: "300",
+          recipients: [
+            {
+              child_id: "batch-1:child-0001",
+              child_index: 0,
+              target_kind: "localAccount",
+              target_address: "0x2222222222222222222222222222222222222222",
+              value_wei: "100",
+            },
+            {
+              childId: "batch-1:child-0002",
+              childIndex: 1,
+              targetKind: "externalAddress",
+              targetAddress: "0x3333333333333333333333333333333333333333",
+              valueWei: "200",
+            },
+          ],
+        },
+      },
+    ]);
+
+    expect(records[0].batch_metadata?.recipients).toEqual([
+      {
+        child_id: "batch-1:child-0001",
+        child_index: 0,
+        target_kind: "localAccount",
+        target_address: "0x2222222222222222222222222222222222222222",
+        value_wei: "100",
+      },
+      {
+        child_id: "batch-1:child-0002",
+        child_index: 1,
+        target_kind: "externalAddress",
+        target_address: "0x3333333333333333333333333333333333333333",
+        value_wei: "200",
+      },
+    ]);
   });
 
   it("normalizes mixed legacy and p3 records to one stable contract", () => {
