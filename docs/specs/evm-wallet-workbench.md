@@ -19,7 +19,7 @@ EVM Wallet Workbench 是一个面向本地桌面使用的 EVM 钱包工作台。
 - 不作为通用消费级移动钱包。
 - 不追求浏览器插件钱包或网页钱包形态。
 - v1 不支持多助记词 vault、私钥导入、硬件钱包、只读地址。
-- v1 不支持 ERC-20 转账、批量分发、合约 ABI 调用器、任意 calldata 发送。
+- 当前 v1 runtime 不支持 ERC-20 转账、批量分发/归集、合约 ABI 调用器、任意 calldata 发送；P4-8 到 P4-11 相关章节均为后续设计或任务输入，不代表已可用能力。
 - v1 不提供云同步、多人协作或跨设备状态同步。
 - v1 不承诺 Windows/Linux 发布支持；当前目标平台优先为 macOS desktop。
 
@@ -328,6 +328,83 @@ v1 + P3/P4 已将基础历史列表升级为可筛选、可分组、可审计的
 - External address 输入必须使用 EVM address 校验和规范化；无效地址保持错误可见，重复 external 地址必须拒绝或去重。P4-10 不把 external address book 保存到磁盘。
 - 冻结摘要是操作前只读快照。用户改变 `chainId`、source selection、local target selection 或 external target list 后，旧 summary 必须清空或明确失效，避免被误认为仍可使用。
 - ERC-20 可用性只消费 P4-9 watchlist/balance snapshot read model。metadata、symbol、name 不能参与账户或 token 身份判断；缺失/失败/stale 状态必须可见，不能静默隐藏。
+
+### 9.5 批量分发/归集模型（P4-11 设计）
+
+本小节定义 P4-11 的 batch 分发/归集设计契约，不表示当前应用已经支持批量发送。P4-11 只做 spec/design；不实现发送代码、不签名、不广播、不迁移历史。后续 P4-12 可在本契约上实现 native batch 的最小路径，P4-13 可在同一模型上实现 ERC-20 batch。
+
+**目标**
+
+- 定义 `distribute` 与 `collect` 两类 batch 的身份、冻结、子交易、历史聚合和失败恢复模型。
+- 批量分发除外部地址外，必须支持选择本地账户作为接收方；source 必须是用户显式选择的本地账户。
+- 批量归集必须支持 native 与 ERC-20，从部分或全部本地账户归集到一个指定目标账户；目标可以是本地账户，也可以是外部地址。
+- 每个 child transaction 都必须保留独立 Intent、Submission、ChainOutcome、nonce、tx hash、错误和恢复状态；batch 只提供聚合摘要。
+
+**非目标与边界**
+
+- 不承诺原子 batch；任意子交易成功、失败、pending、dropped 或 skipped 都必须被视为正常可表达结果。
+- 不引入 smart contract multicall、airdrop contract、batch contract 或 relay；每个 child 仍按普通 EOA 交易处理。
+- 不做 allowance/approve/permit/revoke、swap、bridge、资产发现、授权扫描或 fee-on-transfer token 的特殊保证。
+- 不绕过 P4-8/P4-9/P4-10：ERC-20 child 必须沿用 P4-8 的 ERC-20 transfer/history 模型，token 与余额输入来自 P4-9 的 watchlist/snapshot，账户集合与冻结摘要来自 P4-10。
+
+**Batch identity 与数据模型**
+
+- `BatchPlan` 至少包含 `batchId`、`batchKind = distribute | collect`、`assetKind = native | erc20`、`chainId`、`createdAt`、可选 `frozenAt`、source account refs、target refs、per-item children 和 batch-level summary。
+- `batchId` 是本地历史聚合身份，不是链上身份。它不得依赖 RPC URL，也不得被用作 child nonce 或 tx hash 的替代。
+- Source account refs 必须是 `LocalAccountReference[]`。Target refs 必须保留 `localAccount` 与 `externalAddress` 类型，不能只保存裸地址数组。
+- ERC-20 batch 必须包含 token identity：`chainId + tokenContract`，以及冻结时使用的 `decimals`、metadata source 和 snapshot references。ERC-20 transfer 的 transaction `to` 仍是 `tokenContract`，recipient 是 calldata 参数。
+- 每个 child 必须有独立 child id、source local account、target ref、amount rule 或 amount raw、intent snapshot、submission snapshot、chain outcome、nonce、tx hash、broadcast/write error、recovery hint 和 status。
+- Batch summary 只能从 children 聚合得出，例如 child counts、total planned amount、submitted count、confirmed count、failed count、skipped count、pending count 和 aggregate warnings。历史按 `batchId` 聚合展示时，绝不能隐藏 child 的 nonce、hash、状态或失败原因。
+
+**分发场景**
+
+- Native distribution 支持从一个或多个本地 source account 向多个目标分发原生币；目标可以混合本地账户和外部地址。
+- ERC-20 distribution 支持从选中的本地 source account 向本地账户和外部地址分发指定 token；必须冻结 token contract、decimals、metadata source、source token balance snapshot 和 native gas balance snapshot。
+- 计划形态可以表达 one-to-many、many-to-one、many-to-many。P4-12/P4-13 的最小实现可以先只开放较窄 shape，例如 single source -> many targets 或 selected sources -> one target，但 UI 和 command 必须显式 gate 未支持 shape，不能让 spec 中的完整模型被误读为已实现。
+- 分发计划必须拒绝或显式处理 source 与 target 相同的 child、重复 target、零金额、余额不足、nonce 不可用、snapshot missing/stale/failure 等情况；具体策略可以是 blocked 或 skipped，但必须进入 child 可见状态。
+
+**归集 / sweep 场景**
+
+- Native collection 从用户选择的部分或全部本地账户归集到一个目标。目标可以是本地账户，也可以是外部地址。
+- Native collection 每个 source 都必须预留 native gas；不能承诺“扫空全余额”而不扣除 gas reserve。冻结时必须展示 per-source 可归集金额、gas 上限、max fee 上限和剩余 reserve。
+- ERC-20 collection 从用户选择的部分或全部本地账户归集指定 token 到一个目标。每个 source 发送 ERC-20 transfer，native gas 由该 source 支付。
+- ERC-20 collection 必须依赖 P4-9 的 token balance snapshot 和 native gas availability。token balance 为 zero、missing、stale 或 failure 时，child 必须按明确规则 excluded、skipped 或 blocked，并在 batch detail 中可见，不能把 missing 当作 0 余额。
+- Collection 的目标账户即使是本地账户，也只是 recipient；它不替 source 支付 gas，不改变 source nonce。
+
+**Preflight / freeze / safety**
+
+- Batch preflight 通用部分必须消费 P4-10 `FrozenOrchestrationSummary`，并在 submit 前重新验证 RPC `chainId`、source/target identity、native account snapshot refs/availability、nonce availability、pending local history conflicts、gas/fee references 和 P4-10 frozen key。
+- 当 `assetKind = erc20` 时，preflight 还必须消费 P4-9 token/balance snapshots，并额外验证 token contract、decimals、metadata source/status、token balance snapshot freshness 和每个 source 的 native gas availability。
+- Native batch freeze key 至少覆盖 `chainId`、`batchKind`、`assetKind`、source refs、target refs、native amount rules 或 raw wei、nonce plan、gas/fee inputs、native account snapshot refs/availability、P4-10 frozen key、batch child count 和 child ordering。
+- 当 `assetKind = erc20` 时，freeze key 还必须覆盖 token contract、decimals、metadata source、token amount rules 或 amount raw、ERC-20 snapshot references、source token balance snapshot status 和 native gas availability snapshot references。
+- 用户改变 chain、RPC identity、source/target selection、amount、fee/gas、nonce plan、native account snapshot reference/availability 或 child count/order 后，旧 freeze 必须失效并要求重建；ERC-20 batch 还必须在 token、decimals、metadata source 或 ERC-20 snapshot reference 改变时失效。
+- 高风险确认至少覆盖 child 数量多、总 gas 上限高、native account snapshot stale、外部目标、归集接近全余额、存在 skipped/blocked child 等情况；ERC-20 batch 还必须覆盖 token snapshot stale 和 metadata 非 on-chain fresh。
+
+**失败、部分成功与恢复**
+
+- Partial success 是预期状态。Child status 至少要能表达 `notSubmitted`、`skipped`、`pending`、`confirmed`、`failed`、`replaced`、`cancelled`、`dropped`；batch-level status 从 children 派生，例如 `allConfirmed`、`partial`、`failed`、`pending`、`cancelled`。
+- 广播成功但历史写入失败时，必须按 child 返回 tx hash、chainId、source、nonce、目标、amount、fee/gas、frozen params 和写入错误；恢复入口只能基于已知 tx hash 与 frozen params 补录，不能重新签名或重新广播。
+- 广播失败、签名前失败、preflight 失败和用户取消必须落到对应 child 或 batch recovery intent。未知广播状态不得被静默重试。
+- Retry 必须创建新的 child attempt，或只作用于 `skipped`、`failed`、`notSubmitted` 且状态明确的 child；不得对 unknown tx hash 或状态不明的 child 做隐式 rebroadcast。
+
+**History 与 UI 展示契约**
+
+- History 可以提供 batch list/detail：list 展示 batch summary，detail 展示 child rows。Child rows 必须能进入普通历史详情，继续展示 Intent / Submission / ChainOutcome 三层。
+- Batch status 是派生摘要，不能替代 child status。用户必须能看到每个 child 的 source、target 类型、本地/外部标记、amount、nonce、tx hash、gas/fee、当前状态和失败原因。
+- 本地目标与外部目标必须视觉和文本上区分。外部地址不得因地址匹配本地账户而被静默改写为本地目标。
+- ERC-20 batch history 必须清楚展示 transaction `to = tokenContract`，recipient 是 calldata 参数；列表摘要可以写分发/归集到 recipient，但详情必须保留 token contract 与 recipient 的差异。
+
+**安全与隐私**
+
+- React、docs、history、diagnostics 和日志不得包含助记词、私钥、seed、raw signed tx、签名材料、完整 RPC secret 或 external API key。
+- Diagnostic/logs 中的 RPC URL、explorer URL、错误消息和外部 API 配置必须脱敏；batch 失败摘要只记录排障所需的非敏感元数据。
+- Batch 不应默认自动全选账户。全选本地账户只能来自用户显式动作，且确认页必须展示账户数量、child 数量、外部目标数量和最大 gas 暴露。
+
+**验收与实现拆分**
+
+- P4-12 native minimal implementation 应可直接使用本节定义的 `batchId`、child、freeze、partial success、history aggregation 和 recovery 模型；若先实现窄 shape，必须在 UI/command 层显式 gate。
+- P4-13 ERC-20 implementation 应可复用同一 batch/child/history 模型，并补充 token contract、decimals、balance snapshot、native gas availability、Transfer log/receipt 展示。
+- P4-11 作为 doc-only 任务的验证命令为 `git diff --check`。
 
 ## 10. P3/P4 已完成范围与后续 P4+ 方向
 
