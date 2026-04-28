@@ -2,6 +2,7 @@ import { AccountsView } from "../features/accounts/AccountsView";
 import { DiagnosticsView } from "../features/diagnostics/DiagnosticsView";
 import { HistoryView } from "../features/history/HistoryView";
 import { SettingsView } from "../features/settings/SettingsView";
+import { TokensView } from "../features/tokens/TokensView";
 import { TransferView } from "../features/transfer/TransferView";
 import { UnlockView } from "../features/unlock/UnlockView";
 import { BUILT_IN_CHAINS } from "../core/chains/registry";
@@ -14,10 +15,19 @@ import type {
   HistoryStorageInspection,
   HistoryStorageQuarantineResult,
   PendingMutationRequest,
+  AddWatchlistTokenInput,
+  EditWatchlistTokenInput,
+  TokenWatchlistState,
 } from "../lib/tauri";
 import type { AccountChainState } from "../lib/rpc";
 
-export type WorkspaceTab = "accounts" | "transfer" | "history" | "diagnostics" | "settings";
+export type WorkspaceTab =
+  | "accounts"
+  | "tokens"
+  | "transfer"
+  | "history"
+  | "diagnostics"
+  | "settings";
 
 export interface AppShellProps {
   session: { status: "locked" | "ready" };
@@ -41,7 +51,33 @@ export interface AppShellProps {
   historyError?: string | null;
   historyStorage?: HistoryStorageInspection | null;
   lastHistoryQuarantine?: HistoryStorageQuarantineResult | null;
+  tokenWatchlistState?: TokenWatchlistState | null;
+  tokenWatchlistError?: string | null;
   onAddAccount?: () => Promise<void> | void;
+  onAddWatchlistToken?: (
+    input: AddWatchlistTokenInput,
+    rpcProfileId?: string | null,
+  ) => Promise<boolean | void> | boolean | void;
+  onEditWatchlistToken?: (
+    input: EditWatchlistTokenInput,
+  ) => Promise<boolean | void> | boolean | void;
+  onRemoveWatchlistToken?: (
+    chainId: number,
+    tokenContract: string,
+  ) => Promise<boolean | void> | boolean | void;
+  onScanWatchlistTokenMetadata?: (
+    chainId: number,
+    tokenContract: string,
+  ) => Promise<boolean | void> | boolean | void;
+  onScanErc20Balance?: (
+    account: string,
+    chainId: number,
+    tokenContract: string,
+  ) => Promise<boolean | void> | boolean | void;
+  onScanWatchlistBalances?: (
+    account: string,
+    retryFailedOnly?: boolean,
+  ) => Promise<boolean | void> | boolean | void;
   onRefreshAccounts?: () => Promise<void> | void;
   onRefreshHistory?: () => Promise<void> | void;
   onQuarantineHistory?: () => Promise<void> | void;
@@ -57,7 +93,14 @@ export interface AppShellProps {
   onTransferSubmitted?: (record: HistoryRecord) => void;
 }
 
-const workspaceTabs: WorkspaceTab[] = ["accounts", "transfer", "history", "diagnostics", "settings"];
+const workspaceTabs: WorkspaceTab[] = [
+  "accounts",
+  "tokens",
+  "transfer",
+  "history",
+  "diagnostics",
+  "settings",
+];
 
 function tabLabel(tab: WorkspaceTab) {
   return tab[0].toUpperCase() + tab.slice(1);
@@ -85,7 +128,15 @@ export function AppShell({
   historyError = null,
   historyStorage = null,
   lastHistoryQuarantine = null,
+  tokenWatchlistState = null,
+  tokenWatchlistError = null,
   onAddAccount = async () => {},
+  onAddWatchlistToken = async () => {},
+  onEditWatchlistToken = async () => {},
+  onRemoveWatchlistToken = async () => {},
+  onScanWatchlistTokenMetadata = async () => {},
+  onScanErc20Balance = async () => {},
+  onScanWatchlistBalances = async () => {},
   onRefreshAccounts = async () => {},
   onRefreshHistory = async () => {},
   onQuarantineHistory = async () => {},
@@ -173,6 +224,23 @@ export function AppShell({
                 onSubmitFailed={onTransferSubmitFailed}
                 onSubmitted={onTransferSubmitted}
                 rpcUrl={rpcUrl}
+                tokenWatchlistState={tokenWatchlistState}
+              />
+            )}
+            {activeTab === "tokens" && (
+              <TokensView
+                accounts={accounts}
+                busy={busy}
+                error={tokenWatchlistError}
+                onAddToken={onAddWatchlistToken}
+                onEditToken={onEditWatchlistToken}
+                onRemoveToken={onRemoveWatchlistToken}
+                onScanBalance={onScanErc20Balance}
+                onScanMetadata={onScanWatchlistTokenMetadata}
+                onScanSelectedAccount={onScanWatchlistBalances}
+                rpcReady={chainReady}
+                selectedChainId={selectedChainId}
+                state={tokenWatchlistState}
               />
             )}
             {activeTab === "history" && (

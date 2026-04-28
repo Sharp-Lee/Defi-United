@@ -212,6 +212,10 @@ td {
   max-width: 820px;
 }
 
+.tokens-grid {
+  max-width: 1180px;
+}
+
 .field-row > label {
   flex: 1;
 }
@@ -320,6 +324,74 @@ td {
 .history-thread-list {
   display: grid;
   gap: 6px;
+}
+
+.token-panel {
+  display: grid;
+  gap: 12px;
+  border-top: 1px solid var(--border);
+  padding-top: 14px;
+}
+
+.token-panel:first-of-type {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.token-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.token-panel-header h3 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.token-form-grid {
+  display: grid;
+  grid-template-columns:
+    90px minmax(240px, 1.4fr) minmax(130px, 0.8fr) minmax(130px, 0.8fr)
+    minmax(150px, 1fr) auto;
+  gap: 10px;
+  align-items: end;
+}
+
+.token-edit-grid {
+  display: grid;
+  min-width: 360px;
+  grid-template-columns: repeat(2, minmax(140px, 1fr));
+  gap: 8px;
+}
+
+.token-status-stack {
+  display: grid;
+  gap: 5px;
+}
+
+.token-error {
+  max-width: 360px;
+  color: #ffb5b5;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.token-selector-summary {
+  display: grid;
+  gap: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.token-selector-summary > div:first-child {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: baseline;
 }
 
 .history-status-pending {

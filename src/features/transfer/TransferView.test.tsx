@@ -1,9 +1,10 @@
 import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { Interface } from "ethers";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { TokenWatchlistState } from "../../lib/tauri";
 import { submitErc20Transfer, submitNativeTransfer } from "../../lib/tauri";
 import { renderScreen } from "../../test/render";
-import { TransferView } from "./TransferView";
+import { TransferView, type TransferViewProps } from "./TransferView";
 
 const provider = vi.hoisted(() => ({
   call: vi.fn(),
@@ -76,19 +77,23 @@ describe("TransferView", () => {
     options: {
       historyStorageIssue?: string | null;
       onSubmitFailed?: (error: unknown) => Promise<void> | void;
+      tokenWatchlistState?: TokenWatchlistState | null;
+      accounts?: TransferViewProps["accounts"];
     } = {},
   ) {
     renderScreen(
       <TransferView
-        accounts={[
-          {
-            address: "0x1111111111111111111111111111111111111111",
-            index: 1,
-            label: "Account 1",
-            nativeBalanceWei: 1_000_000_000_000_000_000n,
-            nonce: 7,
-          },
-        ]}
+        accounts={
+          options.accounts ?? [
+            {
+              address: "0x1111111111111111111111111111111111111111",
+              index: 1,
+              label: "Account 1",
+              nativeBalanceWei: 1_000_000_000_000_000_000n,
+              nonce: 7,
+            },
+          ]
+        }
         chainId={1n}
         chainName="Ethereum"
         draft={null}
@@ -96,8 +101,107 @@ describe("TransferView", () => {
         onSubmitFailed={options.onSubmitFailed}
         onSubmitted={onSubmitted}
         rpcUrl="http://127.0.0.1:8545"
+        tokenWatchlistState={options.tokenWatchlistState}
       />,
     );
+  }
+
+  function watchlistState(
+    metadataStatus: TokenWatchlistState["resolvedTokenMetadata"][number]["status"] = "ok",
+    balanceStatus: TokenWatchlistState["erc20BalanceSnapshots"][number]["balanceStatus"] = "ok",
+  ): TokenWatchlistState {
+    const tokenHasOverride = metadataStatus === "sourceConflict";
+    return {
+      schemaVersion: 1,
+      watchlistTokens: [
+        {
+          chainId: 1,
+          tokenContract: "0x3333333333333333333333333333333333333333",
+          label: "USD Coin",
+          userNotes: null,
+          pinned: false,
+          hidden: false,
+          createdAt: "1710000000",
+          updatedAt: "1710000000",
+          metadataOverride: tokenHasOverride
+            ? {
+                symbol: "USDC",
+                name: "USD Coin",
+                decimals: 6,
+                source: "userConfirmed",
+                confirmedAt: "1710000000",
+              }
+            : null,
+        },
+      ],
+      tokenMetadataCache:
+        metadataStatus === "decimalsChanged"
+          ? [
+              {
+                chainId: 1,
+                tokenContract: "0x3333333333333333333333333333333333333333",
+                rawSymbol: "USDC",
+                rawName: "USD Coin",
+                rawDecimals: 18,
+                source: "onChainCall",
+                status: "decimalsChanged",
+                createdAt: "1710000000",
+                updatedAt: "1710000001",
+                lastScannedAt: "1710000001",
+                previousDecimals: 6,
+                observedDecimals: 18,
+              },
+            ]
+          : [
+              {
+                chainId: 1,
+                tokenContract: "0x3333333333333333333333333333333333333333",
+                rawSymbol: metadataStatus === "sourceConflict" ? "USDT" : "USDC",
+                rawName: metadataStatus === "sourceConflict" ? "Tether USD" : "USD Coin",
+                rawDecimals: metadataStatus === "sourceConflict" ? 18 : 6,
+                source: "onChainCall",
+                status: "ok",
+                createdAt: "1710000000",
+                updatedAt: "1710000001",
+                lastScannedAt: "1710000001",
+              },
+            ],
+      tokenScanState: [],
+      erc20BalanceSnapshots: [
+        {
+          account: "0x1111111111111111111111111111111111111111",
+          chainId: 1,
+          tokenContract: "0x3333333333333333333333333333333333333333",
+          balanceRaw: "2000000",
+          balanceStatus,
+          createdAt: "1710000000",
+          updatedAt: "1710000001",
+          lastScannedAt: "1710000001",
+          lastErrorSummary:
+            balanceStatus === "balanceCallFailed" ? "balanceCallFailed: timeout" : null,
+          resolvedMetadata: {
+            symbol: "USDC",
+            name: "USD Coin",
+            decimals: metadataStatus === "missingDecimals" ? null : 6,
+            source: "onChainCall",
+            status: metadataStatus,
+          },
+        },
+      ],
+      resolvedTokenMetadata: [
+        {
+          chainId: 1,
+          tokenContract: "0x3333333333333333333333333333333333333333",
+          symbol: "USDC",
+          name: "USD Coin",
+          decimals:
+            metadataStatus === "missingDecimals" ? null : metadataStatus === "decimalsChanged" ? 18 : 6,
+          source: tokenHasOverride ? "userConfirmed" : "onChainCall",
+          status: metadataStatus,
+          updatedAt: "1710000001",
+        },
+      ],
+    };
   }
 
   async function buildValidDraft() {
@@ -312,6 +416,202 @@ describe("TransferView", () => {
     expect(screen.getByText("0xa9059cbb")).toBeInTheDocument();
     expect(screen.getByText("0 wei")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Submit" })).toBeEnabled();
+  });
+
+  it("selects an ERC-20 token from the watchlist and keeps transaction target distinct", async () => {
+    provider.estimateGas.mockResolvedValueOnce(65_000n);
+    renderTransfer(vi.fn(), { tokenWatchlistState: watchlistState() });
+
+    fireEvent.click(screen.getByRole("button", { name: "ERC-20" }));
+    fireEvent.change(screen.getByLabelText("Watchlist token"), {
+      target: { value: "1:0x3333333333333333333333333333333333333333" },
+    });
+    expect(screen.getByLabelText("Token contract")).toHaveValue(
+      "0x3333333333333333333333333333333333333333",
+    );
+    expect(screen.getByLabelText("Confirmed decimals")).toHaveValue("6");
+    expect(screen.getByText(/Current account balance: 2.0 \(2000000 raw\)/)).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("Recipient"), {
+      target: { value: "0x2222222222222222222222222222222222222222" },
+    });
+    fireEvent.change(screen.getByLabelText("Amount"), { target: { value: "1.5" } });
+    fireEvent.click(screen.getByRole("button", { name: "Build Draft" }));
+
+    await waitFor(() => expect(screen.getByText("Confirm ERC-20 Transfer")).toBeInTheDocument());
+    expect(screen.getByText("Transaction to")).toBeInTheDocument();
+    expect(screen.getByText("Recipient calldata parameter")).toBeInTheDocument();
+    expect(screen.getAllByText("0x3333333333333333333333333333333333333333").length).toBeGreaterThanOrEqual(2);
+    expect(screen.getByText("0x2222222222222222222222222222222222222222")).toBeInTheDocument();
+  });
+
+  it("blocks watchlist-selected ERC-20 drafts when metadata or balance status needs recovery", () => {
+    renderTransfer(vi.fn(), {
+      tokenWatchlistState: watchlistState("decimalsChanged", "balanceCallFailed"),
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "ERC-20" }));
+    fireEvent.change(screen.getByLabelText("Watchlist token"), {
+      target: { value: "1:0x3333333333333333333333333333333333333333" },
+    });
+
+    expect(screen.getAllByText(/decimalsChanged/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/Decimals changed: previous 6, observed 18/).length).toBeGreaterThan(0);
+    expect(screen.getByText(/balanceCallFailed: timeout/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Build Draft" })).toBeDisabled();
+
+    fireEvent.change(screen.getByLabelText("Watchlist token"), {
+      target: { value: "" },
+    });
+    expect(screen.getByLabelText("Token contract")).toHaveValue("");
+    expect(screen.getByLabelText("Confirmed decimals")).toHaveValue("");
+    expect(screen.getByRole("button", { name: "Build Draft" })).toBeEnabled();
+  });
+
+  it("does not clear manual ERC-20 token inputs when manual mode was already selected", () => {
+    renderTransfer(vi.fn(), { tokenWatchlistState: watchlistState("decimalsChanged") });
+
+    fireEvent.click(screen.getByRole("button", { name: "ERC-20" }));
+    fireEvent.change(screen.getByLabelText("Token contract"), {
+      target: { value: "0x4444444444444444444444444444444444444444" },
+    });
+    fireEvent.change(screen.getByLabelText("Confirmed decimals"), { target: { value: "8" } });
+    fireEvent.change(screen.getByLabelText("Watchlist token"), { target: { value: "" } });
+
+    expect(screen.getByLabelText("Token contract")).toHaveValue(
+      "0x4444444444444444444444444444444444444444",
+    );
+    expect(screen.getByLabelText("Confirmed decimals")).toHaveValue("8");
+  });
+
+  it("clears selector-derived decimals when token contract edits leave watchlist mode", () => {
+    renderTransfer(vi.fn(), { tokenWatchlistState: watchlistState() });
+
+    fireEvent.click(screen.getByRole("button", { name: "ERC-20" }));
+    fireEvent.change(screen.getByLabelText("Watchlist token"), {
+      target: { value: "1:0x3333333333333333333333333333333333333333" },
+    });
+    expect(screen.getByLabelText("Confirmed decimals")).toHaveValue("6");
+
+    fireEvent.change(screen.getByLabelText("Token contract"), {
+      target: { value: "0x4444444444444444444444444444444444444444" },
+    });
+
+    expect(screen.getByLabelText("Watchlist token")).toHaveValue("");
+    expect(screen.getByLabelText("Token contract")).toHaveValue(
+      "0x4444444444444444444444444444444444444444",
+    );
+    expect(screen.getByLabelText("Confirmed decimals")).toHaveValue("");
+  });
+
+  it("preserves manually typed decimals when editing a manual token contract", () => {
+    renderTransfer(vi.fn(), { tokenWatchlistState: watchlistState() });
+
+    fireEvent.click(screen.getByRole("button", { name: "ERC-20" }));
+    fireEvent.change(screen.getByLabelText("Token contract"), {
+      target: { value: "0x4444444444444444444444444444444444444444" },
+    });
+    fireEvent.change(screen.getByLabelText("Confirmed decimals"), { target: { value: "8" } });
+    fireEvent.change(screen.getByLabelText("Token contract"), {
+      target: { value: "0x5555555555555555555555555555555555555555" },
+    });
+
+    expect(screen.getByLabelText("Confirmed decimals")).toHaveValue("8");
+  });
+
+  it("clears selector-derived token fields when sender changes out of watchlist mode", async () => {
+    renderTransfer(vi.fn(), {
+      tokenWatchlistState: watchlistState(),
+      accounts: [
+        {
+          address: "0x1111111111111111111111111111111111111111",
+          index: 1,
+          label: "Account 1",
+          nativeBalanceWei: 1_000_000_000_000_000_000n,
+          nonce: 7,
+        },
+        {
+          address: "0x2222222222222222222222222222222222222222",
+          index: 2,
+          label: "Account 2",
+          nativeBalanceWei: 1_000_000_000_000_000_000n,
+          nonce: 0,
+        },
+      ],
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "ERC-20" }));
+    fireEvent.change(screen.getByLabelText("Watchlist token"), {
+      target: { value: "1:0x3333333333333333333333333333333333333333" },
+    });
+    expect(screen.getByLabelText("Token contract")).toHaveValue(
+      "0x3333333333333333333333333333333333333333",
+    );
+    expect(screen.getByLabelText("Confirmed decimals")).toHaveValue("6");
+
+    fireEvent.change(screen.getByLabelText("From"), { target: { value: "2" } });
+
+    await waitFor(() => expect(screen.getByLabelText("Watchlist token")).toHaveValue(""));
+    expect(screen.getByLabelText("Token contract")).toHaveValue("");
+    expect(screen.getByLabelText("Confirmed decimals")).toHaveValue("");
+  });
+
+  it("preserves manual token fields when sender changes without selector-derived values", async () => {
+    renderTransfer(vi.fn(), {
+      tokenWatchlistState: watchlistState(),
+      accounts: [
+        {
+          address: "0x1111111111111111111111111111111111111111",
+          index: 1,
+          label: "Account 1",
+          nativeBalanceWei: 1_000_000_000_000_000_000n,
+          nonce: 7,
+        },
+        {
+          address: "0x2222222222222222222222222222222222222222",
+          index: 2,
+          label: "Account 2",
+          nativeBalanceWei: 1_000_000_000_000_000_000n,
+          nonce: 0,
+        },
+      ],
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "ERC-20" }));
+    fireEvent.change(screen.getByLabelText("Token contract"), {
+      target: { value: "0x4444444444444444444444444444444444444444" },
+    });
+    fireEvent.change(screen.getByLabelText("Confirmed decimals"), { target: { value: "8" } });
+    fireEvent.change(screen.getByLabelText("From"), { target: { value: "2" } });
+
+    await waitFor(() =>
+      expect(screen.getByLabelText("Token contract")).toHaveValue(
+        "0x4444444444444444444444444444444444444444",
+      ),
+    );
+    expect(screen.getByLabelText("Confirmed decimals")).toHaveValue("8");
+  });
+
+  it("shows source conflict detail in the ERC-20 watchlist selector", () => {
+    renderTransfer(vi.fn(), {
+      tokenWatchlistState: watchlistState("sourceConflict"),
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "ERC-20" }));
+    fireEvent.change(screen.getByLabelText("Watchlist token"), {
+      target: { value: "1:0x3333333333333333333333333333333333333333" },
+    });
+
+    expect(screen.getAllByText(/sourceConflict/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/decimals userConfirmed 6 vs onChainCall 18/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/symbol userConfirmed USDC vs onChainCall USDT/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/Manual token contract entry remains available/).length).toBeGreaterThan(0);
+    expect(screen.getByRole("button", { name: "Build Draft" })).toBeDisabled();
+
+    fireEvent.change(screen.getByLabelText("Watchlist token"), {
+      target: { value: "" },
+    });
+    expect(screen.getByRole("button", { name: "Build Draft" })).toBeEnabled();
   });
 
   it("submits ERC-20 frozen draft values through the Rust command and requires rebuild after edits", async () => {
