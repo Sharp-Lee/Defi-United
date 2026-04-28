@@ -176,6 +176,12 @@ export interface BatchHistoryMetadata {
   selector: string | null;
   method_name: string | null;
   total_value_wei: string | null;
+  token_contract: string | null;
+  decimals: number | null;
+  token_symbol: string | null;
+  token_name: string | null;
+  token_metadata_source: string | null;
+  total_amount_raw: string | null;
   recipients: BatchRecipientAllocation[];
 }
 
@@ -185,6 +191,7 @@ export interface BatchRecipientAllocation {
   target_kind: "localAccount" | "externalAddress" | "unknown";
   target_address: string;
   value_wei: string;
+  amount_raw: string | null;
 }
 
 export interface HistoryRecord {
@@ -440,6 +447,7 @@ function normalizeBatchRecipientAllocation(rawAllocation: unknown): BatchRecipie
     target_kind: normalizeBatchTargetKind(allocation.target_kind ?? allocation.targetKind),
     target_address: stringOrDefault(allocation.target_address ?? allocation.targetAddress),
     value_wei: stringOrDefault(allocation.value_wei ?? allocation.valueWei),
+    amount_raw: stringOrNull(allocation.amount_raw ?? allocation.amountRaw),
   };
 }
 
@@ -464,6 +472,12 @@ export function normalizeBatchMetadata(rawMetadata: unknown): BatchHistoryMetada
     selector: stringOrNull(metadata.selector),
     method_name: stringOrNull(metadata.method_name ?? metadata.methodName),
     total_value_wei: stringOrNull(metadata.total_value_wei ?? metadata.totalValueWei),
+    token_contract: stringOrNull(metadata.token_contract ?? metadata.tokenContract),
+    decimals: numberOrNull(metadata.decimals),
+    token_symbol: stringOrNull(metadata.token_symbol ?? metadata.tokenSymbol),
+    token_name: stringOrNull(metadata.token_name ?? metadata.tokenName),
+    token_metadata_source: stringOrNull(metadata.token_metadata_source ?? metadata.tokenMetadataSource),
+    total_amount_raw: stringOrNull(metadata.total_amount_raw ?? metadata.totalAmountRaw),
     recipients: normalizeBatchRecipientAllocations(metadata.recipients),
   };
 }

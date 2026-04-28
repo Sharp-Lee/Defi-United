@@ -39,6 +39,7 @@ pub fn run() {
             commands::transactions::reconcile_pending_history_command,
             commands::transactions::replace_pending_transfer,
             commands::transactions::review_dropped_history_record_command,
+            commands::transactions::submit_erc20_batch_command,
             commands::transactions::submit_erc20_transfer_command,
             commands::transactions::submit_native_batch_command,
             commands::transactions::submit_native_transfer_command,

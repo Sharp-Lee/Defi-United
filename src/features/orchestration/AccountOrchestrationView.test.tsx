@@ -1,9 +1,15 @@
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AccountRecord, HistoryRecord, TokenWatchlistState } from "../../lib/tauri";
 import type { AccountChainState } from "../../lib/rpc";
 import { renderScreen } from "../../test/render";
 import { AccountOrchestrationView } from "./AccountOrchestrationView";
+
+const invokeMock = vi.hoisted(() => vi.fn());
+
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: invokeMock,
+}));
 
 const accountA = "0x1111111111111111111111111111111111111111";
 const accountB = "0x2222222222222222222222222222222222222222";
@@ -80,7 +86,28 @@ function tokenState(): TokenWatchlistState {
         updatedAt: "1710000001",
       },
     ],
-    resolvedTokenMetadata: [],
+    resolvedTokenMetadata: [
+      {
+        chainId: 1,
+        tokenContract: tokenA,
+        decimals: 6,
+        symbol: "TOKA",
+        name: "Token A",
+        source: "onChainCall",
+        status: "ok",
+        updatedAt: "1710000001",
+      },
+      {
+        chainId: 1,
+        tokenContract: tokenB,
+        decimals: 18,
+        symbol: "TOKB",
+        name: "Token B",
+        source: "onChainCall",
+        status: "ok",
+        updatedAt: "1710000001",
+      },
+    ],
   };
 }
 
@@ -115,6 +142,10 @@ function renderOrchestration(accountItems = accounts(), state = tokenState(), hi
 }
 
 describe("AccountOrchestrationView", () => {
+  beforeEach(() => {
+    invokeMock.mockReset();
+  });
+
   it("does not select source accounts by default", () => {
     renderOrchestration();
 
@@ -345,5 +376,193 @@ describe("AccountOrchestrationView", () => {
     const nativeBatch = screen.getByLabelText("Native batch plan");
     expect(within(nativeBatch).getAllByText(/recipient row; parent nonce 10/)).toHaveLength(2);
     expect(within(nativeBatch).queryByText("7")).not.toBeInTheDocument();
+  });
+
+  it("selects an ERC-20 token and previews distribution as one Disperse token parent", () => {
+    renderOrchestration([
+      {
+        address: accountA,
+        index: 0,
+        label: "Account 0",
+        nativeBalanceWei: 10_000_000_000_000_000n,
+        nonce: 7,
+        lastSyncError: null,
+      },
+      {
+        address: accountB,
+        index: 1,
+        label: "Account 1",
+        nativeBalanceWei: 0n,
+        nonce: 0,
+        lastSyncError: null,
+      },
+    ]);
+
+    fireEvent.click(screen.getByLabelText("Source Account 0"));
+    fireEvent.click(screen.getByLabelText("Local target Account 1"));
+    fireEvent.change(screen.getByLabelText("External address"), {
+      target: { value: external },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Add External" }));
+
+    const erc20Batch = screen.getByLabelText("ERC-20 batch plan");
+    fireEvent.change(within(erc20Batch).getByLabelText("Allowance raw"), {
+      target: { value: "2000000" },
+    });
+
+    expect(within(erc20Batch).getAllByText(tokenA).length).toBeGreaterThan(0);
+    expect(within(erc20Batch).getByText("0xd15fE25eD0Dba12fE05e7029C88b10C25e8880E3")).toBeInTheDocument();
+    expect(within(erc20Batch).getByText("0xc73a2d60")).toBeInTheDocument();
+    expect(within(erc20Batch).getByText("disperseToken(address,address[],uint256[])")).toBeInTheDocument();
+    expect(within(erc20Batch).getAllByText(/allocation row; parent tx to Disperse; parent nonce 7/)).toHaveLength(2);
+  });
+
+  it("shows ERC-20 collection blocked and skipped rows from token snapshots", () => {
+    renderOrchestration(
+      [
+        {
+          address: accountA,
+          index: 0,
+          label: "Account 0",
+          nativeBalanceWei: 10_000_000_000_000_000n,
+          nonce: 7,
+          lastSyncError: null,
+        },
+        {
+          address: accountB,
+          index: 1,
+          label: "Account 1",
+          nativeBalanceWei: 10_000_000_000_000_000n,
+          nonce: 8,
+          lastSyncError: null,
+        },
+      ],
+      {
+        ...tokenState(),
+        erc20BalanceSnapshots: [
+          ...tokenState().erc20BalanceSnapshots,
+          {
+            account: accountB,
+            chainId: 1,
+            tokenContract: tokenA,
+            balanceRaw: "0",
+            balanceStatus: "zero",
+            createdAt: "1710000000",
+            updatedAt: "1710000001",
+          },
+        ],
+      },
+    );
+
+    fireEvent.click(screen.getByLabelText("Source Account 0"));
+    fireEvent.click(screen.getByLabelText("Source Account 1"));
+    fireEvent.change(screen.getByLabelText("External address"), {
+      target: { value: external },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Add External" }));
+
+    const erc20Batch = screen.getByLabelText("ERC-20 batch plan");
+    fireEvent.change(within(erc20Batch).getByLabelText("Batch kind"), {
+      target: { value: "collect" },
+    });
+
+    expect(within(erc20Batch).getAllByText("notSubmitted").length).toBeGreaterThan(0);
+    expect(within(erc20Batch).getAllByText("skipped").length).toBeGreaterThan(0);
+    expect(within(erc20Batch).getByText(/token balance snapshot is zero/i)).toBeInTheDocument();
+    expect(within(erc20Batch).getAllByText(/tx to token contract/).length).toBeGreaterThan(0);
+  });
+
+  it("submits ERC-20 collection with contiguous payload indexes after a skipped plan child", async () => {
+    invokeMock.mockResolvedValue(
+      JSON.stringify({
+        batchId: "erc20-batch-test",
+        batchKind: "collect",
+        assetKind: "erc20",
+        chainId: 1,
+        parent: null,
+        children: [],
+        summary: { childCount: 1, submittedCount: 0, failedCount: 0 },
+      }),
+    );
+    const state = {
+      ...tokenState(),
+      erc20BalanceSnapshots: [
+        {
+          account: accountA,
+          chainId: 1,
+          tokenContract: tokenA,
+          balanceRaw: "0",
+          balanceStatus: "zero" as const,
+          createdAt: "1710000000",
+          updatedAt: "1710000001",
+        },
+        {
+          account: accountB,
+          chainId: 1,
+          tokenContract: tokenA,
+          balanceRaw: "25",
+          balanceStatus: "ok" as const,
+          createdAt: "1710000000",
+          updatedAt: "1710000001",
+        },
+      ],
+    };
+
+    renderScreen(
+      <AccountOrchestrationView
+        accounts={[
+          {
+            address: accountA,
+            index: 0,
+            label: "Account 0",
+            nativeBalanceWei: 10_000_000_000_000_000n,
+            nonce: 7,
+            lastSyncError: null,
+          },
+          {
+            address: accountB,
+            index: 1,
+            label: "Account 1",
+            nativeBalanceWei: 10_000_000_000_000_000n,
+            nonce: 8,
+            lastSyncError: null,
+          },
+        ]}
+        chainName="Ethereum"
+        rpcUrl="http://127.0.0.1:8545"
+        selectedChainId={1n}
+        tokenWatchlistState={state}
+      />,
+    );
+
+    fireEvent.click(screen.getByLabelText("Source Account 0"));
+    fireEvent.click(screen.getByLabelText("Source Account 1"));
+    fireEvent.change(screen.getByLabelText("External address"), {
+      target: { value: external },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Add External" }));
+
+    const erc20Batch = screen.getByLabelText("ERC-20 batch plan");
+    fireEvent.change(within(erc20Batch).getByLabelText("Batch kind"), {
+      target: { value: "collect" },
+    });
+    expect(within(erc20Batch).getAllByText("skipped").length).toBeGreaterThan(0);
+    expect(within(erc20Batch).getAllByText("notSubmitted").length).toBeGreaterThan(0);
+
+    fireEvent.click(within(erc20Batch).getByRole("button", { name: "Freeze ERC-20 Plan" }));
+    fireEvent.click(within(erc20Batch).getByRole("button", { name: "Submit ERC-20 Batch" }));
+
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith(
+      "submit_erc20_batch_command",
+      expect.any(Object),
+    ));
+    const [, payload] = invokeMock.mock.calls[0];
+    expect(payload.input.children).toHaveLength(1);
+    expect(payload.input.children[0]).toMatchObject({
+      childId: expect.stringContaining(":child-0002"),
+      childIndex: 0,
+      targetAddress: external,
+      amountRaw: "25",
+    });
   });
 });

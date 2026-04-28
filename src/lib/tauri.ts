@@ -12,6 +12,11 @@ import {
   DISPERSE_ETHER_SELECTOR,
   type FrozenNativeBatchPlan,
 } from "../core/batch/nativeBatch";
+import {
+  DISPERSE_TOKEN_METHOD,
+  DISPERSE_TOKEN_SELECTOR,
+  type FrozenErc20BatchPlan,
+} from "../core/batch/erc20Batch";
 import { readAccountState } from "./rpc";
 
 export type {
@@ -639,6 +644,37 @@ export interface NativeBatchSubmitResult {
   };
 }
 
+export interface Erc20BatchSubmitChildResult {
+  childId: string;
+  childIndex: number;
+  targetAddress?: string | null;
+  targetKind?: string | null;
+  amountRaw?: string | null;
+  record?: NormalizedHistoryRecord | null;
+  error?: string | null;
+  recoveryHint?: string | null;
+}
+
+export interface Erc20BatchSubmitParentResult {
+  record?: NormalizedHistoryRecord | null;
+  error?: string | null;
+  recoveryHint?: string | null;
+}
+
+export interface Erc20BatchSubmitResult {
+  batchId: string;
+  batchKind: "distribute" | "collect";
+  assetKind: "erc20";
+  chainId: number;
+  parent?: Erc20BatchSubmitParentResult | null;
+  children: Erc20BatchSubmitChildResult[];
+  summary: {
+    childCount: number;
+    submittedCount: number;
+    failedCount: number;
+  };
+}
+
 export async function submitNativeBatch(plan: FrozenNativeBatchPlan, rpcUrl: string) {
   const distributionParent =
     plan.batchKind === "distribute" && plan.distributionParent
@@ -725,6 +761,131 @@ export async function submitNativeBatch(plan: FrozenNativeBatchPlan, rpcUrl: str
       record: child.record ? normalizeHistoryRecord(child.record) : null,
     })),
   } as NativeBatchSubmitResult;
+}
+
+export async function submitErc20Batch(plan: FrozenErc20BatchPlan, rpcUrl: string) {
+  const distributionParent =
+    plan.batchKind === "distribute" && plan.distributionParent
+      ? {
+          contractAddress: plan.distributionParent.distributionContract,
+          selector: plan.distributionParent.selector,
+          methodName: plan.distributionParent.methodName,
+          tokenContract: plan.distributionParent.tokenContract,
+          decimals: plan.distributionParent.decimals,
+          tokenSymbol: plan.distributionParent.tokenSymbol,
+          tokenName: plan.distributionParent.tokenName,
+          tokenMetadataSource: plan.distributionParent.tokenMetadataSource,
+          recipients: plan.distributionParent.recipients.map((recipient, index) => ({
+            childId: recipient.childId,
+            childIndex: index,
+            targetKind: recipient.target.kind,
+            targetAddress: recipient.targetAddress,
+            amountRaw: recipient.amountRaw,
+          })),
+          totalAmountRaw: plan.distributionParent.totalAmountRaw,
+          intent: {
+            transaction_type: "contractCall",
+            selector: plan.distributionParent.selector || DISPERSE_TOKEN_SELECTOR,
+            method_name: plan.distributionParent.methodName || DISPERSE_TOKEN_METHOD,
+            native_value_wei: "0",
+            rpc_url: rpcUrl,
+            account_index: plan.distributionParent.source.accountIndex,
+            chain_id: plan.distributionParent.chainId,
+            from: plan.distributionParent.source.address,
+            to: plan.distributionParent.distributionContract,
+            value_wei: "0",
+            nonce: plan.distributionParent.nonce,
+            gas_limit: plan.distributionParent.gasLimit,
+            max_fee_per_gas: plan.distributionParent.maxFeePerGas,
+            max_priority_fee_per_gas: plan.distributionParent.maxPriorityFeePerGas,
+          },
+        }
+      : null;
+  const input = {
+    batchId: plan.batchId,
+    batchKind: plan.batchKind,
+    assetKind: plan.assetKind,
+    chainId: plan.chainId,
+    freezeKey: plan.freezeKey,
+    distributionParent,
+    children:
+      plan.batchKind === "collect"
+        ? plan.children
+            .filter((child) => child.status === "notSubmitted" && child.nonce !== null && child.intentSnapshot)
+            .map((child, index) => ({
+              childId: child.childId,
+              childIndex: index,
+              batchKind: child.batchKind,
+              assetKind: child.assetKind,
+              freezeKey: plan.freezeKey,
+              targetKind: child.target.kind,
+              targetAddress: child.targetAddress,
+              amountRaw: child.amountRaw,
+              intent: {
+                rpc_url: rpcUrl,
+                account_index: child.intentSnapshot!.accountIndex,
+                chain_id: child.intentSnapshot!.chainId,
+                from: child.intentSnapshot!.from,
+                token_contract: child.intentSnapshot!.tokenContract,
+                recipient: child.intentSnapshot!.recipient,
+                amount_raw: child.intentSnapshot!.amountRaw,
+                decimals: child.intentSnapshot!.decimals,
+                token_symbol: child.intentSnapshot!.tokenSymbol,
+                token_name: child.intentSnapshot!.tokenName,
+                token_metadata_source: child.intentSnapshot!.tokenMetadataSource,
+                nonce: child.nonce,
+                gas_limit: child.intentSnapshot!.gasLimit,
+                max_fee_per_gas: child.intentSnapshot!.maxFeePerGas,
+                max_priority_fee_per_gas: child.intentSnapshot!.maxPriorityFeePerGas,
+                latest_base_fee_per_gas: null,
+                base_fee_per_gas: "0",
+                base_fee_multiplier: "batch",
+                max_fee_override_per_gas: null,
+                selector: "0xa9059cbb",
+                method: "transfer(address,uint256)",
+                native_value_wei: "0",
+                frozen_key: [
+                  `chainId=${child.intentSnapshot!.chainId}`,
+                  `from=${child.intentSnapshot!.from}`,
+                  `tokenContract=${child.intentSnapshot!.tokenContract}`,
+                  `recipient=${child.intentSnapshot!.recipient}`,
+                  `amountRaw=${child.intentSnapshot!.amountRaw}`,
+                  `decimals=${child.intentSnapshot!.decimals}`,
+                  `metadataSource=${child.intentSnapshot!.tokenMetadataSource}`,
+                  `nonce=${child.nonce}`,
+                  `gasLimit=${child.intentSnapshot!.gasLimit}`,
+                  "latestBaseFee=unavailable",
+                  "baseFee=0",
+                  "baseFeeMultiplier=batch",
+                  `maxFee=${child.intentSnapshot!.maxFeePerGas}`,
+                  "maxFeeOverride=auto",
+                  `priorityFee=${child.intentSnapshot!.maxPriorityFeePerGas}`,
+                  "selector=0xa9059cbb",
+                  "method=transfer(address,uint256)",
+                  "nativeValueWei=0",
+                ].join("|"),
+              },
+            }))
+        : [],
+  };
+  const raw = await invoke<string>("submit_erc20_batch_command", { input });
+  const parsed = JSON.parse(raw) as Omit<Erc20BatchSubmitResult, "children" | "parent"> & {
+    parent?: (Omit<Erc20BatchSubmitParentResult, "record"> & { record?: unknown | null }) | null;
+    children: Array<Omit<Erc20BatchSubmitChildResult, "record"> & { record?: unknown | null }>;
+  };
+  return {
+    ...parsed,
+    parent: parsed.parent
+      ? {
+          ...parsed.parent,
+          record: parsed.parent.record ? normalizeHistoryRecord(parsed.parent.record) : null,
+        }
+      : null,
+    children: parsed.children.map((child) => ({
+      ...child,
+      record: child.record ? normalizeHistoryRecord(child.record) : null,
+    })),
+  } as Erc20BatchSubmitResult;
 }
 
 export interface Erc20TransferIntent {

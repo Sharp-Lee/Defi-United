@@ -799,6 +799,19 @@ export function App() {
     void refreshAccountsFromDisk();
   }
 
+  function handleErc20BatchSubmitted(records: HistoryRecord[]) {
+    if (records.length > 0) {
+      setHistory((current) => [...records].reverse().concat(current));
+    }
+    void inspectTransactionHistoryStorage()
+      .then(setHistoryStorage)
+      .catch(() => {});
+    void loadHistoryRecoveryIntents()
+      .then(setHistoryRecoveryIntents)
+      .catch(() => {});
+    void refreshAccountsFromDisk();
+  }
+
   async function handleReplacePending(request: PendingMutationRequest) {
     setAppError(null);
     setBusy(true);
@@ -1032,6 +1045,7 @@ export function App() {
       onCancelPending={handleCancelPending}
       onNativeBatchSubmitFailed={handleTransferSubmitFailed}
       onNativeBatchSubmitted={handleNativeBatchSubmitted}
+      onErc20BatchSubmitted={handleErc20BatchSubmitted}
       onTabChange={setActiveTab}
       onTransferSubmitFailed={handleTransferSubmitFailed}
       onTransferSubmitted={handleTransferSubmitted}

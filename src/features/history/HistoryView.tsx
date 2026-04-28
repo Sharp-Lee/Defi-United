@@ -1399,6 +1399,12 @@ function typedIntentRows(record: HistoryRecord): DetailRow[] {
     ["Batch contract", record.batch_metadata?.contract_address],
     ["Batch child count", record.batch_metadata?.child_count],
     ["Batch total value", record.batch_metadata?.total_value_wei],
+    ["Batch token contract", record.batch_metadata?.token_contract],
+    ["Batch token decimals", record.batch_metadata?.decimals],
+    ["Batch token symbol", record.batch_metadata?.token_symbol],
+    ["Batch token name", record.batch_metadata?.token_name],
+    ["Batch metadata source", record.batch_metadata?.token_metadata_source],
+    ["Batch total amount raw", record.batch_metadata?.total_amount_raw],
     ["Transaction type", displayTransactionType(record.intent.transaction_type)],
     ["Account", `Account ${formatOptional(record.intent.account_index)} · ${short(formatOptional(record.intent.from))}`],
     ["chainId", formatOptional(record.intent.chain_id)],
@@ -1470,6 +1476,12 @@ function typedSubmissionRows(
     ["Batch method", record.batch_metadata?.method_name],
     ["Batch child count", record.batch_metadata?.child_count],
     ["Batch total value", record.batch_metadata?.total_value_wei],
+    ["Batch token contract", record.batch_metadata?.token_contract],
+    ["Batch token decimals", record.batch_metadata?.decimals],
+    ["Batch token symbol", record.batch_metadata?.token_symbol],
+    ["Batch token name", record.batch_metadata?.token_name],
+    ["Batch metadata source", record.batch_metadata?.token_metadata_source],
+    ["Batch total amount raw", record.batch_metadata?.total_amount_raw],
     ["Transaction type", displayTransactionType(record.submission.transaction_type)],
     ["Draft key", record.submission.frozen_key],
     ["Tx hash", record.submission.tx_hash],
@@ -1602,7 +1614,7 @@ function DistributionRecipientRows({ record }: { record: HistoryRecord }) {
   if (
     !metadata ||
     metadata.batch_kind !== "distribute" ||
-    metadata.asset_kind !== "native" ||
+    (metadata.asset_kind !== "native" && metadata.asset_kind !== "erc20") ||
     metadata.recipients.length === 0
   ) {
     return null;
@@ -1619,6 +1631,7 @@ function DistributionRecipientRows({ record }: { record: HistoryRecord }) {
               <th>Target kind</th>
               <th>Target</th>
               <th>Amount</th>
+              {metadata.asset_kind === "erc20" && <th>Token</th>}
               <th>Parent tx</th>
               <th>Outcome</th>
             </tr>
@@ -1630,7 +1643,14 @@ function DistributionRecipientRows({ record }: { record: HistoryRecord }) {
                 <td className="mono">{recipient.child_id}</td>
                 <td>{recipient.target_kind}</td>
                 <td className="mono">{recipient.target_address}</td>
-                <td className="mono">{recipient.value_wei} wei</td>
+                <td className="mono">
+                  {metadata.asset_kind === "erc20"
+                    ? `${recipient.amount_raw ?? recipient.value_wei} raw`
+                    : `${recipient.value_wei} wei`}
+                </td>
+                {metadata.asset_kind === "erc20" && (
+                  <td className="mono">{metadata.token_contract ?? "unknown"}</td>
+                )}
                 <td className="mono">{record.submission.tx_hash}</td>
                 <td>{record.outcome.state}</td>
               </tr>

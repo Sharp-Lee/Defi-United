@@ -3,24 +3,29 @@ use std::sync::{Mutex, OnceLock};
 
 use crate::diagnostics::{append_diagnostic_event, DiagnosticEventInput, DiagnosticLevel};
 use crate::models::{
-    BatchHistoryMetadata, Erc20TransferIntent, NativeBatchDistributionParent,
+    BatchHistoryMetadata, Erc20BatchDistributionParent, Erc20BatchSubmitChildResult,
+    Erc20BatchSubmitInput, Erc20BatchSubmitParentResult, Erc20BatchSubmitResult,
+    Erc20BatchSubmitSummary, Erc20TransferIntent, NativeBatchDistributionParent,
     NativeBatchSubmitChildResult, NativeBatchSubmitInput, NativeBatchSubmitParentResult,
     NativeBatchSubmitResult, NativeBatchSubmitSummary, NativeTransferIntent, SubmissionKind,
     SubmissionRecord, TransactionType, TypedTransactionFields,
 };
 use crate::transactions::{
-    annotate_history_record_batch, build_disperse_ether_calldata, dismiss_history_recovery_intent,
-    inspect_history_storage, load_history_records, load_history_recovery_intents,
-    persist_pending_history, quarantine_history_storage, reconcile_pending_history,
-    recover_broadcasted_history_record, review_dropped_history_record, submit_erc20_transfer,
+    annotate_history_record_batch, build_disperse_ether_calldata, build_disperse_token_calldata,
+    dismiss_history_recovery_intent, inspect_history_storage, load_history_records,
+    load_history_recovery_intents, persist_pending_history, quarantine_history_storage,
+    reconcile_pending_history, recover_broadcasted_history_record, review_dropped_history_record,
+    submit_erc20_disperse_contract_call, submit_erc20_transfer, submit_erc20_transfer_with_batch,
     submit_native_contract_call, submit_native_transfer, submit_native_transfer_with_history_kind,
-    DISPERSE_ETHER_METHOD, DISPERSE_ETHER_SELECTOR_HEX,
+    DISPERSE_ETHER_METHOD, DISPERSE_ETHER_SELECTOR_HEX, DISPERSE_TOKEN_METHOD,
+    DISPERSE_TOKEN_SELECTOR_HEX,
 };
 use ethers::types::{Address, U256};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 const FIXED_NATIVE_DISPERSE_CONTRACT: &str = "0xd15fE25eD0Dba12fE05e7029C88b10C25e8880E3";
+const FIXED_ERC20_DISPERSE_CONTRACT: &str = "0xd15fE25eD0Dba12fE05e7029C88b10C25e8880E3";
 
 pub fn validate_native_distribution_parent(
     input: &NativeBatchSubmitInput,
@@ -144,6 +149,219 @@ pub fn validate_native_distribution_parent(
     }
 
     Ok((recipients, values))
+}
+
+pub fn validate_erc20_distribution_parent(
+    input: &Erc20BatchSubmitInput,
+    parent: &Erc20BatchDistributionParent,
+) -> Result<(Address, Vec<Address>, Vec<U256>, U256), String> {
+    if parent.selector != DISPERSE_TOKEN_SELECTOR_HEX || parent.method_name != DISPERSE_TOKEN_METHOD
+    {
+        return Err("ERC-20 distribution parent must use disperseToken(address,address[],uint256[]) selector 0xc73a2d60".to_string());
+    }
+    if parent.intent.chain_id != input.chain_id {
+        return Err(
+            "ERC-20 distribution parent chainId does not match parent batch chainId".to_string(),
+        );
+    }
+    if !parent
+        .contract_address
+        .eq_ignore_ascii_case(FIXED_ERC20_DISPERSE_CONTRACT)
+    {
+        return Err(format!(
+            "ERC-20 distribution contractAddress must be fixed Disperse contract {FIXED_ERC20_DISPERSE_CONTRACT}"
+        ));
+    }
+    if !parent
+        .intent
+        .to
+        .eq_ignore_ascii_case(FIXED_ERC20_DISPERSE_CONTRACT)
+    {
+        return Err(format!(
+            "ERC-20 distribution intent.to must be fixed Disperse contract {FIXED_ERC20_DISPERSE_CONTRACT}"
+        ));
+    }
+    if parent.intent.value_wei != "0" {
+        return Err("ERC-20 distribution parent value_wei must be 0".to_string());
+    }
+    let typed = &parent.intent.typed_transaction;
+    if typed.transaction_type != TransactionType::ContractCall {
+        return Err(
+            "ERC-20 distribution parent intent must be transaction_type contractCall".to_string(),
+        );
+    }
+    if typed.selector.as_deref() != Some(DISPERSE_TOKEN_SELECTOR_HEX) {
+        return Err("ERC-20 distribution parent typed selector must equal 0xc73a2d60".to_string());
+    }
+    if typed.method_name.as_deref() != Some(DISPERSE_TOKEN_METHOD) {
+        return Err("ERC-20 distribution parent typed method_name must equal disperseToken(address,address[],uint256[])".to_string());
+    }
+    if typed.native_value_wei.as_deref() != Some("0") {
+        return Err("ERC-20 distribution parent typed native_value_wei must equal 0".to_string());
+    }
+
+    let token_contract = parent
+        .token_contract
+        .parse::<Address>()
+        .map_err(|e| e.to_string())?;
+    let expected_total = U256::from_dec_str(&parent.total_amount_raw).map_err(|e| e.to_string())?;
+    if expected_total.is_zero() {
+        return Err("ERC-20 distribution totalAmountRaw must be greater than zero".to_string());
+    }
+    if parent.recipients.is_empty() {
+        return Err("ERC-20 distribution requires at least one recipient".to_string());
+    }
+    if parent.token_metadata_source.trim().is_empty() {
+        return Err("ERC-20 distribution tokenMetadataSource must not be empty".to_string());
+    }
+
+    let mut seen_child_ids = HashSet::new();
+    let mut seen_child_indexes = HashSet::new();
+    let mut seen_recipient_addresses = HashSet::new();
+    let mut recipients = Vec::with_capacity(parent.recipients.len());
+    let mut values = Vec::with_capacity(parent.recipients.len());
+
+    for (index, recipient) in parent.recipients.iter().enumerate() {
+        let child_id = recipient.child_id.trim();
+        if child_id.is_empty() {
+            return Err("ERC-20 distribution recipient childId must not be empty".to_string());
+        }
+        if !seen_child_ids.insert(child_id.to_string()) {
+            return Err("ERC-20 distribution recipient childId values must be unique".to_string());
+        }
+        if !seen_child_indexes.insert(recipient.child_index) {
+            return Err(
+                "ERC-20 distribution recipient childIndex values must be unique".to_string(),
+            );
+        }
+        if recipient.child_index as usize != index {
+            return Err("ERC-20 distribution recipient childIndex values must be contiguous from zero and match recipient order".to_string());
+        }
+        if recipient.target_kind != "localAccount" && recipient.target_kind != "externalAddress" {
+            return Err(
+                "ERC-20 distribution recipient targetKind must be localAccount or externalAddress"
+                    .to_string(),
+            );
+        }
+        let address = recipient
+            .target_address
+            .parse::<Address>()
+            .map_err(|e| e.to_string())?;
+        if !seen_recipient_addresses.insert(address) {
+            return Err(
+                "ERC-20 distribution recipient targetAddress values must be unique".to_string(),
+            );
+        }
+        let value = U256::from_dec_str(&recipient.amount_raw).map_err(|e| e.to_string())?;
+        if value.is_zero() {
+            return Err(
+                "ERC-20 distribution recipient amountRaw must be greater than zero".to_string(),
+            );
+        }
+        recipients.push(address);
+        values.push(value);
+    }
+
+    let total = values
+        .iter()
+        .copied()
+        .try_fold(U256::zero(), |acc, value| {
+            let (next, overflowed) = acc.overflowing_add(value);
+            if overflowed {
+                Err("ERC-20 distribution recipient amounts overflow totalAmountRaw".to_string())
+            } else {
+                Ok(next)
+            }
+        })?;
+    if total != expected_total {
+        return Err(
+            "ERC-20 distribution recipient amounts do not sum to totalAmountRaw".to_string(),
+        );
+    }
+
+    Ok((token_contract, recipients, values, expected_total))
+}
+
+pub fn validate_erc20_collection_children(input: &Erc20BatchSubmitInput) -> Result<(), String> {
+    if input.batch_kind != "collect" {
+        return Err("ERC-20 collection validation requires batchKind collect".to_string());
+    }
+    if input.children.is_empty() {
+        return Err("ERC-20 collection requires at least one child".to_string());
+    }
+
+    let mut seen_child_ids = HashSet::new();
+    let mut seen_child_indexes = HashSet::new();
+    let mut shared_target: Option<(String, String)> = None;
+
+    for (index, child) in input.children.iter().enumerate() {
+        let child_id = child.child_id.trim();
+        if child_id.is_empty() {
+            return Err("ERC-20 collection childId must not be empty".to_string());
+        }
+        if !seen_child_ids.insert(child_id.to_string()) {
+            return Err("ERC-20 collection childId values must be unique".to_string());
+        }
+        if !seen_child_indexes.insert(child.child_index) {
+            return Err("ERC-20 collection childIndex values must be unique".to_string());
+        }
+        if child.child_index as usize != index {
+            return Err(
+                "ERC-20 collection childIndex values must be contiguous from zero and match child order"
+                    .to_string(),
+            );
+        }
+        if child.asset_kind != "erc20" || child.batch_kind != input.batch_kind {
+            return Err("child batch metadata does not match parent ERC-20 batch".to_string());
+        }
+        if child.intent.chain_id != input.chain_id {
+            return Err("child chainId does not match parent batch chainId".to_string());
+        }
+
+        let target_kind = child
+            .target_kind
+            .as_deref()
+            .ok_or_else(|| "ERC-20 collection child targetKind is required".to_string())?;
+        if target_kind != "localAccount" && target_kind != "externalAddress" {
+            return Err(
+                "ERC-20 collection child targetKind must be localAccount or externalAddress"
+                    .to_string(),
+            );
+        }
+        let target_address = child
+            .target_address
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| "ERC-20 collection child targetAddress is required".to_string())?;
+        target_address
+            .parse::<Address>()
+            .map_err(|e| format!("ERC-20 collection child targetAddress invalid: {e}"))?;
+        if !target_address.eq_ignore_ascii_case(&child.intent.recipient) {
+            return Err(
+                "ERC-20 collection child targetAddress must match intent.recipient".to_string(),
+            );
+        }
+        let amount_raw = child
+            .amount_raw
+            .as_deref()
+            .ok_or_else(|| "ERC-20 collection child amountRaw is required".to_string())?;
+        if amount_raw != child.intent.amount_raw {
+            return Err(
+                "ERC-20 collection child amountRaw must match intent.amount_raw".to_string(),
+            );
+        }
+
+        let target_key = (target_kind.to_string(), target_address.to_ascii_lowercase());
+        if let Some(existing) = &shared_target {
+            if existing != &target_key {
+                return Err("ERC-20 collection children must share exactly one target".to_string());
+            }
+        } else {
+            shared_target = Some(target_key);
+        }
+    }
+
+    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -638,6 +856,7 @@ pub async fn submit_native_batch_command(input: NativeBatchSubmitInput) -> Resul
                 target_kind: recipient.target_kind.clone(),
                 target_address: recipient.target_address.clone(),
                 value_wei: recipient.value_wei.clone(),
+                amount_raw: None,
             })
             .collect::<Vec<_>>();
         let metadata = BatchHistoryMetadata {
@@ -652,6 +871,12 @@ pub async fn submit_native_batch_command(input: NativeBatchSubmitInput) -> Resul
             selector: Some(parent.selector.clone()),
             method_name: Some(parent.method_name.clone()),
             total_value_wei: Some(parent.total_value_wei.clone()),
+            token_contract: None,
+            decimals: None,
+            token_symbol: None,
+            token_name: None,
+            token_metadata_source: None,
+            total_amount_raw: None,
             recipients: recipient_allocations,
         };
         let recovery_hint = format!(
@@ -731,6 +956,12 @@ pub async fn submit_native_batch_command(input: NativeBatchSubmitInput) -> Resul
             selector: None,
             method_name: None,
             total_value_wei: None,
+            token_contract: None,
+            decimals: None,
+            token_symbol: None,
+            token_name: None,
+            token_metadata_source: None,
+            total_amount_raw: None,
             recipients: Vec::new(),
         };
         if child.asset_kind != "native" || child.batch_kind != input.batch_kind {
@@ -833,6 +1064,242 @@ pub async fn submit_native_batch_command(input: NativeBatchSubmitInput) -> Resul
         chain_id: input.chain_id,
         parent: None,
         summary: NativeBatchSubmitSummary {
+            child_count: children.len(),
+            submitted_count,
+            failed_count,
+        },
+        children,
+    };
+    serde_json::to_string(&result).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn submit_erc20_batch_command(input: Erc20BatchSubmitInput) -> Result<String, String> {
+    if input.asset_kind != "erc20" {
+        return Err("ERC-20 batch submit only accepts assetKind erc20".to_string());
+    }
+    if input.batch_kind != "distribute" && input.batch_kind != "collect" {
+        return Err("ERC-20 batch submit only accepts distribute or collect batchKind".to_string());
+    }
+
+    if input.batch_kind == "distribute" {
+        let parent = input.distribution_parent.clone().ok_or_else(|| {
+            "ERC-20 distribution requires a distributionParent contract call".to_string()
+        })?;
+        if !input.children.is_empty() {
+            return Err("ERC-20 distribution submits exactly one parent contract transaction; child transfer intents are not accepted".to_string());
+        }
+        let (token_contract, recipients, values, total_amount_raw) =
+            validate_erc20_distribution_parent(&input, &parent)?;
+        let disperse_contract = parent
+            .contract_address
+            .parse::<Address>()
+            .map_err(|e| e.to_string())?;
+        let calldata = build_disperse_token_calldata(token_contract, &recipients, &values)?;
+        let recipient_allocations = parent
+            .recipients
+            .iter()
+            .map(|recipient| crate::models::BatchRecipientAllocation {
+                child_id: recipient.child_id.clone(),
+                child_index: recipient.child_index,
+                target_kind: recipient.target_kind.clone(),
+                target_address: recipient.target_address.clone(),
+                value_wei: "0".to_string(),
+                amount_raw: Some(recipient.amount_raw.clone()),
+            })
+            .collect::<Vec<_>>();
+        let metadata = BatchHistoryMetadata {
+            batch_id: input.batch_id.clone(),
+            child_id: format!("{}:parent", input.batch_id),
+            batch_kind: input.batch_kind.clone(),
+            asset_kind: input.asset_kind.clone(),
+            child_index: None,
+            freeze_key: Some(input.freeze_key.clone()),
+            child_count: Some(parent.recipients.len() as u32),
+            contract_address: Some(parent.contract_address.clone()),
+            selector: Some(parent.selector.clone()),
+            method_name: Some(parent.method_name.clone()),
+            total_value_wei: Some("0".to_string()),
+            token_contract: Some(parent.token_contract.clone()),
+            decimals: Some(parent.decimals),
+            token_symbol: parent.token_symbol.clone(),
+            token_name: parent.token_name.clone(),
+            token_metadata_source: Some(parent.token_metadata_source.clone()),
+            total_amount_raw: Some(parent.total_amount_raw.clone()),
+            recipients: recipient_allocations,
+        };
+        let recovery_hint = format!(
+            "broadcast may have succeeded; fixedContract={}; tokenContract={}; freezeKey={}; selector={}; method={}; totalAmountRaw={}; childCount={}; recipients={}",
+            FIXED_ERC20_DISPERSE_CONTRACT,
+            parent.token_contract,
+            input.freeze_key,
+            parent.selector,
+            parent.method_name,
+            parent.total_amount_raw,
+            parent.recipients.len(),
+            serde_json::to_string(&metadata.recipients).unwrap_or_else(|_| "[]".to_string())
+        );
+        let parent_result = match submit_erc20_disperse_contract_call(
+            parent.intent,
+            calldata,
+            Some(metadata),
+            token_contract,
+            disperse_contract,
+            total_amount_raw,
+        )
+        .await
+        {
+            Ok(record) => Erc20BatchSubmitParentResult {
+                record: Some(record),
+                error: None,
+                recovery_hint: None,
+            },
+            Err(error) => {
+                let recovery_hint = if error.contains("broadcasted") || error.contains("tx_hash") {
+                    Some(recovery_hint)
+                } else {
+                    None
+                };
+                Erc20BatchSubmitParentResult {
+                    record: None,
+                    error: Some(error),
+                    recovery_hint,
+                }
+            }
+        };
+        let children = parent
+            .recipients
+            .into_iter()
+            .map(|recipient| Erc20BatchSubmitChildResult {
+                child_id: recipient.child_id,
+                child_index: recipient.child_index,
+                target_address: Some(recipient.target_address),
+                target_kind: Some(recipient.target_kind),
+                amount_raw: Some(recipient.amount_raw),
+                record: None,
+                error: parent_result.error.clone(),
+                recovery_hint: parent_result.recovery_hint.clone(),
+            })
+            .collect::<Vec<_>>();
+        let submitted_count = usize::from(parent_result.record.is_some());
+        let failed_count = usize::from(parent_result.error.is_some());
+        let result = Erc20BatchSubmitResult {
+            batch_id: input.batch_id,
+            batch_kind: input.batch_kind,
+            asset_kind: input.asset_kind,
+            chain_id: input.chain_id,
+            parent: Some(parent_result),
+            summary: Erc20BatchSubmitSummary {
+                child_count: children.len(),
+                submitted_count,
+                failed_count,
+            },
+            children,
+        };
+        return serde_json::to_string(&result).map_err(|e| e.to_string());
+    }
+
+    validate_erc20_collection_children(&input)?;
+
+    let mut children = Vec::with_capacity(input.children.len());
+    for child in input.children {
+        let metadata = BatchHistoryMetadata {
+            batch_id: input.batch_id.clone(),
+            child_id: child.child_id.clone(),
+            batch_kind: child.batch_kind.clone(),
+            asset_kind: child.asset_kind.clone(),
+            child_index: Some(child.child_index),
+            freeze_key: Some(child.freeze_key.clone()),
+            child_count: None,
+            contract_address: Some(child.intent.token_contract.clone()),
+            selector: Some(child.intent.selector.clone()),
+            method_name: Some(child.intent.method.clone()),
+            total_value_wei: Some("0".to_string()),
+            token_contract: Some(child.intent.token_contract.clone()),
+            decimals: Some(child.intent.decimals),
+            token_symbol: child.intent.token_symbol.clone(),
+            token_name: child.intent.token_name.clone(),
+            token_metadata_source: Some(child.intent.token_metadata_source.clone()),
+            total_amount_raw: Some(child.intent.amount_raw.clone()),
+            recipients: Vec::new(),
+        };
+        if child.asset_kind != "erc20" || child.batch_kind != input.batch_kind {
+            children.push(Erc20BatchSubmitChildResult {
+                child_id: child.child_id,
+                child_index: child.child_index,
+                target_address: child.target_address,
+                target_kind: child.target_kind,
+                amount_raw: child.amount_raw,
+                record: None,
+                error: Some("child batch metadata does not match parent ERC-20 batch".to_string()),
+                recovery_hint: None,
+            });
+            continue;
+        }
+        if child.intent.chain_id != input.chain_id {
+            children.push(Erc20BatchSubmitChildResult {
+                child_id: child.child_id,
+                child_index: child.child_index,
+                target_address: child.target_address,
+                target_kind: child.target_kind,
+                amount_raw: child.amount_raw,
+                record: None,
+                error: Some("child chainId does not match parent batch chainId".to_string()),
+                recovery_hint: None,
+            });
+            continue;
+        }
+
+        let child_id = child.child_id.clone();
+        let child_index = child.child_index;
+        let target_address = child.target_address.clone();
+        let target_kind = child.target_kind.clone();
+        let amount_raw = child.amount_raw.clone();
+        match submit_erc20_transfer_with_batch(child.intent, Some(metadata)).await {
+            Ok(record) => children.push(Erc20BatchSubmitChildResult {
+                child_id,
+                child_index,
+                target_address,
+                target_kind,
+                amount_raw,
+                record: Some(record),
+                error: None,
+                recovery_hint: None,
+            }),
+            Err(error) => {
+                let recovery_hint = if error.contains("broadcasted") || error.contains("tx_hash") {
+                    Some("broadcast may have succeeded; check recovery intents/history before retrying".to_string())
+                } else {
+                    None
+                };
+                children.push(Erc20BatchSubmitChildResult {
+                    child_id,
+                    child_index,
+                    target_address,
+                    target_kind,
+                    amount_raw,
+                    record: None,
+                    error: Some(error),
+                    recovery_hint,
+                });
+            }
+        }
+    }
+    let submitted_count = children
+        .iter()
+        .filter(|child| child.record.is_some())
+        .count();
+    let failed_count = children
+        .iter()
+        .filter(|child| child.error.is_some())
+        .count();
+    let result = Erc20BatchSubmitResult {
+        batch_id: input.batch_id,
+        batch_kind: input.batch_kind,
+        asset_kind: input.asset_kind,
+        chain_id: input.chain_id,
+        parent: None,
+        summary: Erc20BatchSubmitSummary {
             child_count: children.len(),
             submitted_count,
             failed_count,

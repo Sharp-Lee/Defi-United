@@ -38,11 +38,15 @@ pub use crate::models::{ChainOutcomeState, HistoryRecord, NativeTransferIntent};
 const RECOVERED_HISTORY_RPC_URL: &str = "recovered://history-write-failed";
 const ERC20_TRANSFER_SELECTOR: [u8; 4] = [0xa9, 0x05, 0x9c, 0xbb];
 const ERC20_BALANCE_OF_SELECTOR: [u8; 4] = [0x70, 0xa0, 0x82, 0x31];
+const ERC20_ALLOWANCE_SELECTOR: [u8; 4] = [0xdd, 0x62, 0xed, 0x3e];
 const ERC20_TRANSFER_SELECTOR_HEX: &str = "0xa9059cbb";
 const ERC20_TRANSFER_METHOD: &str = "transfer(address,uint256)";
 const DISPERSE_ETHER_SELECTOR: [u8; 4] = [0xe6, 0x3d, 0x38, 0xed];
 pub const DISPERSE_ETHER_SELECTOR_HEX: &str = "0xe63d38ed";
 pub const DISPERSE_ETHER_METHOD: &str = "disperseEther(address[],uint256[])";
+const DISPERSE_TOKEN_SELECTOR: [u8; 4] = [0xc7, 0x3a, 0x2d, 0x60];
+pub const DISPERSE_TOKEN_SELECTOR_HEX: &str = "0xc73a2d60";
+pub const DISPERSE_TOKEN_METHOD: &str = "disperseToken(address,address[],uint256[])";
 
 fn history_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -811,11 +815,39 @@ pub fn build_disperse_ether_calldata(
     Ok(Bytes::from(data))
 }
 
+pub fn build_disperse_token_calldata(
+    token_contract: Address,
+    recipients: &[Address],
+    values: &[U256],
+) -> Result<Bytes, String> {
+    if recipients.len() != values.len() {
+        return Err("disperseToken recipients and values length mismatch".to_string());
+    }
+    let mut data = Vec::new();
+    data.extend_from_slice(&DISPERSE_TOKEN_SELECTOR);
+    data.extend_from_slice(&encode(&[
+        Token::Address(token_contract),
+        Token::Array(recipients.iter().copied().map(Token::Address).collect()),
+        Token::Array(values.iter().copied().map(Token::Uint).collect()),
+    ]));
+    Ok(Bytes::from(data))
+}
+
 fn build_erc20_balance_of_calldata(owner: Address) -> Bytes {
     let mut data = Vec::with_capacity(36);
     data.extend_from_slice(&ERC20_BALANCE_OF_SELECTOR);
     data.extend_from_slice(&[0u8; 12]);
     data.extend_from_slice(owner.as_bytes());
+    Bytes::from(data)
+}
+
+pub fn build_erc20_allowance_calldata(owner: Address, spender: Address) -> Bytes {
+    let mut data = Vec::with_capacity(68);
+    data.extend_from_slice(&ERC20_ALLOWANCE_SELECTOR);
+    data.extend_from_slice(&[0u8; 12]);
+    data.extend_from_slice(owner.as_bytes());
+    data.extend_from_slice(&[0u8; 12]);
+    data.extend_from_slice(spender.as_bytes());
     Bytes::from(data)
 }
 
@@ -3370,11 +3402,99 @@ async fn preflight_erc20_replacement_intent(
     preflight_erc20_transfer(intent, signer_address, provider, false).await
 }
 
+async fn read_erc20_u256_call(
+    provider: &Provider<Http>,
+    token_contract: Address,
+    from: Address,
+    calldata: Bytes,
+    label: &str,
+) -> Result<U256, String> {
+    let call: TypedTransaction = TransactionRequest::new()
+        .to(token_contract)
+        .from(from)
+        .data(calldata)
+        .into();
+    let raw = provider
+        .call(&call, None)
+        .await
+        .map_err(|e| e.to_string())?;
+    if raw.as_ref().len() != 32 {
+        return Err(format!(
+            "ERC-20 {label} returned {} bytes; expected 32-byte uint256 ABI payload",
+            raw.as_ref().len()
+        ));
+    }
+    Ok(U256::from_big_endian(raw.as_ref()))
+}
+
+async fn preflight_erc20_disperse_contract_call(
+    intent: &NativeTransferIntent,
+    signer_address: Address,
+    provider: &Provider<Http>,
+    token_contract: Address,
+    spender: Address,
+    total_amount_raw: U256,
+) -> Result<(), String> {
+    preflight_native_transfer(intent, signer_address, provider).await?;
+    if intent.value_wei != "0" || intent.typed_transaction.native_value_wei.as_deref() != Some("0")
+    {
+        return Err("ERC-20 distribution native value must be 0".to_string());
+    }
+    if intent.typed_transaction.transaction_type != TransactionType::ContractCall {
+        return Err("ERC-20 distribution parent must be transaction_type contractCall".to_string());
+    }
+    if intent.typed_transaction.selector.as_deref() != Some(DISPERSE_TOKEN_SELECTOR_HEX) {
+        return Err("ERC-20 distribution parent selector must be 0xc73a2d60".to_string());
+    }
+    if intent.typed_transaction.method_name.as_deref() != Some(DISPERSE_TOKEN_METHOD) {
+        return Err(
+            "ERC-20 distribution parent method must be disperseToken(address,address[],uint256[])"
+                .to_string(),
+        );
+    }
+    let token_balance = read_erc20_u256_call(
+        provider,
+        token_contract,
+        signer_address,
+        build_erc20_balance_of_calldata(signer_address),
+        "balanceOf",
+    )
+    .await?;
+    if token_balance < total_amount_raw {
+        return Err(
+            "token balance insufficient: source token balance cannot cover total distribution amount"
+                .to_string(),
+        );
+    }
+    let allowance = read_erc20_u256_call(
+        provider,
+        token_contract,
+        signer_address,
+        build_erc20_allowance_calldata(signer_address, spender),
+        "allowance",
+    )
+    .await?;
+    if allowance < total_amount_raw {
+        return Err(
+            "ERC-20 allowance insufficient: allowance(owner, Disperse) cannot cover total distribution amount"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
 pub async fn submit_native_transfer(intent: NativeTransferIntent) -> Result<HistoryRecord, String> {
     submit_native_transfer_with_history_kind(intent, SubmissionKind::NativeTransfer, None).await
 }
 
 pub async fn submit_erc20_transfer(intent: Erc20TransferIntent) -> Result<HistoryRecord, String> {
+    submit_erc20_transfer_with_batch(intent, None).await
+}
+
+pub async fn submit_erc20_transfer_with_batch(
+    intent: Erc20TransferIntent,
+    batch_metadata: Option<BatchHistoryMetadata>,
+) -> Result<HistoryRecord, String> {
     let wallet = with_session_mnemonic(|mnemonic| derive_wallet(mnemonic, intent.account_index))?
         .with_chain_id(intent.chain_id);
     let provider = Provider::<Http>::try_from(intent.rpc_url.clone()).map_err(|e| {
@@ -3444,13 +3564,15 @@ pub async fn submit_erc20_transfer(intent: Erc20TransferIntent) -> Result<Histor
     );
 
     let recovery_intent = history_intent.clone();
+    let recovery_batch_metadata = batch_metadata.clone();
     let broadcasted_at = now_unix_seconds()?;
-    persist_pending_history_with_kind_at(
+    persist_pending_history_with_kind_at_and_batch(
         history_intent,
         tx_hash.clone(),
         SubmissionKind::Erc20Transfer,
         None,
         broadcasted_at.clone(),
+        batch_metadata,
     )
     .map_err(|error| {
         let recovery_result = history_recovery_intent_from_broadcast_failure_with_frozen_key(
@@ -3461,7 +3583,7 @@ pub async fn submit_erc20_transfer(intent: Erc20TransferIntent) -> Result<Histor
             broadcasted_at,
             error.clone(),
             Some(intent.frozen_key.clone()),
-            None,
+            recovery_batch_metadata,
         )
         .and_then(record_history_recovery_intent);
         let recovery_recorded = recovery_result.is_ok();
@@ -3736,6 +3858,41 @@ pub async fn submit_native_contract_call(
         );
         broadcast_history_write_error(&tx_hash, &error)
     })
+}
+
+pub async fn submit_erc20_disperse_contract_call(
+    intent: NativeTransferIntent,
+    calldata: Bytes,
+    batch_metadata: Option<BatchHistoryMetadata>,
+    token_contract: Address,
+    spender: Address,
+    total_amount_raw: U256,
+) -> Result<HistoryRecord, String> {
+    let wallet = with_session_mnemonic(|mnemonic| derive_wallet(mnemonic, intent.account_index))?
+        .with_chain_id(intent.chain_id);
+    let provider = Provider::<Http>::try_from(intent.rpc_url.clone()).map_err(|e| {
+        let error = e.to_string();
+        record_transaction_diagnostic(
+            DiagnosticLevel::Error,
+            "erc20DisperseProviderInvalid",
+            Some(intent.chain_id),
+            Some(intent.account_index),
+            None,
+            Some(error.clone()),
+            json!({ "selector": intent.typed_transaction.selector }),
+        );
+        error
+    })?;
+    preflight_erc20_disperse_contract_call(
+        &intent,
+        wallet.address(),
+        &provider,
+        token_contract,
+        spender,
+        total_amount_raw,
+    )
+    .await?;
+    submit_native_contract_call(intent, calldata, batch_metadata).await
 }
 
 pub async fn submit_native_transfer_with_history_kind(

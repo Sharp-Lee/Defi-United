@@ -1071,18 +1071,20 @@
   - Native 归集 per-source 计算可转出金额时必须扣除 gas reserve，不能提供不预留 gas 的“全余额扫空”。
   - History batch detail 必须展示 distribution parent record/hash + recipient rows，或 collection child rows，不能只写 batch-level 成功/失败。
 
-#### Task P4-13: batch ERC-20 分发/归集
+#### Task P4-13: batch ERC-20 分发/归集（状态：已完成）
 
-- 目标：在 P4-12 的 batch 基础上实现 ERC-20 分发/归集；ERC-20 distribution 后续也必须通过 Disperse 类合约完成，常见方法为 `disperseToken(address,address[],uint256[])` selector `0xc73a2d60` 或 `disperseTokenSimple(address,address[],uint256[])` selector `0x51ba162c`。
+- 目标：在 P4-12 的 batch 基础上实现 ERC-20 分发/归集；ERC-20 distribution 通过固定 Disperse 合约 `0xd15fE25eD0Dba12fE05e7029C88b10C25e8880E3` 完成，首个支持方法为 `disperseToken(address,address[],uint256[])` selector `0xc73a2d60`。
 - 依赖：P4-8、P4-9、P4-11、P4-12。
 - 关键边界：ERC-20 distribution 必须冻结 token contract、recipient/value arrays、distribution contract/method/selector，并做 allowance/preflight；未实现完整 allowance 与 contract call 前必须 gated。ERC-20 collection gas 由每个源账户支付；不应承诺 collection 原子性；每笔 transfer 的 failed/reverted 必须单独可见。
-- 是否先 spec/design：是，除非 P4-11 已包含 ERC-20 实现级细节。
-- 建议最小实现：
-  - Distribution 复用 Disperse ERC-20 parent contract call 模型，先完成 allowance/preflight 与 parent/recipient history 展示后再开放。
+- 是否先 spec/design：已由 P4-11/P4-13 spec 覆盖。
+- 已实现最小行为：
+  - Distribution 复用 Disperse ERC-20 parent contract call 模型：single local source -> many local/external targets，recipient rows 是 allocation rows，共享 parent nonce/hash/outcome。
+  - Rust preflight 在广播前校验 RPC chainId、signer、token balance、allowance(owner, fixed Disperse) 和 native gas；allowance 不足时拒绝且不得广播。
   - Collection 复用 P4-8 的 ERC-20 transfer intent/submission/history 契约，保持 transaction `to = tokenContract`，recipient 作为 calldata 参数。
   - 消费 P4-9 watchlist metadata 和 `account + chainId + tokenContract` balance snapshots；decimals/source、token balance 和 native gas availability 必须冻结并可见。
-  - ERC-20 归集支持 selected/all local sources -> one target，目标可以是本地账户或外部地址；zero/missing/stale/failure snapshot 必须按明确规则 skipped、excluded 或 blocked。
-  - 不实现 approve/permit/revoke、swap/bridge 或 fee-on-transfer 保证；distribution 所需 allowance 只作为 preflight/gating，不在本任务中偷做隐式授权交易。
+  - ERC-20 归集支持 selected/all local sources -> one target，目标可以是本地账户或外部地址；`zero` snapshot 生成可见 skipped row，`missing/stale/failure` snapshot 生成可见 blocked row。
+  - ERC-20 batch history 展示 token contract、decimals、metadata source、parent contract/method/selector、total raw amount 和 allocation rows。
+- 非目标：不实现 approve/permit/revoke、自动 allowance 交易、fee-on-transfer 保证、many-source distribution、`disperseTokenSimple`、用户自定义 batch contract、raw calldata/任意 ABI。
 
 #### Task P5-1: ABI 管理 fetch/import/paste/cache
 

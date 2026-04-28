@@ -329,9 +329,9 @@ v1 + P3/P4 已将基础历史列表升级为可筛选、可分组、可审计的
 - 冻结摘要是操作前只读快照。用户改变 `chainId`、source selection、local target selection 或 external target list 后，旧 summary 必须清空或明确失效，避免被误认为仍可使用。
 - ERC-20 可用性只消费 P4-9 watchlist/balance snapshot read model。metadata、symbol、name 不能参与账户或 token 身份判断；缺失/失败/stale 状态必须可见，不能静默隐藏。
 
-### 9.5 批量分发/归集模型（P4-11 设计）
+### 9.5 批量分发/归集模型（P4-11/P4-12/P4-13）
 
-本小节定义 P4-11 的 batch 分发/归集设计契约，不表示当前应用已经支持批量发送。P4-11 只做 spec/design；不实现发送代码、不签名、不广播、不迁移历史。后续 P4-12 可在本契约上实现 native batch 的最小路径，P4-13 可在同一模型上实现 ERC-20 batch。
+本小节定义 batch 分发/归集契约。P4-12 已开放 native batch 的最小路径；P4-13 已开放 ERC-20 batch 的最小路径。所有真实提交仍必须走 Rust/Tauri command，React 只表达意图、展示冻结参数和提交结果。
 
 **目标**
 
@@ -343,7 +343,7 @@ v1 + P3/P4 已将基础历史列表升级为可筛选、可分组、可审计的
 **非目标与边界**
 
 - Native distribution 的 parent contract call 是一笔链上交易，receipt 层面原子成功或失败；recipient child rows 只是收款分配行，共享 parent nonce、tx hash、fee 和 outcome。Collection 的 per-source child transfer 仍允许部分成功、失败、pending、dropped 或 skipped。
-- 不引入任意 multicall、relay 或用户可配置 batch contract。Distribution 使用固定/默认合约地址 `0xd15fE25eD0Dba12fE05e7029C88b10C25e8880E3`，native method 为 `disperseEther(address[],uint256[])`，selector `0xe63d38ed`。
+- 不引入任意 multicall、relay 或用户可配置 batch contract。Distribution 使用固定/默认合约地址 `0xd15fE25eD0Dba12fE05e7029C88b10C25e8880E3`，native method 为 `disperseEther(address[],uint256[])`，selector `0xe63d38ed`；ERC-20 method 为 `disperseToken(address,address[],uint256[])`，selector `0xc73a2d60`。
 - 不做 allowance/approve/permit/revoke、swap、bridge、资产发现、授权扫描或 fee-on-transfer token 的特殊保证。
 - 不绕过 P4-8/P4-9/P4-10：ERC-20 child 必须沿用 P4-8 的 ERC-20 transfer/history 模型，token 与余额输入来自 P4-9 的 watchlist/snapshot，账户集合与冻结摘要来自 P4-10。
 
@@ -360,16 +360,17 @@ v1 + P3/P4 已将基础历史列表升级为可筛选、可分组、可审计的
 **分发场景**
 
 - Native distribution 支持 single local source -> many targets，通过一笔调用固定 Disperse 合约 `disperseEther(address[],uint256[])` 完成；transaction `to` 是合约地址，native `value` 是 `values` 总和，recipient child rows 共享 parent nonce、tx hash、fee 和 outcome。
-- Native distribution 当前不支持 many-source -> many-target 的单 batch parent call。多个 source 分发必须拆成多个 single-source batch，或等待后续设计；UI 与 command 必须显式 gate 多 source distribution。
-- ERC-20 distribution 后续 P4-13 应通过同类 Disperse 合约方法完成，常见签名为 `disperseToken(address,address[],uint256[])` selector `0xc73a2d60` 或 `disperseTokenSimple(address,address[],uint256[])` selector `0x51ba162c`；必须冻结 token contract、decimals、metadata source、source token balance snapshot、native gas balance snapshot，并做 allowance/preflight。P4-12 不实现 ERC-20 contract distribution。
+- Native 与 ERC-20 distribution 当前都不支持 many-source -> many-target 的单 batch parent call。多个 source 分发必须拆成多个 single-source batch，或等待后续设计；UI 与 command 必须显式 gate 多 source distribution。
+- ERC-20 distribution P4-13 使用固定 Disperse parent contract call：transaction `to = 0xd15fE25eD0Dba12fE05e7029C88b10C25e8880E3`，native `value = 0`，calldata 为 `disperseToken(tokenContract, recipients[], amountRaw[])`。Recipient rows 是 allocation rows，共享 parent nonce/hash/outcome，不是独立 ERC-20 transfers。
+- ERC-20 distribution 必须冻结 token contract、decimals、metadata source/status、source token balance snapshot、native gas availability、recipient/order/value arrays、distribution contract、selector/method、allowance/preflight state、gas/fee 和 P4-10 frozen key。Rust preflight 在广播前校验 RPC chainId、signer、source token balance、allowance(owner, Disperse) 和 native gas；allowance 不足时不得广播。
 - 分发计划必须拒绝或显式处理 source 与 target 相同的 recipient、重复 target、零金额、总额/余额不足、parent nonce 不可用、snapshot missing/stale/failure 等情况；具体策略可以是 blocked 或 skipped，但必须进入 parent 或 recipient row 的可见状态。
 
 **归集 / sweep 场景**
 
 - Native collection 从用户选择的部分或全部本地账户归集到一个目标。目标可以是本地账户，也可以是外部地址。
 - Native collection 每个 source 都必须预留 native gas；不能承诺“扫空全余额”而不扣除 gas reserve。冻结时必须展示 per-source 可归集金额、gas 上限、max fee 上限和剩余 reserve。
-- ERC-20 collection 从用户选择的部分或全部本地账户归集指定 token 到一个目标。每个 source 发送 ERC-20 transfer，native gas 由该 source 支付。
-- ERC-20 collection 必须依赖 P4-9 的 token balance snapshot 和 native gas availability。token balance 为 zero、missing、stale 或 failure 时，child 必须按明确规则 excluded、skipped 或 blocked，并在 batch detail 中可见，不能把 missing 当作 0 余额。
+- ERC-20 collection 从用户选择的部分或全部本地账户归集指定 token 到一个目标。每个 source 发送标准 ERC-20 `transfer(address,uint256)`，transaction `to = tokenContract`，recipient 是 calldata 参数，native gas 由该 source 支付。
+- ERC-20 collection 必须依赖 P4-9 的 token balance snapshot 和 native gas availability。`ok` 正余额生成可提交 child；`zero` 生成可见 skipped child；`missing`、`stale`、`balanceCallFailed`、`malformedBalance`、`rpcFailed`、`chainMismatch` 等生成可见 blocked child。缺失 snapshot 不能当作 0 余额。
 - Collection 的目标账户即使是本地账户，也只是 recipient；它不替 source 支付 gas，不改变 source nonce。
 
 **Preflight / freeze / safety**
@@ -406,7 +407,8 @@ v1 + P3/P4 已将基础历史列表升级为可筛选、可分组、可审计的
 **验收与实现拆分**
 
 - P4-12 native minimal implementation 应实现 single-source native distribution 的 fixed Disperse contract parent call，以及 native collection 的 per-source EOA sweep/transfer；多 source distribution 必须在 UI/command 层显式 gate。
-- P4-13 ERC-20 implementation 应复用同一 distribution contract 模型，补充 token contract、decimals、balance snapshot、native gas availability、allowance/preflight、Transfer log/receipt 展示；在实现前必须保持 gated，不能偷做不完整 ERC-20 distribution。
+- P4-13 ERC-20 implementation 已复用同一 distribution contract 模型，补充 token contract、decimals、metadata source/status、balance snapshot、native gas availability、allowance/preflight 和 batch history 展示。
+- P4-13 非目标：不实现 approve、permit、revoke、自动授权交易或 allowance 修改；不保证 fee-on-transfer/rebasing token 的分配结果；不支持 many-source distribution；不支持 `disperseTokenSimple`、用户自定义 batch contract、raw calldata、任意 ABI、swap/bridge/relay。
 - P4-11 作为 doc-only 任务的验证命令为 `git diff --check`。
 
 ## 10. P3/P4 已完成范围与后续 P4+ 方向

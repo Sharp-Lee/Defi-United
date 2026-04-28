@@ -11,6 +11,7 @@ import { getRawHistoryErrorDisplay } from "../core/history/errors";
 import type { ChainRecord } from "../core/chains/registry";
 import type {
   AccountRecord,
+  Erc20BatchSubmitResult,
   HistoryRecord,
   HistoryRecoveryIntent,
   HistoryStorageInspection,
@@ -95,6 +96,7 @@ export interface AppShellProps {
   onTransferSubmitted?: (record: HistoryRecord) => void;
   onNativeBatchSubmitFailed?: (error: unknown) => Promise<void> | void;
   onNativeBatchSubmitted?: (records: HistoryRecord[]) => void;
+  onErc20BatchSubmitted?: (records: HistoryRecord[], result: Erc20BatchSubmitResult) => void;
 }
 
 const workspaceTabs: WorkspaceTab[] = [
@@ -157,6 +159,7 @@ export function AppShell({
   onTransferSubmitted = () => {},
   onNativeBatchSubmitFailed = async () => {},
   onNativeBatchSubmitted = () => {},
+  onErc20BatchSubmitted = () => {},
 }: AppShellProps) {
   const selectedChain = chains.find((chain) => chain.chainId === selectedChainId) ?? chains[0];
   const chainReady = settingsStatusKind === "ok" && rpcUrl.trim().length > 0;
@@ -261,6 +264,7 @@ export function AppShell({
                 }
                 onNativeBatchSubmitFailed={onNativeBatchSubmitFailed}
                 onNativeBatchSubmitted={onNativeBatchSubmitted}
+                onErc20BatchSubmitted={onErc20BatchSubmitted}
                 history={history}
                 rpcUrl={rpcUrl}
                 selectedChainId={selectedChainId}

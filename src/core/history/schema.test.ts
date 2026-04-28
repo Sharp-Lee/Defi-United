@@ -194,6 +194,12 @@ describe("history schema normalization", () => {
       selector: null,
       method_name: null,
       total_value_wei: null,
+      token_contract: null,
+      decimals: null,
+      token_symbol: null,
+      token_name: null,
+      token_metadata_source: null,
+      total_amount_raw: null,
       recipients: [],
     });
   });
@@ -263,6 +269,7 @@ describe("history schema normalization", () => {
         target_kind: "localAccount",
         target_address: "0x2222222222222222222222222222222222222222",
         value_wei: "100",
+        amount_raw: null,
       },
       {
         child_id: "batch-1:child-0002",
@@ -270,6 +277,7 @@ describe("history schema normalization", () => {
         target_kind: "externalAddress",
         target_address: "0x3333333333333333333333333333333333333333",
         value_wei: "200",
+        amount_raw: null,
       },
     ]);
   });

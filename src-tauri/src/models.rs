@@ -272,6 +272,18 @@ pub struct BatchHistoryMetadata {
     #[serde(default)]
     pub total_value_wei: Option<String>,
     #[serde(default)]
+    pub token_contract: Option<String>,
+    #[serde(default)]
+    pub decimals: Option<u8>,
+    #[serde(default)]
+    pub token_symbol: Option<String>,
+    #[serde(default)]
+    pub token_name: Option<String>,
+    #[serde(default)]
+    pub token_metadata_source: Option<String>,
+    #[serde(default)]
+    pub total_amount_raw: Option<String>,
+    #[serde(default)]
     pub recipients: Vec<BatchRecipientAllocation>,
 }
 
@@ -283,6 +295,8 @@ pub struct BatchRecipientAllocation {
     pub target_kind: String,
     pub target_address: String,
     pub value_wei: String,
+    #[serde(default)]
+    pub amount_raw: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -379,6 +393,115 @@ pub struct NativeBatchSubmitResult {
     pub parent: Option<NativeBatchSubmitParentResult>,
     pub children: Vec<NativeBatchSubmitChildResult>,
     pub summary: NativeBatchSubmitSummary,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Erc20BatchSubmitChild {
+    pub child_id: String,
+    pub child_index: u32,
+    pub batch_kind: String,
+    pub asset_kind: String,
+    pub freeze_key: String,
+    #[serde(default)]
+    pub target_kind: Option<String>,
+    #[serde(default)]
+    pub target_address: Option<String>,
+    #[serde(default)]
+    pub amount_raw: Option<String>,
+    pub intent: Erc20TransferIntent,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Erc20BatchDistributionRecipient {
+    pub child_id: String,
+    pub child_index: u32,
+    pub target_kind: String,
+    pub target_address: String,
+    pub amount_raw: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Erc20BatchDistributionParent {
+    pub contract_address: String,
+    pub selector: String,
+    pub method_name: String,
+    pub token_contract: String,
+    pub decimals: u8,
+    #[serde(default)]
+    pub token_symbol: Option<String>,
+    #[serde(default)]
+    pub token_name: Option<String>,
+    pub token_metadata_source: String,
+    pub recipients: Vec<Erc20BatchDistributionRecipient>,
+    pub total_amount_raw: String,
+    pub intent: NativeTransferIntent,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Erc20BatchSubmitInput {
+    pub batch_id: String,
+    pub batch_kind: String,
+    pub asset_kind: String,
+    pub chain_id: u64,
+    pub freeze_key: String,
+    #[serde(default)]
+    pub distribution_parent: Option<Erc20BatchDistributionParent>,
+    pub children: Vec<Erc20BatchSubmitChild>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Erc20BatchSubmitChildResult {
+    pub child_id: String,
+    pub child_index: u32,
+    #[serde(default)]
+    pub target_address: Option<String>,
+    #[serde(default)]
+    pub target_kind: Option<String>,
+    #[serde(default)]
+    pub amount_raw: Option<String>,
+    #[serde(default)]
+    pub record: Option<HistoryRecord>,
+    #[serde(default)]
+    pub error: Option<String>,
+    #[serde(default)]
+    pub recovery_hint: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Erc20BatchSubmitParentResult {
+    #[serde(default)]
+    pub record: Option<HistoryRecord>,
+    #[serde(default)]
+    pub error: Option<String>,
+    #[serde(default)]
+    pub recovery_hint: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Erc20BatchSubmitSummary {
+    pub child_count: usize,
+    pub submitted_count: usize,
+    pub failed_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Erc20BatchSubmitResult {
+    pub batch_id: String,
+    pub batch_kind: String,
+    pub asset_kind: String,
+    pub chain_id: u64,
+    #[serde(default)]
+    pub parent: Option<Erc20BatchSubmitParentResult>,
+    pub children: Vec<Erc20BatchSubmitChildResult>,
+    pub summary: Erc20BatchSubmitSummary,
 }
 
 fn unknown_string() -> String {

@@ -17,9 +17,9 @@ use wallet_workbench_lib::diagnostics::read_diagnostic_events_from_path;
 use wallet_workbench_lib::storage::{diagnostics_path, history_path};
 use wallet_workbench_lib::transactions::{
     apply_pending_history_updates, broadcast_history_write_error, build_disperse_ether_calldata,
-    build_erc20_transfer_calldata, chain_outcome_from_receipt_status,
-    dropped_state_for_missing_receipt, inspect_history_storage, load_history_records,
-    load_history_recovery_intents, mark_prior_history_state,
+    build_disperse_token_calldata, build_erc20_allowance_calldata, build_erc20_transfer_calldata,
+    chain_outcome_from_receipt_status, dropped_state_for_missing_receipt, inspect_history_storage,
+    load_history_records, load_history_recovery_intents, mark_prior_history_state,
     mark_prior_history_state_with_replacement, next_nonce_with_pending_history, nonce_thread_key,
     persist_pending_history, persist_pending_history_with_kind, quarantine_history_storage,
     reconcile_pending_history, recover_broadcasted_history_record, review_dropped_history_record,
@@ -211,6 +211,83 @@ fn erc20_history_intent_from_submit(
         gas_limit: intent.gas_limit.clone(),
         max_fee_per_gas: intent.max_fee_per_gas.clone(),
         max_priority_fee_per_gas: intent.max_priority_fee_per_gas.clone(),
+    }
+}
+
+fn erc20_distribution_batch_input(
+    rpc_url: String,
+) -> wallet_workbench_lib::models::Erc20BatchSubmitInput {
+    let from = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8".to_string();
+    let token_contract = "0x3333333333333333333333333333333333333333".to_string();
+    let contract_address = "0xd15fE25eD0Dba12fE05e7029C88b10C25e8880E3".to_string();
+    wallet_workbench_lib::models::Erc20BatchSubmitInput {
+        batch_id: "erc20-batch-test".to_string(),
+        batch_kind: "distribute".to_string(),
+        asset_kind: "erc20".to_string(),
+        chain_id: 1,
+        freeze_key: "erc20-freeze".to_string(),
+        children: Vec::new(),
+        distribution_parent: Some(wallet_workbench_lib::models::Erc20BatchDistributionParent {
+            contract_address: contract_address.clone(),
+            selector: "0xc73a2d60".to_string(),
+            method_name: "disperseToken(address,address[],uint256[])".to_string(),
+            token_contract: token_contract.clone(),
+            decimals: 6,
+            token_symbol: Some("USDC".to_string()),
+            token_name: Some("USD Coin".to_string()),
+            token_metadata_source: "onChainCall".to_string(),
+            total_amount_raw: "1500000".to_string(),
+            recipients: vec![
+                wallet_workbench_lib::models::Erc20BatchDistributionRecipient {
+                    child_id: "erc20-batch-test:child-0001".to_string(),
+                    child_index: 0,
+                    target_kind: "externalAddress".to_string(),
+                    target_address: "0x2222222222222222222222222222222222222222".to_string(),
+                    amount_raw: "1500000".to_string(),
+                },
+            ],
+            intent: NativeTransferIntent {
+                typed_transaction:
+                    wallet_workbench_lib::models::TypedTransactionFields::contract_call(
+                        "0xc73a2d60",
+                        "disperseToken(address,address[],uint256[])",
+                        "0",
+                    ),
+                rpc_url,
+                account_index: 1,
+                chain_id: 1,
+                from,
+                to: contract_address,
+                value_wei: "0".to_string(),
+                nonce: 0,
+                gas_limit: "120000".to_string(),
+                max_fee_per_gas: "40000000000".to_string(),
+                max_priority_fee_per_gas: "1500000000".to_string(),
+            },
+        }),
+    }
+}
+
+fn erc20_collection_batch_input() -> wallet_workbench_lib::models::Erc20BatchSubmitInput {
+    let intent = erc20_transfer_intent();
+    wallet_workbench_lib::models::Erc20BatchSubmitInput {
+        batch_id: "erc20-collect-test".to_string(),
+        batch_kind: "collect".to_string(),
+        asset_kind: "erc20".to_string(),
+        chain_id: 1,
+        freeze_key: "erc20-collect-freeze".to_string(),
+        distribution_parent: None,
+        children: vec![wallet_workbench_lib::models::Erc20BatchSubmitChild {
+            child_id: "erc20-collect-test:child-0001".to_string(),
+            child_index: 0,
+            batch_kind: "collect".to_string(),
+            asset_kind: "erc20".to_string(),
+            freeze_key: "erc20-collect-freeze".to_string(),
+            target_kind: Some("externalAddress".to_string()),
+            target_address: Some(intent.recipient.clone()),
+            amount_raw: Some(intent.amount_raw.clone()),
+            intent,
+        }],
     }
 }
 
@@ -601,6 +678,61 @@ fn start_erc20_submit_rpc_server_with_call_result(
                     let _ = fs::remove_file(path);
                     fs::create_dir_all(path).expect("turn history path into directory");
                 }
+                "\"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"".to_string()
+            } else {
+                "null".to_string()
+            };
+            let body = format!(r#"{{"jsonrpc":"2.0","id":1,"result":{result}}}"#);
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("write rpc response");
+        }
+    });
+    (format!("http://{address}"), requests)
+}
+
+fn start_erc20_batch_distribution_rpc_server(
+    native_balance: U256,
+    token_balance: U256,
+    allowance: U256,
+) -> (String, Arc<Mutex<Vec<String>>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind rpc server");
+    let address = listener.local_addr().expect("local addr");
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let seen = Arc::clone(&requests);
+    thread::spawn(move || {
+        for stream in listener.incoming().take(8) {
+            let mut stream = stream.expect("accept rpc request");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .expect("set read timeout");
+            let mut buffer = [0; 8192];
+            let bytes = stream.read(&mut buffer).expect("read rpc request");
+            let mut request = String::from_utf8_lossy(&buffer[..bytes]).to_string();
+            while !request.contains("eth_") {
+                match stream.read(&mut buffer) {
+                    Ok(0) => break,
+                    Ok(bytes) => request.push_str(&String::from_utf8_lossy(&buffer[..bytes])),
+                    Err(_) => break,
+                }
+            }
+            seen.lock().expect("request lock").push(request.clone());
+            let result = if request.contains("eth_chainId") {
+                "\"0x1\"".to_string()
+            } else if request.contains("eth_getBalance") {
+                u256_result_hex(native_balance)
+            } else if request.contains("eth_getTransactionCount") {
+                "\"0x0\"".to_string()
+            } else if request.contains("eth_call") && request.contains("70a08231") {
+                u256_result_hex(token_balance)
+            } else if request.contains("eth_call") && request.contains("dd62ed3e") {
+                u256_result_hex(allowance)
+            } else if request.contains("eth_sendRawTransaction") {
                 "\"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"".to_string()
             } else {
                 "null".to_string()
@@ -1246,6 +1378,158 @@ fn disperse_ether_calldata_uses_fixed_selector_and_abi_arrays() {
         ])
         .as_slice()
     );
+}
+
+#[test]
+fn disperse_token_calldata_uses_fixed_selector_token_and_abi_arrays() {
+    let token: Address = "0x5555555555555555555555555555555555555555"
+        .parse()
+        .expect("token");
+    let recipients = vec![
+        "0x1111111111111111111111111111111111111111"
+            .parse::<Address>()
+            .expect("recipient 1"),
+        "0x2222222222222222222222222222222222222222"
+            .parse::<Address>()
+            .expect("recipient 2"),
+    ];
+    let values = vec![U256::from(1000u64), U256::from(2000u64)];
+    let calldata = build_disperse_token_calldata(token, &recipients, &values).expect("calldata");
+    let bytes = calldata.as_ref();
+
+    assert_eq!(&bytes[..4], &[0xc7, 0x3a, 0x2d, 0x60]);
+    assert_eq!(
+        &bytes[4..],
+        encode(&[
+            Token::Address(token),
+            Token::Array(recipients.into_iter().map(Token::Address).collect()),
+            Token::Array(values.into_iter().map(Token::Uint).collect()),
+        ])
+    );
+}
+
+#[test]
+fn erc20_allowance_calldata_uses_owner_and_spender() {
+    let owner: Address = "0x1111111111111111111111111111111111111111"
+        .parse()
+        .expect("owner");
+    let spender: Address = "0x2222222222222222222222222222222222222222"
+        .parse()
+        .expect("spender");
+    let calldata = build_erc20_allowance_calldata(owner, spender);
+    let encoded = calldata
+        .as_ref()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+
+    assert_eq!(&encoded[..8], "dd62ed3e");
+    assert_eq!(
+        &encoded[8..72],
+        "0000000000000000000000001111111111111111111111111111111111111111"
+    );
+    assert_eq!(
+        &encoded[72..],
+        "0000000000000000000000002222222222222222222222222222222222222222"
+    );
+}
+
+#[test]
+fn erc20_distribution_parent_validation_rejects_non_fixed_contract() {
+    let input = erc20_distribution_batch_input("http://127.0.0.1:8545".to_string());
+    let mut parent = input
+        .distribution_parent
+        .clone()
+        .expect("distribution parent");
+    parent.contract_address = "0x0000000000000000000000000000000000000001".to_string();
+
+    let error = wallet_workbench_lib::commands::transactions::validate_erc20_distribution_parent(
+        &input, &parent,
+    )
+    .expect_err("fixed contract validation should fail");
+
+    assert!(error.contains("fixed Disperse contract"));
+}
+
+#[test]
+fn erc20_distribution_parent_validation_rejects_duplicate_target_address() {
+    let input = erc20_distribution_batch_input("http://127.0.0.1:8545".to_string());
+    let mut parent = input
+        .distribution_parent
+        .clone()
+        .expect("distribution parent");
+    parent.total_amount_raw = "3000000".to_string();
+    let mut duplicate = parent.recipients[0].clone();
+    duplicate.child_id = "erc20-batch-test:child-0002".to_string();
+    duplicate.child_index = 1;
+    duplicate.target_kind = "localAccount".to_string();
+    parent.recipients.push(duplicate);
+
+    let error = wallet_workbench_lib::commands::transactions::validate_erc20_distribution_parent(
+        &input, &parent,
+    )
+    .expect_err("duplicate recipient address should fail");
+
+    assert!(error.contains("targetAddress values must be unique"));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn submit_erc20_distribution_rejects_insufficient_allowance_before_broadcast() {
+    let _guard = test_lock().lock().expect("test lock");
+    let _app_dir_guard = TestAppDirGuard::new("erc20-batch-allowance-insufficient");
+    wallet_workbench_lib::session::write_session_mnemonic(
+        "test test test test test test test test test test test junk".into(),
+    );
+    let (rpc_url, requests) = start_erc20_batch_distribution_rpc_server(
+        U256::from_dec_str("1000000000000000000").expect("native balance"),
+        U256::from(2_000_000u64),
+        U256::from(1_000_000u64),
+    );
+    let input = erc20_distribution_batch_input(rpc_url);
+
+    let result = wallet_workbench_lib::commands::transactions::submit_erc20_batch_command(input)
+        .await
+        .expect("batch result should report parent error");
+    let joined_requests = requests.lock().expect("requests lock").join("\n");
+
+    assert!(result.contains("allowance insufficient"));
+    assert!(!joined_requests.contains("eth_sendRawTransaction"));
+}
+
+#[test]
+fn erc20_collection_validation_rejects_target_mismatch_before_submit() {
+    let mut input = erc20_collection_batch_input();
+    input.children[0].target_address =
+        Some("0x9999999999999999999999999999999999999999".to_string());
+
+    let error =
+        wallet_workbench_lib::commands::transactions::validate_erc20_collection_children(&input)
+            .expect_err("target mismatch should fail");
+
+    assert!(error.contains("targetAddress must match intent.recipient"));
+}
+
+#[test]
+fn erc20_collection_validation_requires_one_contiguous_target() {
+    let mut input = erc20_collection_batch_input();
+    let mut second = input.children[0].clone();
+    second.child_id = "erc20-collect-test:child-0002".to_string();
+    second.child_index = 2;
+    second.target_address = Some("0x8888888888888888888888888888888888888888".to_string());
+    second.intent.recipient = "0x8888888888888888888888888888888888888888".to_string();
+    input.children.push(second);
+
+    let error =
+        wallet_workbench_lib::commands::transactions::validate_erc20_collection_children(&input)
+            .expect_err("non-contiguous child index should fail first");
+
+    assert!(error.contains("contiguous"));
+
+    input.children[1].child_index = 1;
+    let error =
+        wallet_workbench_lib::commands::transactions::validate_erc20_collection_children(&input)
+            .expect_err("multiple targets should fail");
+    assert!(error.contains("share exactly one target"));
 }
 
 fn native_distribution_submit_input(
