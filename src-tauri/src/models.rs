@@ -187,6 +187,20 @@ impl TypedTransactionFields {
             native_value_wei: Some("0".to_string()),
         }
     }
+
+    pub fn contract_call(
+        selector: impl Into<String>,
+        method_name: impl Into<String>,
+        native_value_wei: impl Into<String>,
+    ) -> Self {
+        Self {
+            transaction_type: TransactionType::ContractCall,
+            selector: Some(selector.into()),
+            method_name: Some(method_name.into()),
+            native_value_wei: Some(native_value_wei.into()),
+            ..Self::default()
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -234,6 +248,137 @@ pub struct Erc20TransferIntent {
     pub method: String,
     pub native_value_wei: String,
     pub frozen_key: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchHistoryMetadata {
+    pub batch_id: String,
+    pub child_id: String,
+    pub batch_kind: String,
+    pub asset_kind: String,
+    #[serde(default)]
+    pub child_index: Option<u32>,
+    #[serde(default)]
+    pub freeze_key: Option<String>,
+    #[serde(default)]
+    pub child_count: Option<u32>,
+    #[serde(default)]
+    pub contract_address: Option<String>,
+    #[serde(default)]
+    pub selector: Option<String>,
+    #[serde(default)]
+    pub method_name: Option<String>,
+    #[serde(default)]
+    pub total_value_wei: Option<String>,
+    #[serde(default)]
+    pub recipients: Vec<BatchRecipientAllocation>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchRecipientAllocation {
+    pub child_id: String,
+    pub child_index: u32,
+    pub target_kind: String,
+    pub target_address: String,
+    pub value_wei: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeBatchSubmitChild {
+    pub child_id: String,
+    pub child_index: u32,
+    pub batch_kind: String,
+    pub asset_kind: String,
+    pub freeze_key: String,
+    pub intent: NativeTransferIntent,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeBatchDistributionRecipient {
+    pub child_id: String,
+    pub child_index: u32,
+    pub target_kind: String,
+    pub target_address: String,
+    pub value_wei: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeBatchDistributionParent {
+    pub contract_address: String,
+    pub selector: String,
+    pub method_name: String,
+    pub recipients: Vec<NativeBatchDistributionRecipient>,
+    pub total_value_wei: String,
+    pub intent: NativeTransferIntent,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeBatchSubmitInput {
+    pub batch_id: String,
+    pub batch_kind: String,
+    pub asset_kind: String,
+    pub chain_id: u64,
+    pub freeze_key: String,
+    #[serde(default)]
+    pub distribution_parent: Option<NativeBatchDistributionParent>,
+    pub children: Vec<NativeBatchSubmitChild>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeBatchSubmitChildResult {
+    pub child_id: String,
+    pub child_index: u32,
+    #[serde(default)]
+    pub target_address: Option<String>,
+    #[serde(default)]
+    pub target_kind: Option<String>,
+    #[serde(default)]
+    pub amount_wei: Option<String>,
+    #[serde(default)]
+    pub record: Option<HistoryRecord>,
+    #[serde(default)]
+    pub error: Option<String>,
+    #[serde(default)]
+    pub recovery_hint: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeBatchSubmitParentResult {
+    #[serde(default)]
+    pub record: Option<HistoryRecord>,
+    #[serde(default)]
+    pub error: Option<String>,
+    #[serde(default)]
+    pub recovery_hint: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeBatchSubmitSummary {
+    pub child_count: usize,
+    pub submitted_count: usize,
+    pub failed_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeBatchSubmitResult {
+    pub batch_id: String,
+    pub batch_kind: String,
+    pub asset_kind: String,
+    pub chain_id: u64,
+    #[serde(default)]
+    pub parent: Option<NativeBatchSubmitParentResult>,
+    pub children: Vec<NativeBatchSubmitChildResult>,
+    pub summary: NativeBatchSubmitSummary,
 }
 
 fn unknown_string() -> String {
@@ -453,6 +598,8 @@ pub struct HistoryRecord {
     pub outcome: ChainOutcome,
     #[serde(default)]
     pub nonce_thread: NonceThread,
+    #[serde(default)]
+    pub batch_metadata: Option<BatchHistoryMetadata>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -515,6 +662,8 @@ pub struct HistoryRecoveryIntent {
     pub max_priority_fee_per_gas: Option<String>,
     #[serde(default)]
     pub replaces_tx_hash: Option<String>,
+    #[serde(default)]
+    pub batch_metadata: Option<BatchHistoryMetadata>,
     pub broadcasted_at: String,
     pub write_error: String,
     #[serde(default)]

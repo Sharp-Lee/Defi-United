@@ -231,6 +231,12 @@ function primaryTransactionValue(record: HistoryRecord) {
   }
 }
 
+function batchLabel(record: HistoryRecord) {
+  const metadata = record.batch_metadata;
+  if (!metadata) return null;
+  return `${metadata.batch_kind} ${metadata.asset_kind} batch ${short(metadata.batch_id)} child ${short(metadata.child_id)}`;
+}
+
 function relationshipLabel(entry: HistoryReadModel) {
   if (entry.submissionRole === "replacement" && entry.replacesTxHash) {
     return `replaces ${short(entry.replacesTxHash)}`;
@@ -895,7 +901,12 @@ export function HistoryView({
                   <td className="mono">chainId {formatMaybe(entry.chainId)}</td>
                   <td className="mono">{formatAccount(entry)}</td>
                   <td className="mono">{formatMaybe(entry.nonce)}</td>
-                  <td className="mono">{short(entry.txHash)}</td>
+                  <td className="mono">
+                    {short(entry.txHash)}
+                    {batchLabel(entry.record) && (
+                      <div className="history-thread-relation">{batchLabel(entry.record)}</div>
+                    )}
+                  </td>
                   <td className="mono">
                     {short(formatOptional(primaryTransactionTarget(entry.record)))}
                   </td>
@@ -1382,6 +1393,12 @@ function typedIntentRows(record: HistoryRecord): DetailRow[] {
   const baseRows: DetailRow[] = [
     ["Snapshot source", record.intent_snapshot.source],
     ["Captured at", formatTimestamp(record.intent_snapshot.captured_at)],
+    ["Batch id", record.batch_metadata?.batch_id],
+    ["Batch child", record.batch_metadata?.child_id],
+    ["Batch kind", record.batch_metadata?.batch_kind],
+    ["Batch contract", record.batch_metadata?.contract_address],
+    ["Batch child count", record.batch_metadata?.child_count],
+    ["Batch total value", record.batch_metadata?.total_value_wei],
     ["Transaction type", displayTransactionType(record.intent.transaction_type)],
     ["Account", `Account ${formatOptional(record.intent.account_index)} · ${short(formatOptional(record.intent.from))}`],
     ["chainId", formatOptional(record.intent.chain_id)],
@@ -1444,6 +1461,15 @@ function typedSubmissionRows(
   const baseRows: DetailRow[] = [
     ["Source", record.submission.source],
     ["Kind", record.submission.kind],
+    ["Batch id", record.batch_metadata?.batch_id],
+    ["Batch child", record.batch_metadata?.child_id],
+    ["Batch kind", record.batch_metadata?.batch_kind],
+    ["Batch freeze key", record.batch_metadata?.freeze_key],
+    ["Batch contract", record.batch_metadata?.contract_address],
+    ["Batch selector", record.batch_metadata?.selector],
+    ["Batch method", record.batch_metadata?.method_name],
+    ["Batch child count", record.batch_metadata?.child_count],
+    ["Batch total value", record.batch_metadata?.total_value_wei],
     ["Transaction type", displayTransactionType(record.submission.transaction_type)],
     ["Draft key", record.submission.frozen_key],
     ["Tx hash", record.submission.tx_hash],
@@ -1566,7 +1592,53 @@ function HistorySubmissionDetails({
         />
         <HistoryDetailSection title="ChainOutcome" rows={outcomeRows(entry)} />
       </div>
+      <DistributionRecipientRows record={record} />
     </article>
+  );
+}
+
+function DistributionRecipientRows({ record }: { record: HistoryRecord }) {
+  const metadata = record.batch_metadata;
+  if (
+    !metadata ||
+    metadata.batch_kind !== "distribute" ||
+    metadata.asset_kind !== "native" ||
+    metadata.recipients.length === 0
+  ) {
+    return null;
+  }
+  return (
+    <section className="history-detail-section" aria-label="Distribution recipient allocations">
+      <h5>Recipient Allocations</h5>
+      <div className="data-table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Order</th>
+              <th>Row</th>
+              <th>Target kind</th>
+              <th>Target</th>
+              <th>Amount</th>
+              <th>Parent tx</th>
+              <th>Outcome</th>
+            </tr>
+          </thead>
+          <tbody>
+            {metadata.recipients.map((recipient) => (
+              <tr key={`${recipient.child_id}-${recipient.child_index}`}>
+                <td>{recipient.child_index + 1}</td>
+                <td className="mono">{recipient.child_id}</td>
+                <td>{recipient.target_kind}</td>
+                <td className="mono">{recipient.target_address}</td>
+                <td className="mono">{recipient.value_wei} wei</td>
+                <td className="mono">{record.submission.tx_hash}</td>
+                <td>{record.outcome.state}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </section>
   );
 }
 

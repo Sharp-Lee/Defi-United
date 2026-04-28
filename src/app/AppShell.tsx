@@ -93,6 +93,8 @@ export interface AppShellProps {
   onValidateRpc?: () => Promise<void> | void;
   onTransferSubmitFailed?: (error: unknown) => Promise<void> | void;
   onTransferSubmitted?: (record: HistoryRecord) => void;
+  onNativeBatchSubmitFailed?: (error: unknown) => Promise<void> | void;
+  onNativeBatchSubmitted?: (records: HistoryRecord[]) => void;
 }
 
 const workspaceTabs: WorkspaceTab[] = [
@@ -153,6 +155,8 @@ export function AppShell({
   onValidateRpc = async () => {},
   onTransferSubmitFailed = async () => {},
   onTransferSubmitted = () => {},
+  onNativeBatchSubmitFailed = async () => {},
+  onNativeBatchSubmitted = () => {},
 }: AppShellProps) {
   const selectedChain = chains.find((chain) => chain.chainId === selectedChainId) ?? chains[0];
   const chainReady = settingsStatusKind === "ok" && rpcUrl.trim().length > 0;
@@ -250,6 +254,15 @@ export function AppShell({
               <AccountOrchestrationView
                 accounts={accounts}
                 chainName={selectedChain?.name ?? "Unknown chain"}
+                historyStorageIssue={
+                  historyStorage?.status === "corrupted"
+                    ? "Local transaction history is unreadable. Submission is disabled until history is retried or the damaged file is quarantined."
+                    : null
+                }
+                onNativeBatchSubmitFailed={onNativeBatchSubmitFailed}
+                onNativeBatchSubmitted={onNativeBatchSubmitted}
+                history={history}
+                rpcUrl={rpcUrl}
                 selectedChainId={selectedChainId}
                 tokenWatchlistState={tokenWatchlistState}
               />

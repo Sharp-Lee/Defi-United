@@ -1054,33 +1054,35 @@
 - 依赖：P4-8、P4-9、P4-10。
 - 关键边界：批量分发除外部账户外，必须支持选择本地账户作为接收方；归集必须支持 native + ERC-20，从部分或全部本地账户归集到一个指定账户，目标账户可以是本地账户或外部地址。
 - 是否先 spec/design：是，必须先 spec/design，不直接实现发送。
-- 非目标：不签名、不广播、不写发送代码、不迁移历史；不承诺原子 batch、smart contract multicall/airdrop、allowance/approve/permit/revoke、swap/bridge 或 fee-on-transfer 特殊保证。
+- 非目标：不签名、不广播、不写发送代码、不迁移历史；不承诺任意 smart contract multicall、relay、allowance/approve/permit/revoke、swap/bridge 或 fee-on-transfer 特殊保证。Distribution 的固定 Disperse 合约约束由 P4-12/P4-13 任务落地。
 - 实现拆分输入：P4-12 先落 native batch 的 `BatchPlan`、child、freeze、history aggregation、partial success 和 recovery；P4-13 在同一模型上加入 ERC-20 token contract、decimals、balance snapshot、native gas availability 与 receipt/log 展示。
 - 验证命令：`git diff --check`。
 
 #### Task P4-12: batch native 分发/归集
 
-- 目标：实现 native 分发/归集的最小批量能力，支持多个本地源账户和多个接收目标的受控组合。
+- 目标：实现 native 分发/归集的最小批量能力，其中 native distribution 必须通过固定/默认 Disperse 合约 `0xd15fE25eD0Dba12fE05e7029C88b10C25e8880E3` 提交一笔 parent contract transaction，native collection 继续保留 per-source EOA sweep/transfer。
 - 依赖：P4-10、P4-11。
-- 关键边界：每笔子交易独立 nonce、fee、tx hash 和 outcome；native 归集必须预留 gas；部分失败不能被 batch 总状态掩盖。
+- 关键边界：native distribution child rows 是 recipient allocation rows，共享 parent `disperseEther(address[],uint256[])` selector `0xe63d38ed` 的 nonce、fee、tx hash 和 outcome；native collection 每个 source child 独立 nonce、fee、tx hash 和 outcome，且必须预留 gas；collection 的部分失败不能被 batch 总状态掩盖。
 - 是否先 spec/design：若 P4-11 已足够细，可进入最小实现；否则补实现级设计。
 - 建议最小实现：
-  - 复用 P4-10 的 `FrozenOrchestrationSummary`，建立 native `BatchPlan` 与 per-child intent/submission/outcome。
-  - 优先支持一个明确 gated 的窄 shape，例如 single source -> many targets 分发，以及 selected/all local sources -> one target 归集；未支持 many-to-many 时必须在 UI/command 层禁用并说明。
+  - 复用 P4-10 的 `FrozenOrchestrationSummary`，建立 native `BatchPlan`，distribution parent contract call，recipient allocation rows，以及 collection per-child intent/submission/outcome。
+  - Native distribution 只支持 single source -> many targets；多个 source 分发必须拆成多个 batch 或等待后续设计，并在 UI/command 层禁用说明。
+  - Distribution freeze key 覆盖 fixed/default contract address、selector、method、recipients/values/order、totalValueWei、parent nonce/gas/fee、source 与 P4-10 frozen key。
   - Native 归集 per-source 计算可转出金额时必须扣除 gas reserve，不能提供不预留 gas 的“全余额扫空”。
-  - History batch detail 必须展示 child rows，不能只写 batch-level 成功/失败。
+  - History batch detail 必须展示 distribution parent record/hash + recipient rows，或 collection child rows，不能只写 batch-level 成功/失败。
 
 #### Task P4-13: batch ERC-20 分发/归集
 
-- 目标：在 P4-12 的 batch 基础上实现 ERC-20 分发/归集，覆盖 token decimals、余额扫描和 receipt/log 结果展示。
+- 目标：在 P4-12 的 batch 基础上实现 ERC-20 分发/归集；ERC-20 distribution 后续也必须通过 Disperse 类合约完成，常见方法为 `disperseToken(address,address[],uint256[])` selector `0xc73a2d60` 或 `disperseTokenSimple(address,address[],uint256[])` selector `0x51ba162c`。
 - 依赖：P4-8、P4-9、P4-11、P4-12。
-- 关键边界：ERC-20 归集 gas 由每个源账户支付；不应承诺原子性；每笔 transfer 的 failed/reverted 必须单独可见。
+- 关键边界：ERC-20 distribution 必须冻结 token contract、recipient/value arrays、distribution contract/method/selector，并做 allowance/preflight；未实现完整 allowance 与 contract call 前必须 gated。ERC-20 collection gas 由每个源账户支付；不应承诺 collection 原子性；每笔 transfer 的 failed/reverted 必须单独可见。
 - 是否先 spec/design：是，除非 P4-11 已包含 ERC-20 实现级细节。
 - 建议最小实现：
-  - 复用 P4-8 的 ERC-20 transfer intent/submission/history 契约，保持 transaction `to = tokenContract`，recipient 作为 calldata 参数。
+  - Distribution 复用 Disperse ERC-20 parent contract call 模型，先完成 allowance/preflight 与 parent/recipient history 展示后再开放。
+  - Collection 复用 P4-8 的 ERC-20 transfer intent/submission/history 契约，保持 transaction `to = tokenContract`，recipient 作为 calldata 参数。
   - 消费 P4-9 watchlist metadata 和 `account + chainId + tokenContract` balance snapshots；decimals/source、token balance 和 native gas availability 必须冻结并可见。
   - ERC-20 归集支持 selected/all local sources -> one target，目标可以是本地账户或外部地址；zero/missing/stale/failure snapshot 必须按明确规则 skipped、excluded 或 blocked。
-  - 不实现 allowance/approve/permit/revoke、swap/bridge、fee-on-transfer 保证或 batch contract。
+  - 不实现 approve/permit/revoke、swap/bridge 或 fee-on-transfer 保证；distribution 所需 allowance 只作为 preflight/gating，不在本任务中偷做隐式授权交易。
 
 #### Task P5-1: ABI 管理 fetch/import/paste/cache
 

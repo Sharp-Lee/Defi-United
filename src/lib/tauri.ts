@@ -1,13 +1,21 @@
 import { invoke } from "@tauri-apps/api/core";
 import {
   normalizeHistoryRecord,
+  normalizeBatchMetadata,
   parseTransactionHistoryPayload,
+  type BatchHistoryMetadata,
   type HistoryRecord as NormalizedHistoryRecord,
   type NativeTransferIntent as NormalizedNativeTransferIntent,
 } from "../core/history/schema";
+import {
+  DISPERSE_ETHER_METHOD,
+  DISPERSE_ETHER_SELECTOR,
+  type FrozenNativeBatchPlan,
+} from "../core/batch/nativeBatch";
 import { readAccountState } from "./rpc";
 
 export type {
+  BatchHistoryMetadata,
   ChainOutcomeState,
   HistoryRecord,
   NativeTransferIntent,
@@ -392,11 +400,20 @@ export interface HistoryRecoveryIntent {
   maxFeePerGas: string | null;
   maxPriorityFeePerGas: string | null;
   replacesTxHash: string | null;
+  batchMetadata?: BatchHistoryMetadata | null;
   broadcastedAt: string;
   writeError: string;
   lastRecoveryError: string | null;
   recoveredAt: string | null;
   dismissedAt: string | null;
+}
+
+function normalizeHistoryRecoveryIntent(rawIntent: unknown): HistoryRecoveryIntent {
+  const intent = rawIntent as HistoryRecoveryIntent & { batch_metadata?: unknown; batchMetadata?: unknown };
+  return {
+    ...intent,
+    batchMetadata: normalizeBatchMetadata(intent.batchMetadata ?? intent.batch_metadata),
+  };
 }
 
 export interface HistoryRecoveryResult {
@@ -556,7 +573,7 @@ export async function reviewDroppedHistoryRecord(txHash: string, rpcUrl: string,
 
 export async function loadHistoryRecoveryIntents() {
   const raw = await invoke<string>("load_history_recovery_intents_command");
-  return JSON.parse(raw) as HistoryRecoveryIntent[];
+  return (JSON.parse(raw) as unknown[]).map(normalizeHistoryRecoveryIntent);
 }
 
 export async function recoverBroadcastedHistoryRecord(
@@ -575,6 +592,7 @@ export async function recoverBroadcastedHistoryRecord(
   };
   return {
     ...parsed,
+    intent: normalizeHistoryRecoveryIntent(parsed.intent),
     record: normalizeHistoryRecord(parsed.record),
     history: parseHistory(JSON.stringify(parsed.history)),
   };
@@ -582,12 +600,131 @@ export async function recoverBroadcastedHistoryRecord(
 
 export async function dismissHistoryRecoveryIntent(recoveryId: string) {
   const raw = await invoke<string>("dismiss_history_recovery_intent_command", { recoveryId });
-  return JSON.parse(raw) as HistoryRecoveryIntent[];
+  return (JSON.parse(raw) as unknown[]).map(normalizeHistoryRecoveryIntent);
 }
 
 export async function submitNativeTransfer(intent: NormalizedNativeTransferIntent) {
   const raw = await invoke<string>("submit_native_transfer_command", { intent });
   return normalizeHistoryRecord(JSON.parse(raw));
+}
+
+export interface NativeBatchSubmitChildResult {
+  childId: string;
+  childIndex: number;
+  targetAddress?: string | null;
+  targetKind?: string | null;
+  amountWei?: string | null;
+  record?: NormalizedHistoryRecord | null;
+  error?: string | null;
+  recoveryHint?: string | null;
+}
+
+export interface NativeBatchSubmitParentResult {
+  record?: NormalizedHistoryRecord | null;
+  error?: string | null;
+  recoveryHint?: string | null;
+}
+
+export interface NativeBatchSubmitResult {
+  batchId: string;
+  batchKind: "distribute" | "collect";
+  assetKind: "native";
+  chainId: number;
+  parent?: NativeBatchSubmitParentResult | null;
+  children: NativeBatchSubmitChildResult[];
+  summary: {
+    childCount: number;
+    submittedCount: number;
+    failedCount: number;
+  };
+}
+
+export async function submitNativeBatch(plan: FrozenNativeBatchPlan, rpcUrl: string) {
+  const distributionParent =
+    plan.batchKind === "distribute" && plan.distributionParent
+      ? {
+          contractAddress: plan.distributionParent.distributionContract,
+          selector: plan.distributionParent.selector,
+          methodName: plan.distributionParent.methodName,
+          recipients: plan.distributionParent.recipients.map((recipient, index) => ({
+            childId: recipient.childId,
+            childIndex: index,
+            targetKind: recipient.target.kind,
+            targetAddress: recipient.targetAddress,
+            valueWei: recipient.amountWei,
+          })),
+          totalValueWei: plan.distributionParent.totalValueWei,
+          intent: {
+            transaction_type: "contractCall",
+            selector: plan.distributionParent.selector || DISPERSE_ETHER_SELECTOR,
+            method_name: plan.distributionParent.methodName || DISPERSE_ETHER_METHOD,
+            native_value_wei: plan.distributionParent.totalValueWei,
+            rpc_url: rpcUrl,
+            account_index: plan.distributionParent.source.accountIndex,
+            chain_id: plan.distributionParent.chainId,
+            from: plan.distributionParent.source.address,
+            to: plan.distributionParent.distributionContract,
+            value_wei: plan.distributionParent.totalValueWei,
+            nonce: plan.distributionParent.nonce,
+            gas_limit: plan.distributionParent.gasLimit,
+            max_fee_per_gas: plan.distributionParent.maxFeePerGas,
+            max_priority_fee_per_gas: plan.distributionParent.maxPriorityFeePerGas,
+          },
+        }
+      : null;
+  const input = {
+    batchId: plan.batchId,
+    batchKind: plan.batchKind,
+    assetKind: plan.assetKind,
+    chainId: plan.chainId,
+    freezeKey: plan.freezeKey,
+    distributionParent,
+    children:
+      plan.batchKind === "collect"
+        ? plan.children
+            .map((child, index) => ({ child, index }))
+            .filter(({ child }) => child.status === "notSubmitted" && child.nonce !== null)
+            .map(({ child, index }) => ({
+              childId: child.childId,
+              childIndex: index,
+              batchKind: child.batchKind,
+              assetKind: child.assetKind,
+              freezeKey: plan.freezeKey,
+              intent: {
+                transaction_type: "nativeTransfer",
+                native_value_wei: child.amountWei,
+                rpc_url: rpcUrl,
+                account_index: child.intentSnapshot.accountIndex,
+                chain_id: child.intentSnapshot.chainId,
+                from: child.intentSnapshot.from,
+                to: child.intentSnapshot.to,
+                value_wei: child.intentSnapshot.valueWei,
+                nonce: child.nonce,
+                gas_limit: child.intentSnapshot.gasLimit,
+                max_fee_per_gas: child.intentSnapshot.maxFeePerGas,
+                max_priority_fee_per_gas: child.intentSnapshot.maxPriorityFeePerGas,
+              },
+            }))
+        : [],
+  };
+  const raw = await invoke<string>("submit_native_batch_command", { input });
+  const parsed = JSON.parse(raw) as Omit<NativeBatchSubmitResult, "children" | "parent"> & {
+    parent?: (Omit<NativeBatchSubmitParentResult, "record"> & { record?: unknown | null }) | null;
+    children: Array<Omit<NativeBatchSubmitChildResult, "record"> & { record?: unknown | null }>;
+  };
+  return {
+    ...parsed,
+    parent: parsed.parent
+      ? {
+          ...parsed.parent,
+          record: parsed.parent.record ? normalizeHistoryRecord(parsed.parent.record) : null,
+        }
+      : null,
+    children: parsed.children.map((child) => ({
+      ...child,
+      record: child.record ? normalizeHistoryRecord(child.record) : null,
+    })),
+  } as NativeBatchSubmitResult;
 }
 
 export interface Erc20TransferIntent {
