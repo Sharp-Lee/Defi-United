@@ -206,7 +206,7 @@ v1 + P3/P4 已将基础历史列表升级为可筛选、可分组、可审计的
 **身份键与 metadata/decimals**
 
 - Token 稳定身份是 `chainId + tokenContract`。`tokenContract` 必须是校验后的 EVM 地址，并按统一大小写/校验显示策略保存。
-- `symbol`、`name`、`decimals` 是 metadata，可来自链上只读 call、用户 watchlist/cache 或用户确认输入；历史中必须记录 metadata source，例如 `onChainCall`、`watchlistCache`、`userConfirmed`、`unknown`。
+- `symbol`、`name`、`decimals` 是 metadata，可来自链上只读 call、P4-9 resolved metadata view 或用户确认输入；历史中必须记录 metadata source，例如 `onChainCall`、`cachedOnChain`、`userConfirmed`、`unknown`。
 - `decimals` 影响用户输入金额到 `amount_raw` 的解析，必须在 draft 中冻结。用户确认页和历史详情必须同时展示 human amount、`amount_raw`、decimals 和 metadata source。
 - metadata call failure 不能让系统猜 decimals。最小实现应要求用户选择可恢复路径：重试、从可信 watchlist/cache 使用已知 decimals，或显式输入/确认 decimals；无法确定 decimals 时不得构建可提交 draft。
 - 如果 draft 构建后 metadata 重新读取发现 decimals 改变或来源冲突，已冻结 draft 必须失效并要求重建，不能用新 decimals 静默重解释旧 amount。
@@ -236,6 +236,77 @@ v1 + P3/P4 已将基础历史列表升级为可筛选、可分组、可审计的
 - `receipt reverted/failed`：receipt `status = 0` 进入 failed，记录非敏感 revert/receipt 摘要；不得重试签名或广播。
 - `history write failed after broadcast`：必须返回 tx hash、chainId、account/from、nonce、token contract、recipient、amount_raw、decimals、selector/method、frozen draft key 和写入错误；恢复入口只能用 tx hash + frozen params 补录，不能重新签名或广播。
 - `replacement/cancel relationship`：ERC-20 pending 沿用 same account + chainId + nonce 的 nonce thread 语义。cancel 仍是同 nonce、向自身发送 0 native value 的 self-transfer，目的只是取代 pending；它不是 ERC-20 transfer。最小 replace 实现应收窄为保持同 token contract、recipient、amount_raw、decimals 和 calldata，仅提高费用；是否允许修改 recipient/amount 留给后续任务重新设计。
+
+### 9.3 Token watchlist 与 ERC-20 余额扫描（P4-9 设计）
+
+本小节定义 P4-9 的本地 token watchlist、metadata cache 和 ERC-20 balance snapshot。它复用 P4-8 的 `chainId + tokenContract` 身份、metadata source 和 ERC-20 read model，但不扩展发送能力本身。P4-9 的目标是让用户维护少量关心的 ERC-20，并按本地账户读取余额，为 ERC-20 transfer 的 token selector、后续多账户编排、批量分发/归集提供可靠输入。
+
+**目标**
+
+- 用户可维护本地 token watchlist。Token identity 固定为 `chainId + tokenContract`，`tokenContract` 必须是校验后的 EVM 地址；`symbol`、`name`、`decimals` 不是身份。
+- 按 `account + chainId + tokenContract` 读取和保存 ERC-20 balance snapshot，供账户资产视图、token selector 和后续 batch 预检查使用。
+- metadata 失败、非 ERC-20、RPC 失败、`decimals` 缺失或变化都必须进入可见、可恢复状态；失败不能静默隐藏，也不能污染用户已确认的 metadata。
+- 只做只读扫描和本地状态更新；不签名、不广播、不写交易历史。
+
+**非目标与边界**
+
+- 不做 allowance/approve/revoke、permit、NFT、LP/portfolio 估值、价格、外部 indexer 发现未知资产或全链资产组合展示。
+- 不做任意 ABI 调用器或 raw calldata；P4-9 只调用 ERC-20 标准只读方法 `decimals()`、`symbol()`、`name()`、`balanceOf(address)`，并允许方法缺失或返回 malformed。
+- 不把 browser version 作为主线；Tauri desktop 是实现目标。
+- 不要求用户必须通过 watchlist 才能发送 ERC-20。P4-8c 的手输 token contract 最小发送路径仍可独立存在，watchlist 只是更好的 token 来源。
+
+**本地存储模型**
+
+配置与扫描状态必须分离，避免一次 RPC 失败覆盖用户配置或已确认 metadata。
+
+- `watchlist_tokens` 是用户本地配置，identity 为 `chain_id + token_contract`。建议字段：`chain_id`、`token_contract`、`label` 可选、`user_notes` 可选、`pinned`/`hidden` 可选、`created_at`、`updated_at`、`metadata_override` 可选。
+- `metadata_override` 只保存用户显式确认或编辑的本地展示信息，例如 `symbol`、`name`、`decimals`、`source = userConfirmed`、`confirmed_at`。用户确认 `decimals` 必须带来源标记和时间；不能把系统猜测写成 user confirmed。
+- `token_metadata_cache` 只保存链上只读 call 的 raw cache，identity 同为 `chain_id + token_contract`。它不得保存 user-confirmed override 或 watchlist local label。建议字段：`raw_symbol`、`raw_name`、`raw_decimals`、`source = onChainCall`、`status = ok | missingDecimals | malformed | callFailed | nonErc20 | decimalsChanged`、`last_checked_at`、`last_error_summary`、`observed_decimals`/`previous_decimals` 可选。
+- `token_scan_state` 是 token 维度最近一次扫描状态，identity 为 `chain_id + token_contract`。建议字段：`status = idle | scanning | ok | partial | failed | chainMismatch | nonErc20 | malformed`、`last_started_at`、`last_finished_at`、`last_error_summary`、`rpc_profile_id` 或脱敏 RPC identity。
+- `erc20_balance_snapshots` 是账户余额快照，identity 为 `account + chain_id + token_contract`。建议字段：`account`、`chain_id`、`token_contract`、`balance_raw`、`balance_status = ok | zero | balanceCallFailed | malformedBalance | rpcFailed | chainMismatch | stale`、`metadata_status_ref`、`last_scanned_at`、`last_error_summary`、`rpc_profile_id` 或脱敏 RPC identity。它可以冗余保存扫描时用于展示的 `resolved_symbol`、`resolved_name`、`resolved_decimals`、`resolved_metadata_source`，但不能把 metadata conflict 当成 balance status。
+- `resolved_token_metadata` 是 UI/read model 的计算视图，不是 raw 链上 cache。它从 `watchlist_tokens.metadata_override` 和 `token_metadata_cache` 合成 effective metadata，建议字段：`effective_symbol`、`effective_name`、`effective_decimals`、`effective_source = onChainCall | cachedOnChain | userConfirmed | unknown`、`metadata_status = ok | missingDecimals | malformed | callFailed | nonErc20 | decimalsChanged | sourceConflict`、`conflict_summary`、`resolved_at`。若实现选择持久化该视图，也必须把它标记为 derived/read model，不能反写 raw cache 或用户 override。
+
+`watchlist_tokens` 是用户意图，不能因为扫描失败被删除或降级。`token_metadata_cache` 是可丢弃、可重建的链上 raw cache；`resolved_token_metadata` 和 `erc20_balance_snapshots` 是可重建 read model。`balance_raw` 必须按链上原始整数保存；human amount 只能在展示层结合当次明确来源的 resolved `decimals` 格式化。
+
+**Metadata 来源与 decimals 规则**
+
+- metadata 优先级用于展示和 draft 辅助：最新成功 on-chain call 优先，其次用户确认 override，其次旧 cached-on-chain，最后 unknown。具体 UI 可以允许用户选择信任用户确认值，但必须展示来源；这个选择写入 `metadata_override`，不写入 `token_metadata_cache`。
+- `decimals` 不可猜。`decimals()` 调用失败、返回非整数、超出合理范围或 malformed 时，metadata 状态为 `missingDecimals`/`malformed`，余额仍可保存 `balance_raw`，但 human amount 和 ERC-20 draft 需要用户重试或确认 decimals。
+- 已有 user-confirmed decimals 遇到链上读取失败时，不能被失败清空；遇到链上成功但与用户确认值不同，resolved metadata 应标记 `sourceConflict`，链上 raw cache 可同时记录 `observed_decimals`。若新链上 decimals 与历史链上成功值不同，raw cache 标记 `decimalsChanged`。两种情况都必须展示 previous/current/source，不得静默改写已确认值，也不得用新 decimals 重解释旧 draft。
+- `symbol`/`name` 失败不应阻止 `balanceOf` 读取；展示可退化为缩短合约地址。`symbol`/`name` 可能重复、伪造或变化，不能参与 token identity、去重或安全判断。
+- 若合约非 ERC-20 或只实现部分方法，记录具体失败面：metadata `callFailed`/`missingDecimals`/`malformed`、balance `balanceCallFailed`/`malformedBalance`、`nonErc20` suspected。不要把 `symbol/name` 成功等同于 token 可转账。
+
+**扫描流程与错误恢复**
+
+- 每次扫描前必须对 RPC 做 `chainId` validation：expected `chainId` 来自 watchlist token；actual 不一致时拒绝扫描并写 `chainMismatch`，显示 expected/actual，不能把 RPC URL 当作 chain identity。
+- Add token 时可先保存 watchlist 配置，再触发 metadata scan；metadata 失败不阻止用户保留 token，但 UI 必须显示失败和重试入口。
+- Balance scan 输入是本地 account 集合、目标 `chainId`、watchlist token 集合和 RPC profile。每个 `account + chainId + tokenContract` 独立成功/失败，不能让一个账户或 token 的失败覆盖其他 snapshot。
+- `nonErc20`：`decimals`/`balanceOf` 返回 revert、empty data、ABI decode error 或明显 malformed 时进入可恢复状态；用户可移除 token、编辑备注、重试或保留为失败项。
+- `metadata call failure`：raw cache 记录 `callFailed` 和脱敏错误摘要，允许重试、使用已有 cached-on-chain 或 userConfirmed metadata 生成 resolved view；缺 decimals 时禁止构建可提交 ERC-20 draft。
+- `balanceOf failure`：保留上一次成功 `balance_raw`，`balance_status` 标记为 `stale` 或 `balanceCallFailed` 并展示 last scanned/error；不能把失败显示成 0。
+- `RPC failure` 或超时：扫描状态为 `failed`/`partial`，balance snapshot 标记 `rpcFailed` 或保留旧 snapshot 为 `stale`，并保留 error summary；用户可手动 retry，也可换 RPC profile 重新扫描。
+
+**UI/UX 要求**
+
+- Watchlist 管理支持 add/edit/remove。Add 至少输入 `chainId`、token contract 和 RPC profile；编辑只改本地 label/notes/metadata override，不能改变 identity，改 identity 等价于删除旧 token 再新增。
+- Remove token 应说明只移除本地 watchlist 配置；可选择同时清理本地 cache/snapshots，但不得影响历史交易记录。
+- 提供 manual scan/retry：按当前账户、选中 token、整条 watchlist 或某个失败项重试。扫描中、成功、失败、partial、stale 状态都必须可见。
+- Account balances 视图按账户展示 watchlist token 的 `balance_raw`、human amount（仅当 resolved decimals 明确且 metadata status 非 conflict）、symbol/name/source、last scanned、`balance_status` 和错误摘要。失败状态不能因为余额未知而隐藏整行。
+- ERC-20 transfer token selector 可从 watchlist/balance snapshot 选择 token，并把 `chainId`、token contract、resolved metadata source/status、decimals、当前账户余额带入 draft。若 metadata status 是 `missingDecimals | decimalsChanged | sourceConflict`，selector 可以选择 token，但进入 draft 时必须要求重试或用户确认，不能构建可提交 draft。
+- 多账户/batch 后续会依赖这些 snapshots 做候选账户和余额预览；P4-9 只提供只读数据，不提供 batch plan、部分成功语义或交易聚合。
+
+**安全与隐私**
+
+- Watchlist 和 balance snapshot 不保存助记词、私钥、raw signed tx、签名材料、完整 RPC URL token、basic auth、query secret 或 explorer API key。
+- `rpc_profile_id`、RPC identity 和错误摘要进入本地状态、日志或诊断前必须脱敏；RPC URL 只可保存已有配置引用或脱敏摘要。
+- 扫描流程只做 JSON-RPC read call，不签名、不发送交易、不解锁私钥，不创建 pending history。
+- 合约 metadata、receipt/log、RPC 返回值都是不可信输入。UI 不得把 token symbol/name 当作安全背书。
+
+**后续边界**
+
+- P4-10 多账户选择器可以消费 `erc20_balance_snapshots`，但账户集合选择、冻结摘要和外部地址管理不属于 P4-9。
+- P4-11/P4-13 batch 分发/归集可以消费 watchlist token 和 account balance snapshots；每笔实际 transfer 仍必须走 P4-8 的 ERC-20 submit/history 模型。
+- P5 资产/授权扫描可以在 P4-9 基础上扩展 token/NFT/allowance/indexer，但 P4-9 不引入外部 indexer 作为必需项，也不实现 revoke。
 
 ## 10. P3/P4 已完成范围与后续 P4+ 方向
 

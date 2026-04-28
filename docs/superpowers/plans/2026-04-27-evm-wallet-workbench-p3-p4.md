@@ -872,12 +872,173 @@
 
 ### 7.4 后续任务卡 / Backlog
 
-#### Task P4-9: token watchlist/ERC-20 余额扫描
+#### Task P4-9: token watchlist/ERC-20 余额扫描（拆分入口）
 
-- 目标：实现或先设计 token watchlist，按 `account + chainId + token contract` 扫描 ERC-20 余额，并为 ERC-20 转账后续增强提供 token 选择来源；不阻塞 P4-8c 的手输 token contract 最小实现。
-- 依赖：P4-8 spec/design；若 P4-8a/P4-8b 已完成，应复用 typed history 和 metadata read model。
-- 关键边界：watchlist 是本地配置；symbol/name/decimals 只是展示 metadata；RPC 失败、合约非 ERC-20、decimals call 失败必须有可恢复状态。
-- 是否先 spec/design：是，若 P4-8 未覆盖 watchlist 数据模型，应先做轻量 spec。
+- 目标：实现 token watchlist，按 `account + chainId + token contract` 扫描 ERC-20 余额，并为 ERC-20 转账 token selector、后续多账户编排、批量分发/归集提供 token 和余额来源。
+- 依赖：P4-8 spec/design、P4-8a typed history contract、P4-8b ERC-20 draft/metadata read model、P4-8c 最小 ERC-20 submit。
+- 关键边界：watchlist 是本地配置；token identity 是 `chainId + tokenContract`；symbol/name/decimals 只是 metadata；余额 identity 是 `account + chainId + tokenContract`；RPC 失败、合约非 ERC-20、metadata malformed、decimals missing/changed、balanceOf failure 都必须有可恢复状态。
+- 当前拆分：P4-9a 先完成轻量 spec/design；P4-9b 做 storage/schema/commands；P4-9c 做 scanner/read model；P4-9d 做 UI watchlist/balances 和 ERC-20 transfer selector integration。
+
+#### Task P4-9a: token watchlist/ERC-20 余额扫描 spec-design（状态：已完成）
+
+**目标**
+
+补齐 P4-9 轻量但可执行的设计，覆盖本地 watchlist、metadata cache、account balance snapshot、失败恢复、UI/UX、安全隐私和 P5/P6 边界。
+
+**范围**
+
+- 更新 `docs/specs/evm-wallet-workbench.md`，定义 `watchlist_tokens`、`token_metadata_cache`、`token_scan_state`、`erc20_balance_snapshots` 的职责与建议字段。
+- 明确 metadata source/status、created/updated timestamps、last scan state、`balance_raw`、decimals、symbol/name、scan status、last scanned/error summary。
+- 明确 metadata 优先级、decimals 不可猜、decimals missing/changed 不污染已确认 metadata。
+- 明确 RPC chainId validation、non-ERC20/malformed response、metadata call failure、balanceOf failure 的可恢复状态。
+- 明确 watchlist add/edit/remove、manual scan/retry、token selector、per-account balances 和失败可见性。
+
+**非目标**
+
+- 不实现代码、schema migration、Tauri command、scanner 或 UI。
+- 不引入外部 indexer，不做 allowance/revoke/NFT/ABI/batch。
+
+**验收**
+
+- 下一个 implementer 能按文档独立拆 P4-9b/P4-9c/P4-9d。
+- 文档不把 symbol/name/decimals 当作 token identity。
+- 文档明确扫描失败不会删除 watchlist token，也不会静默覆盖 user-confirmed metadata。
+
+**验证命令**
+
+- `git diff --check`
+
+**风险点**
+
+- 设计过宽会提前吞进 P5 资产/授权扫描；本卡必须只保留 ERC-20 watchlist + balances。
+- decimals 冲突如果没有来源标记，会直接影响 ERC-20 transfer amount 解析。
+
+#### Task P4-9b: storage/schema + commands + tests
+
+**目标**
+
+实现 P4-9 的本地持久化契约和 Tauri command 边界，让 watchlist 配置、metadata cache、scan state、balance snapshots 可以被 UI 和 scanner 稳定读写。
+
+**范围**
+
+- 增加或扩展本地存储 schema：`watchlist_tokens`、`token_metadata_cache`、`token_scan_state`、`erc20_balance_snapshots`，并保持用户配置、链上 raw cache、derived read model 与扫描状态分离。
+- Command/API 支持 list/add/edit/remove watchlist token、读取 metadata cache、读取 balance snapshots、更新 scan state/snapshot。
+- Add/edit 校验 `chainId` 和 EVM token contract；编辑 identity 需按删除旧 token + 新增 token 处理。
+- Remove token 只移除本地 watchlist 配置；是否清理 cache/snapshots 必须是显式选项或保守保留。
+- `token_metadata_cache` 只保存 on-chain raw call 结果，不能保存 user-confirmed override；UI/draft 需要的 effective metadata 由 `metadata_override` + raw cache 合成。
+- 统一枚举：raw metadata status 使用 `ok | missingDecimals | malformed | callFailed | nonErc20 | decimalsChanged`；resolved metadata status 在 raw metadata status 基础上增加 `sourceConflict`；balance status 使用 `ok | zero | balanceCallFailed | malformedBalance | rpcFailed | chainMismatch | stale`。
+- 所有持久化错误、RPC identity、error summary 进入日志/诊断前脱敏。
+
+**非目标**
+
+- 不实现实际 RPC scanner。
+- 不实现 watchlist/balances UI。
+- 不写交易历史，不改签名广播路径。
+- 不引入 browser 版主线能力或外部 indexer。
+
+**验收**
+
+- Storage 能表达 `chainId + tokenContract` token identity 和 `account + chainId + tokenContract` balance identity。
+- `created_at`、`updated_at`、metadata source/status、last scan timestamps、last error summary 均可读写。
+- 扫描状态更新不会覆盖用户配置；失败 snapshot 不会把旧成功余额写成 0。
+- 用户确认 decimals 必须保存 `source = userConfirmed` 和确认时间。
+- user-confirmed metadata 只存在于 `watchlist_tokens.metadata_override`；`token_metadata_cache` 中不存在 `userConfirmed` 或 `watchlistCache` source。
+
+**验证命令**
+
+- `cargo test --manifest-path src-tauri/Cargo.toml`
+- `npm test -- src/core src/features`
+- `npm run typecheck`
+- `git diff --check`
+
+**风险点**
+
+- Migration 需兼容已有 app config/history；损坏或缺字段应可恢复。
+- 配置和 read model 混写会让 RPC 失败污染用户已确认 token。
+- RPC URL/token 或长错误消息容易被误写入本地状态或诊断。
+
+#### Task P4-9c: scanner/read model + tests
+
+**目标**
+
+实现 ERC-20 watchlist 只读扫描器：按 watchlist token 和本地账户读取 metadata 与 `balanceOf`，产出可恢复、可展示、可被 ERC-20 transfer draft 消费的 read model。
+
+**范围**
+
+- 复用 P4-8b 的 metadata/balance read model 思路，扫描前校验 RPC actual `chainId` 与 expected `chainId`。
+- 对每个 `chainId + tokenContract` 读取 `decimals()`、`symbol()`、`name()`，raw cache 只记录 on-chain result，raw metadata status 使用 `ok | missingDecimals | malformed | callFailed | nonErc20 | decimalsChanged`。
+- 合成 resolved metadata view 时再处理 user-confirmed override 与 raw cache 的冲突，resolved metadata status 可增加 `sourceConflict`。
+- 对每个 `account + chainId + tokenContract` 读取 `balanceOf(account)`，保存 `balance_raw`、resolved metadata snapshot/source/status、`balance_status = ok | zero | balanceCallFailed | malformedBalance | rpcFailed | chainMismatch | stale`、last scanned/error summary。
+- 支持手动 scan/retry 的 command/API：单 token、单 account、当前账户、全部 watchlist 或失败项重试。
+- RPC failure、non-ERC20、metadata malformed、missingDecimals、decimalsChanged/sourceConflict、balanceOf failure 均保留旧 snapshot 并标记对应 metadata/balance status，不静默隐藏。
+
+**非目标**
+
+- 不做自动发现未知 token、价格/portfolio、allowance/NFT/indexer。
+- 不做交易提交、approve/revoke 或 batch plan。
+- 不在 scanner 中猜 decimals 或把 symbol/name 当作可信身份。
+
+**验收**
+
+- chainId mismatch 拒绝扫描并显示 expected/actual。
+- metadata failure 不阻止保留 watchlist token；缺 decimals 时 selector/draft 能看到不可提交原因。
+- balanceOf failure 不把余额显示为 0；旧成功 snapshot 标记 stale 并保留 last error。
+- decimalsChanged/sourceConflict 有显式 metadata status，balance snapshot 只引用 resolved metadata status，不能静默改写 user-confirmed decimals 或 frozen draft 输入。
+
+**验证命令**
+
+- `cargo test --manifest-path src-tauri/Cargo.toml`
+- `npm test -- src/core/transactions src/features/transfer`
+- `npm run typecheck`
+- `scripts/run-anvil-check.sh`
+- `git diff --check`
+
+**风险点**
+
+- 部分 ERC-20 的 `symbol/name` 返回 bytes32 或 malformed；错误分类不能过度确定。
+- 扫描并发需要避免较慢 RPC 结果覆盖较新的 snapshot。
+- 多账户扫描失败必须按 account 维度隔离，不能让一个账户失败污染全部 token。
+
+#### Task P4-9d: UI token watchlist/balances + ERC-20 transfer selector integration + tests
+
+**目标**
+
+提供 Tauri desktop 主线的 watchlist 管理、per-account ERC-20 balances 视图、manual scan/retry 和 ERC-20 transfer token selector 集成。
+
+**范围**
+
+- UI 支持 add/edit/remove watchlist token，展示 chainId、token contract、label、resolved metadata source/status、last scan/error。
+- UI 支持按当前账户或选定账户查看 watchlist token balances：`balance_raw`、human amount（仅 resolved decimals 明确且 metadata status 非 conflict 时）、symbol/name/source、last scanned、`balance_status`。
+- 提供 scan/retry 入口：单 token、单账户、当前账户 watchlist、失败项 retry。
+- ERC-20 transfer 表单支持从 watchlist/balance snapshot 选择 token，带入 `chainId`、token contract、resolved metadata source/status、decimals、当前账户余额；`missingDecimals | decimalsChanged | sourceConflict` 时阻止可提交 draft 并显示恢复路径。
+- 失败状态不能静默隐藏；nonErc20、malformed、callFailed、rpcFailed、balanceCallFailed、malformedBalance、decimalsChanged、sourceConflict 要有可读摘要。
+
+**非目标**
+
+- 不做资产组合估值、价格、NFT、allowance/revoke、ABI 调用器、batch 分发/归集 UI。
+- 不把 browser version 作为主线。
+- 不改变 ERC-20 submit 的 Rust 签名广播边界；selector 只提供输入来源。
+
+**验收**
+
+- 用户能添加 token、看到 metadata 成功/失败、手动重试，并按账户看到余额快照。
+- ERC-20 transfer 可从 watchlist 选择 token；选择后仍清楚展示 transaction `to = tokenContract` 与 recipient calldata 参数。
+- missingDecimals、decimalsChanged、sourceConflict、metadata callFailed、balanceCallFailed 均有禁用原因或恢复动作，不会被当作 0 余额或 unknown token 静默吞掉。
+- Remove token 不影响既有历史记录；UI 文案说明 watchlist 是本地配置。
+
+**验证命令**
+
+- `npm test -- src/features/transfer src/features/history src/core/transactions`
+- `npm run typecheck`
+- `cargo test --manifest-path src-tauri/Cargo.toml`
+- `scripts/run-anvil-check.sh`
+- `git diff --check`
+
+**风险点**
+
+- UI 容易把 token contract 和 recipient 混淆，必须沿用 P4-8 的 ERC-20 transfer 展示规则。
+- 失败行如果被过滤掉，会误导用户以为余额为 0 或 token 不存在。
+- selector 与手输 token contract 路径要并存，不能阻塞 P4-8c 的最小发送能力。
 
 #### Task P4-10: 多账户选择器与账户编排基础
 
