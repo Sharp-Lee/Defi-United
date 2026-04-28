@@ -35,8 +35,15 @@ describe("history schema normalization", () => {
     expect(records[0]).toMatchObject({
       schema_version: 1,
       intent_snapshot: { source: "legacy", captured_at: null },
+      intent: {
+        transaction_type: "nativeTransfer",
+        token_contract: null,
+        recipient: null,
+        amount_raw: null,
+      },
       submission: {
         kind: "legacy",
+        transaction_type: "nativeTransfer",
         source: "legacy",
         broadcasted_at: null,
         chain_id: null,
@@ -173,7 +180,79 @@ describe("history schema normalization", () => {
     expect(records[1].outcome.receipt).toBeNull();
   });
 
-  it("falls back when submission kind or outcome state are unknown", () => {
+  it("preserves ERC-20 typed fields without collapsing token contract and recipient", () => {
+    const tokenContract = "0x4444444444444444444444444444444444444444";
+    const recipient = "0x5555555555555555555555555555555555555555";
+    const records = normalizeHistoryRecords([
+      {
+        schema_version: 3,
+        intent: {
+          ...legacyIntent,
+          transaction_type: "erc20Transfer",
+          to: tokenContract,
+          value_wei: "0",
+          token_contract: tokenContract,
+          recipient,
+          amount_raw: "1234500",
+          decimals: 6,
+          token_symbol: "TST",
+          token_name: "Test Token",
+          token_metadata_source: "userConfirmed",
+          selector: "0xa9059cbb",
+          method_name: "transfer",
+          native_value_wei: "0",
+        },
+        submission: {
+          frozen_key: "erc20-key",
+          tx_hash: "0xerc20",
+          kind: "erc20Transfer",
+          transaction_type: "erc20Transfer",
+          source: "submission",
+          chain_id: 1,
+          account_index: 1,
+          from: legacyIntent.from,
+          to: tokenContract,
+          value_wei: "0",
+          token_contract: tokenContract,
+          recipient,
+          amount_raw: "1234500",
+          decimals: 6,
+          token_symbol: "TST",
+          token_name: "Test Token",
+          token_metadata_source: "userConfirmed",
+          selector: "0xa9059cbb",
+          method_name: "transfer",
+          native_value_wei: "0",
+          nonce: 9,
+          gas_limit: "65000",
+          max_fee_per_gas: "40000000000",
+          max_priority_fee_per_gas: "1500000000",
+          broadcasted_at: "1700000001",
+          replaces_tx_hash: null,
+        },
+        outcome: { state: "Pending", tx_hash: "0xerc20" },
+        nonce_thread: {
+          source: "derived",
+          key: "1:1:0x1111111111111111111111111111111111111111:9",
+          chain_id: 1,
+          account_index: 1,
+          from: legacyIntent.from,
+          nonce: 9,
+          replaces_tx_hash: null,
+          replaced_by_tx_hash: null,
+        },
+      },
+    ]);
+
+    expect(records[0].intent.transaction_type).toBe("erc20Transfer");
+    expect(records[0].intent.to).toBe(tokenContract);
+    expect(records[0].intent.token_contract).toBe(tokenContract);
+    expect(records[0].intent.recipient).toBe(recipient);
+    expect(records[0].submission.kind).toBe("erc20Transfer");
+    expect(records[0].submission.native_value_wei).toBe("0");
+  });
+
+  it("falls back when submission kind, transaction type, or outcome state are unknown", () => {
     const records = normalizeHistoryRecords([
       {
         intent: legacyIntent,
@@ -181,6 +260,7 @@ describe("history schema normalization", () => {
           frozen_key: "strange-key",
           tx_hash: "0xstrange",
           kind: "surprise",
+          transaction_type: "mysterySwap",
         },
         outcome: {
           state: "MinedButMaybeNot",
@@ -189,7 +269,8 @@ describe("history schema normalization", () => {
       },
     ]);
 
-    expect(records[0].submission.kind).toBe("legacy");
+    expect(records[0].submission.kind).toBe("unsupported");
+    expect(records[0].submission.transaction_type).toBe("unknown");
     expect(records[0].outcome.state).toBe("Unknown");
   });
 

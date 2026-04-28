@@ -98,6 +98,9 @@ impl Drop for TestAppDirGuard {
 
 fn native_transfer_intent(nonce: u64, value_wei: &str) -> NativeTransferIntent {
     NativeTransferIntent {
+        typed_transaction: wallet_workbench_lib::models::TypedTransactionFields::native_transfer(
+            value_wei,
+        ),
         rpc_url: "http://127.0.0.1:8545".into(),
         account_index: 1,
         chain_id: 1,
@@ -127,6 +130,10 @@ fn history_record(nonce: u64, state: ChainOutcomeState, tx_hash: &str) -> Histor
             captured_at: Some("1700000000".into()),
         },
         submission: wallet_workbench_lib::models::SubmissionRecord {
+            typed_transaction:
+                wallet_workbench_lib::models::TypedTransactionFields::native_transfer(
+                    intent.value_wei.clone(),
+                ),
             frozen_key: format!(
                 "{}:{}:{}:{}:{}",
                 intent.chain_id, intent.from, intent.to, intent.value_wei, intent.nonce
@@ -1221,12 +1228,108 @@ fn legacy_v1_history_records_deserialize_with_display_defaults() {
             records[0].submission.kind,
             wallet_workbench_lib::models::SubmissionKind::Legacy
         );
+        assert_eq!(
+            records[0].intent.typed_transaction.transaction_type,
+            wallet_workbench_lib::models::TransactionType::NativeTransfer
+        );
+        assert_eq!(
+            records[0].submission.typed_transaction.transaction_type,
+            wallet_workbench_lib::models::TransactionType::NativeTransfer
+        );
         assert_eq!(records[0].submission.broadcasted_at, None);
         assert!(records[0].outcome.receipt.is_none());
         assert_eq!(records[0].outcome.finalized_at, None);
         assert_eq!(records[0].nonce_thread.source, "legacy");
         assert_eq!(records[0].nonce_thread.key, "unknown");
     });
+}
+
+#[test]
+fn erc20_typed_history_fields_deserialize_additively() {
+    let raw = r#"{
+      "schema_version": 3,
+      "intent": {
+        "transaction_type": "erc20Transfer",
+        "rpc_url": "http://127.0.0.1:8545",
+        "account_index": 1,
+        "chain_id": 1,
+        "from": "0x1111111111111111111111111111111111111111",
+        "to": "0x4444444444444444444444444444444444444444",
+        "value_wei": "0",
+        "token_contract": "0x4444444444444444444444444444444444444444",
+        "recipient": "0x5555555555555555555555555555555555555555",
+        "amount_raw": "1234500",
+        "decimals": 6,
+        "token_symbol": "TST",
+        "token_name": "Test Token",
+        "token_metadata_source": "userConfirmed",
+        "selector": "0xa9059cbb",
+        "method_name": "transfer",
+        "native_value_wei": "0",
+        "nonce": 7,
+        "gas_limit": "65000",
+        "max_fee_per_gas": "40000000000",
+        "max_priority_fee_per_gas": "1500000000"
+      },
+      "submission": {
+        "transaction_type": "erc20Transfer",
+        "frozen_key": "erc20-key",
+        "tx_hash": "0xerc20",
+        "kind": "erc20Transfer",
+        "source": "submission",
+        "chain_id": 1,
+        "account_index": 1,
+        "from": "0x1111111111111111111111111111111111111111",
+        "to": "0x4444444444444444444444444444444444444444",
+        "value_wei": "0",
+        "token_contract": "0x4444444444444444444444444444444444444444",
+        "recipient": "0x5555555555555555555555555555555555555555",
+        "amount_raw": "1234500",
+        "decimals": 6,
+        "selector": "0xa9059cbb",
+        "method_name": "transfer",
+        "native_value_wei": "0",
+        "nonce": 7,
+        "gas_limit": "65000",
+        "max_fee_per_gas": "40000000000",
+        "max_priority_fee_per_gas": "1500000000"
+      },
+      "outcome": {
+        "state": "Pending",
+        "tx_hash": "0xerc20"
+      }
+    }"#;
+
+    let record: HistoryRecord = serde_json::from_str(raw).expect("typed erc20 history");
+
+    assert_eq!(
+        record.intent.typed_transaction.transaction_type,
+        wallet_workbench_lib::models::TransactionType::Erc20Transfer
+    );
+    assert_eq!(
+        record.submission.kind,
+        wallet_workbench_lib::models::SubmissionKind::Erc20Transfer
+    );
+    assert_eq!(
+        record.intent.typed_transaction.token_contract.as_deref(),
+        Some("0x4444444444444444444444444444444444444444")
+    );
+    assert_eq!(
+        record.intent.typed_transaction.recipient.as_deref(),
+        Some("0x5555555555555555555555555555555555555555")
+    );
+    assert_eq!(
+        record.submission.typed_transaction.amount_raw.as_deref(),
+        Some("1234500")
+    );
+    assert_eq!(
+        record
+            .submission
+            .typed_transaction
+            .native_value_wei
+            .as_deref(),
+        Some("0")
+    );
 }
 
 #[test]
@@ -2286,6 +2389,9 @@ async fn submit_native_transfer_roundtrip_against_anvil() {
     );
 
     let intent = NativeTransferIntent {
+        typed_transaction: wallet_workbench_lib::models::TypedTransactionFields::native_transfer(
+            "1000000000000000",
+        ),
         rpc_url: "http://127.0.0.1:8545".into(),
         account_index: 1,
         chain_id: 31337,

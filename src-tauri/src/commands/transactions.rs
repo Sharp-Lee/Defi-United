@@ -2,7 +2,9 @@ use std::collections::HashSet;
 use std::sync::{Mutex, OnceLock};
 
 use crate::diagnostics::{append_diagnostic_event, DiagnosticEventInput, DiagnosticLevel};
-use crate::models::{NativeTransferIntent, SubmissionKind, SubmissionRecord};
+use crate::models::{
+    NativeTransferIntent, SubmissionKind, SubmissionRecord, TypedTransactionFields,
+};
 use crate::transactions::{
     dismiss_history_recovery_intent, inspect_history_storage, load_history_records,
     load_history_recovery_intents, persist_pending_history, quarantine_history_storage,
@@ -227,7 +229,11 @@ fn build_replace_intent_from_record(
     record: crate::models::HistoryRecord,
 ) -> Result<NativeTransferIntent, String> {
     let (chain_id, account_index, from, nonce) = frozen_submission_identity(&record.submission)?;
+    let value_wei = request
+        .value_wei
+        .ok_or_else(|| "replace requires a value".to_string())?;
     Ok(NativeTransferIntent {
+        typed_transaction: TypedTransactionFields::native_transfer(value_wei.clone()),
         rpc_url: request.rpc_url,
         account_index,
         chain_id,
@@ -235,9 +241,7 @@ fn build_replace_intent_from_record(
         to: request
             .to
             .ok_or_else(|| "replace requires a destination".to_string())?,
-        value_wei: request
-            .value_wei
-            .ok_or_else(|| "replace requires a value".to_string())?,
+        value_wei,
         nonce,
         gas_limit: request.gas_limit,
         max_fee_per_gas: request.max_fee_per_gas,
@@ -258,6 +262,7 @@ fn build_cancel_intent_from_record(
 ) -> Result<NativeTransferIntent, String> {
     let (chain_id, account_index, from, nonce) = frozen_submission_identity(&record.submission)?;
     Ok(NativeTransferIntent {
+        typed_transaction: TypedTransactionFields::native_transfer("0"),
         rpc_url: request.rpc_url,
         account_index,
         chain_id,

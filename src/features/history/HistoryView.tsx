@@ -19,6 +19,7 @@ import {
   type HistorySelectorFilters,
   type HistoryStatus,
 } from "../../core/history/selectors";
+import type { TransactionType } from "../../core/history/schema";
 import type {
   HistoryCorruptionType,
   HistoryRecoveryIntent,
@@ -156,6 +157,77 @@ function roleLabel(entry: Pick<HistoryReadModel, "submissionRole">) {
       return "Cancel submission";
     case "legacy":
       return "Legacy submission";
+    case "unsupported":
+      return "Unsupported submission";
+  }
+}
+
+function transactionTypeLabel(type: TransactionType) {
+  switch (type) {
+    case "legacy":
+      return "Legacy native transfer";
+    case "nativeTransfer":
+      return "Native transfer";
+    case "erc20Transfer":
+      return "ERC-20 transfer";
+    case "contractCall":
+      return "Contract call";
+    case "unknown":
+      return "Unsupported/unknown";
+  }
+}
+
+function displayTransactionType(type: TransactionType) {
+  const label = transactionTypeLabel(type);
+  return type === "unknown" ? label : `${label} (${type})`;
+}
+
+function recordTransactionType(record: HistoryRecord) {
+  return record.submission.transaction_type === "unknown"
+    ? record.intent.transaction_type
+    : record.submission.transaction_type;
+}
+
+function primaryTransactionTarget(record: HistoryRecord) {
+  switch (recordTransactionType(record)) {
+    case "legacy":
+    case "nativeTransfer":
+      return record.submission.to ?? record.intent.to;
+    case "erc20Transfer":
+      return (
+        record.submission.token_contract ??
+        record.intent.token_contract ??
+        record.submission.to ??
+        record.intent.to
+      );
+    case "contractCall":
+      return (
+        record.submission.to ??
+        record.intent.to ??
+        record.submission.token_contract ??
+        record.intent.token_contract
+      );
+    case "unknown":
+      return "Unsupported/unknown";
+  }
+}
+
+function primaryTransactionValue(record: HistoryRecord) {
+  switch (recordTransactionType(record)) {
+    case "legacy":
+    case "nativeTransfer":
+      return `${formatOptional(record.submission.value_wei ?? record.intent.value_wei)} wei`;
+    case "erc20Transfer":
+      return `${formatOptional(record.submission.amount_raw ?? record.intent.amount_raw)} raw`;
+    case "contractCall":
+      return `${formatOptional(
+        record.submission.native_value_wei ??
+          record.intent.native_value_wei ??
+          record.submission.value_wei ??
+          record.intent.value_wei,
+      )} wei`;
+    case "unknown":
+      return "Unsupported/unknown";
   }
 }
 
@@ -819,11 +891,9 @@ export function HistoryView({
                   <td className="mono">{formatMaybe(entry.nonce)}</td>
                   <td className="mono">{short(entry.txHash)}</td>
                   <td className="mono">
-                    {short(entry.record.submission.to ?? entry.record.intent.to)}
+                    {short(formatOptional(primaryTransactionTarget(entry.record)))}
                   </td>
-                  <td className="mono">
-                    {entry.record.submission.value_wei ?? entry.record.intent.value_wei} wei
-                  </td>
+                  <td className="mono">{primaryTransactionValue(entry.record)}</td>
                   <td>{formatTimestamp(timestampValue(entry))}</td>
                   <td>{renderActions(entry, allThreadEntriesByKey.get(entry.key) ?? [entry])}</td>
                 </tr>
@@ -871,16 +941,9 @@ export function HistoryView({
                     </div>
                   </td>
                   <td className="mono">
-                    {short(
-                      group.submissions[0].record.submission.to ??
-                        group.submissions[0].record.intent.to,
-                    )}
+                    {short(formatOptional(primaryTransactionTarget(group.submissions[0].record)))}
                   </td>
-                  <td className="mono">
-                    {group.submissions[0].record.submission.value_wei ??
-                      group.submissions[0].record.intent.value_wei}{" "}
-                    wei
-                  </td>
+                  <td className="mono">{primaryTransactionValue(group.submissions[0].record)}</td>
                   <td>{formatTimestamp(latestTimestamp(group.submissions))}</td>
                   <td>
                     <div className="history-thread-list">
@@ -1307,6 +1370,137 @@ function threadOutcomeSummary(entries: HistoryReadModel[]) {
   return outcomes.length > 0 ? `Thread outcomes: ${outcomes.join("; ")}` : "Thread outcomes: Pending";
 }
 
+type DetailRow = [string, string | number | null | undefined];
+
+function typedIntentRows(record: HistoryRecord): DetailRow[] {
+  const baseRows: DetailRow[] = [
+    ["Snapshot source", record.intent_snapshot.source],
+    ["Captured at", formatTimestamp(record.intent_snapshot.captured_at)],
+    ["Transaction type", displayTransactionType(record.intent.transaction_type)],
+    ["Account", `Account ${formatOptional(record.intent.account_index)} · ${short(formatOptional(record.intent.from))}`],
+    ["chainId", formatOptional(record.intent.chain_id)],
+  ];
+
+  switch (record.intent.transaction_type) {
+    case "legacy":
+    case "nativeTransfer":
+      return [
+        ...baseRows,
+        ["To", record.intent.to],
+        ["Value", `${formatOptional(record.intent.value_wei)} wei`],
+        ["Native value", `${formatOptional(record.intent.native_value_wei ?? record.intent.value_wei)} wei`],
+        ["Nonce input", formatOptional(record.intent.nonce)],
+        ["Gas limit input", formatOptional(record.intent.gas_limit)],
+        ["Max fee input", `${formatOptional(record.intent.max_fee_per_gas)} wei`],
+        ["Priority fee input", `${formatOptional(record.intent.max_priority_fee_per_gas)} wei`],
+      ];
+    case "erc20Transfer":
+      return [
+        ...baseRows,
+        ["Transaction to", record.intent.to],
+        ["Token contract", record.intent.token_contract ?? record.intent.to],
+        ["Recipient", record.intent.recipient],
+        ["Amount raw", record.intent.amount_raw],
+        ["Decimals", record.intent.decimals],
+        ["Token symbol", record.intent.token_symbol],
+        ["Token name", record.intent.token_name],
+        ["Metadata source", record.intent.token_metadata_source],
+        ["Selector", record.intent.selector],
+        ["Method name", record.intent.method_name],
+        ["Native value", `${formatOptional(record.intent.native_value_wei)} wei`],
+        ["Nonce input", formatOptional(record.intent.nonce)],
+        ["Gas limit input", formatOptional(record.intent.gas_limit)],
+        ["Max fee input", `${formatOptional(record.intent.max_fee_per_gas)} wei`],
+        ["Priority fee input", `${formatOptional(record.intent.max_priority_fee_per_gas)} wei`],
+      ];
+    case "contractCall":
+      return [
+        ...baseRows,
+        ["Transaction to", record.intent.to],
+        ["Selector", record.intent.selector],
+        ["Method name", record.intent.method_name],
+        ["Native value", `${formatOptional(record.intent.native_value_wei ?? record.intent.value_wei)} wei`],
+        ["Typed display", "Unsupported typed contract call"],
+      ];
+    case "unknown":
+      return [
+        ...baseRows,
+        ["Typed display", "Unsupported/unknown transaction type"],
+      ];
+  }
+}
+
+function typedSubmissionRows(
+  entry: HistoryReadModel,
+  current: boolean,
+): DetailRow[] {
+  const { record } = entry;
+  const baseRows: DetailRow[] = [
+    ["Source", record.submission.source],
+    ["Kind", record.submission.kind],
+    ["Transaction type", displayTransactionType(record.submission.transaction_type)],
+    ["Draft key", record.submission.frozen_key],
+    ["Tx hash", record.submission.tx_hash],
+    ["Broadcasted at", formatTimestamp(record.submission.broadcasted_at)],
+    ["Account", `Account ${formatOptional(record.submission.account_index)} · ${short(formatOptional(record.submission.from))}`],
+    ["chainId", formatOptional(record.submission.chain_id)],
+  ];
+  const tailRows: DetailRow[] = [
+    ["Nonce", formatOptional(record.submission.nonce)],
+    ["Gas limit", formatOptional(record.submission.gas_limit)],
+    ["Max fee", `${formatOptional(record.submission.max_fee_per_gas)} wei`],
+    ["Priority fee", `${formatOptional(record.submission.max_priority_fee_per_gas)} wei`],
+    ["Replaces tx", record.submission.replaces_tx_hash],
+    ["Replaced by tx", record.nonce_thread.replaced_by_tx_hash],
+    ["Thread role", roleLabel(entry)],
+    ["Action target", current ? "Current pending submission" : "Not current pending"],
+  ];
+
+  switch (record.submission.transaction_type) {
+    case "legacy":
+    case "nativeTransfer":
+      return [
+        ...baseRows,
+        ["To", record.submission.to],
+        ["Value", `${formatOptional(record.submission.value_wei)} wei`],
+        ["Native value", `${formatOptional(record.submission.native_value_wei ?? record.submission.value_wei)} wei`],
+        ...tailRows,
+      ];
+    case "erc20Transfer":
+      return [
+        ...baseRows,
+        ["Transaction to", record.submission.to],
+        ["Token contract", record.submission.token_contract ?? record.submission.to],
+        ["Recipient", record.submission.recipient],
+        ["Amount raw", record.submission.amount_raw],
+        ["Decimals", record.submission.decimals],
+        ["Token symbol", record.submission.token_symbol],
+        ["Token name", record.submission.token_name],
+        ["Metadata source", record.submission.token_metadata_source],
+        ["Selector", record.submission.selector],
+        ["Method name", record.submission.method_name],
+        ["Native value", `${formatOptional(record.submission.native_value_wei)} wei`],
+        ...tailRows,
+      ];
+    case "contractCall":
+      return [
+        ...baseRows,
+        ["Transaction to", record.submission.to],
+        ["Selector", record.submission.selector],
+        ["Method name", record.submission.method_name],
+        ["Native value", `${formatOptional(record.submission.native_value_wei ?? record.submission.value_wei)} wei`],
+        ["Typed display", "Unsupported typed contract call"],
+        ...tailRows,
+      ];
+    case "unknown":
+      return [
+        ...baseRows,
+        ["Typed display", "Unsupported/unknown transaction type"],
+        ...tailRows,
+      ];
+  }
+}
+
 function HistorySubmissionDetails({
   entry,
   nowMs,
@@ -1358,40 +1552,11 @@ function HistorySubmissionDetails({
       <div className="history-detail-grid">
         <HistoryDetailSection
           title="Intent"
-          rows={[
-            ["Snapshot source", record.intent_snapshot.source],
-            ["Captured at", formatTimestamp(record.intent_snapshot.captured_at)],
-            ["Account", `Account ${formatOptional(record.intent.account_index)} · ${short(formatOptional(record.intent.from))}`],
-            ["chainId", formatOptional(record.intent.chain_id)],
-            ["To", record.intent.to],
-            ["Value", `${formatOptional(record.intent.value_wei)} wei`],
-            ["Nonce input", formatOptional(record.intent.nonce)],
-            ["Gas limit input", formatOptional(record.intent.gas_limit)],
-            ["Max fee input", `${formatOptional(record.intent.max_fee_per_gas)} wei`],
-            ["Priority fee input", `${formatOptional(record.intent.max_priority_fee_per_gas)} wei`],
-          ]}
+          rows={typedIntentRows(record)}
         />
         <HistoryDetailSection
           title="Submission"
-          rows={[
-            ["Source", record.submission.source],
-            ["Kind", record.submission.kind],
-            ["Draft key", record.submission.frozen_key],
-            ["Tx hash", record.submission.tx_hash],
-            ["Broadcasted at", formatTimestamp(record.submission.broadcasted_at)],
-            ["Account", `Account ${formatOptional(record.submission.account_index)} · ${short(formatOptional(record.submission.from))}`],
-            ["chainId", formatOptional(record.submission.chain_id)],
-            ["To", record.submission.to],
-            ["Value", `${formatOptional(record.submission.value_wei)} wei`],
-            ["Nonce", formatOptional(record.submission.nonce)],
-            ["Gas limit", formatOptional(record.submission.gas_limit)],
-            ["Max fee", `${formatOptional(record.submission.max_fee_per_gas)} wei`],
-            ["Priority fee", `${formatOptional(record.submission.max_priority_fee_per_gas)} wei`],
-            ["Replaces tx", record.submission.replaces_tx_hash],
-            ["Replaced by tx", record.nonce_thread.replaced_by_tx_hash],
-            ["Thread role", roleLabel(entry)],
-            ["Action target", current ? "Current pending submission" : "Not current pending"],
-          ]}
+          rows={typedSubmissionRows(entry, current)}
         />
         <HistoryDetailSection title="ChainOutcome" rows={outcomeRows(entry)} />
       </div>

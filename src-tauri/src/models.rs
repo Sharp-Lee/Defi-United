@@ -99,8 +99,11 @@ pub enum ChainOutcomeState {
 pub enum SubmissionKind {
     Legacy,
     NativeTransfer,
+    Erc20Transfer,
     Replacement,
     Cancellation,
+    #[serde(other)]
+    Unsupported,
 }
 
 impl Default for SubmissionKind {
@@ -109,8 +112,63 @@ impl Default for SubmissionKind {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum TransactionType {
+    Legacy,
+    NativeTransfer,
+    Erc20Transfer,
+    ContractCall,
+    #[serde(other)]
+    Unknown,
+}
+
+impl Default for TransactionType {
+    fn default() -> Self {
+        Self::NativeTransfer
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TypedTransactionFields {
+    #[serde(default)]
+    pub transaction_type: TransactionType,
+    #[serde(default)]
+    pub token_contract: Option<String>,
+    #[serde(default)]
+    pub recipient: Option<String>,
+    #[serde(default)]
+    pub amount_raw: Option<String>,
+    #[serde(default)]
+    pub decimals: Option<u8>,
+    #[serde(default)]
+    pub token_symbol: Option<String>,
+    #[serde(default)]
+    pub token_name: Option<String>,
+    #[serde(default)]
+    pub token_metadata_source: Option<String>,
+    #[serde(default)]
+    pub selector: Option<String>,
+    #[serde(default)]
+    pub method_name: Option<String>,
+    #[serde(default)]
+    pub native_value_wei: Option<String>,
+}
+
+impl TypedTransactionFields {
+    pub fn native_transfer(value_wei: impl Into<String>) -> Self {
+        Self {
+            transaction_type: TransactionType::NativeTransfer,
+            native_value_wei: Some(value_wei.into()),
+            ..Self::default()
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NativeTransferIntent {
+    #[serde(flatten)]
+    pub typed_transaction: TypedTransactionFields,
     pub rpc_url: String,
     pub account_index: u32,
     pub chain_id: u64,
@@ -154,6 +212,8 @@ impl Default for IntentSnapshotMetadata {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubmissionRecord {
+    #[serde(flatten)]
+    pub typed_transaction: TypedTransactionFields,
     pub frozen_key: String,
     pub tx_hash: String,
     #[serde(default)]

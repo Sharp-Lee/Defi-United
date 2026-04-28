@@ -23,7 +23,7 @@ use crate::models::{
     ChainOutcome, DroppedReviewSummary, HistoryErrorSummary, HistoryRecoveryIntent,
     HistoryRecoveryIntentStatus, HistoryRecoveryResult, HistoryRecoveryResultStatus,
     IntentSnapshotMetadata, NonceThread, ReceiptSummary, ReconcileSummary, SubmissionKind,
-    SubmissionRecord,
+    SubmissionRecord, TypedTransactionFields,
 };
 use crate::session::with_session_mnemonic;
 use crate::storage::{
@@ -761,6 +761,7 @@ fn submission_record_from_intent(
     );
 
     SubmissionRecord {
+        typed_transaction: TypedTransactionFields::native_transfer(intent.value_wei.clone()),
         frozen_key,
         tx_hash,
         kind,
@@ -1326,12 +1327,14 @@ fn local_same_nonce_review_result(
                 candidate_hash,
                 "localCancellationSameNonce".to_string(),
             )),
-            SubmissionKind::Replacement | SubmissionKind::NativeTransfer => Some((
+            SubmissionKind::Replacement
+            | SubmissionKind::NativeTransfer
+            | SubmissionKind::Erc20Transfer => Some((
                 ChainOutcomeState::Replaced,
                 candidate_hash,
                 "localReplacementSameNonce".to_string(),
             )),
-            SubmissionKind::Legacy => None,
+            SubmissionKind::Legacy | SubmissionKind::Unsupported => None,
         }
     })
 }
@@ -2089,6 +2092,7 @@ fn history_record_from_recovery_intent(
         captured_at: Some(intent.created_at.clone()),
     };
     let native_intent = NativeTransferIntent {
+        typed_transaction: TypedTransactionFields::native_transfer(value_wei.clone()),
         rpc_url: RECOVERED_HISTORY_RPC_URL.to_string(),
         account_index,
         chain_id,
@@ -2105,6 +2109,7 @@ fn history_record_from_recovery_intent(
         intent: native_intent,
         intent_snapshot,
         submission: SubmissionRecord {
+            typed_transaction: TypedTransactionFields::native_transfer(value_wei),
             frozen_key,
             tx_hash: intent.tx_hash.clone(),
             kind: intent.kind.clone(),

@@ -7,9 +7,37 @@ export type ChainOutcomeState =
   | "Dropped"
   | "Unknown";
 
-export type SubmissionKind = "legacy" | "nativeTransfer" | "replacement" | "cancellation";
+export type TransactionType =
+  | "legacy"
+  | "nativeTransfer"
+  | "erc20Transfer"
+  | "contractCall"
+  | "unknown";
+
+export type SubmissionKind =
+  | "legacy"
+  | "nativeTransfer"
+  | "erc20Transfer"
+  | "replacement"
+  | "cancellation"
+  | "unsupported";
+
+export interface TypedTransactionFields {
+  transaction_type: TransactionType;
+  token_contract: string | null;
+  recipient: string | null;
+  amount_raw: string | null;
+  decimals: number | null;
+  token_symbol: string | null;
+  token_name: string | null;
+  token_metadata_source: string | null;
+  selector: string | null;
+  method_name: string | null;
+  native_value_wei: string | null;
+}
 
 export interface NativeTransferIntent {
+  transaction_type?: "nativeTransfer";
   rpc_url: string;
   account_index: number;
   chain_id: number;
@@ -22,12 +50,36 @@ export interface NativeTransferIntent {
   max_priority_fee_per_gas: string;
 }
 
+export interface HistoryTransactionIntent extends TypedTransactionFields {
+  rpc_url: string | null;
+  account_index: number | null;
+  chain_id: number | null;
+  from: string | null;
+  to: string | null;
+  value_wei: string | null;
+  nonce: number | null;
+  gas_limit: string | null;
+  max_fee_per_gas: string | null;
+  max_priority_fee_per_gas: string | null;
+}
+
 export interface IntentSnapshotMetadata {
   source: string;
   captured_at: string | null;
 }
 
 export interface SubmissionRecord {
+  transaction_type: TransactionType;
+  token_contract: string | null;
+  recipient: string | null;
+  amount_raw: string | null;
+  decimals: number | null;
+  token_symbol: string | null;
+  token_name: string | null;
+  token_metadata_source: string | null;
+  selector: string | null;
+  method_name: string | null;
+  native_value_wei: string | null;
   frozen_key: string;
   tx_hash: string;
   kind: SubmissionKind;
@@ -114,7 +166,7 @@ export interface NonceThread {
 
 export interface HistoryRecord {
   schema_version: number;
-  intent: NativeTransferIntent;
+  intent: HistoryTransactionIntent;
   intent_snapshot: IntentSnapshotMetadata;
   submission: SubmissionRecord;
   outcome: ChainOutcome;
@@ -123,11 +175,20 @@ export interface HistoryRecord {
 
 const LEGACY = "legacy";
 const UNKNOWN = "unknown";
+const TRANSACTION_TYPES = new Set<TransactionType>([
+  "legacy",
+  "nativeTransfer",
+  "erc20Transfer",
+  "contractCall",
+  "unknown",
+]);
 const SUBMISSION_KINDS = new Set<SubmissionKind>([
   "legacy",
   "nativeTransfer",
+  "erc20Transfer",
   "replacement",
   "cancellation",
+  "unsupported",
 ]);
 const OUTCOME_STATES = new Set<ChainOutcomeState>([
   "Pending",
@@ -160,9 +221,57 @@ function objectOrEmpty(value: unknown): Record<string, unknown> {
 }
 
 function normalizeSubmissionKind(value: unknown): SubmissionKind {
+  if (value === undefined || value === null) return "legacy";
   return typeof value === "string" && SUBMISSION_KINDS.has(value as SubmissionKind)
     ? (value as SubmissionKind)
-    : "legacy";
+    : "unsupported";
+}
+
+function normalizeTransactionType(value: unknown, fallback: TransactionType): TransactionType {
+  if (value === undefined || value === null) return fallback;
+  return typeof value === "string" && TRANSACTION_TYPES.has(value as TransactionType)
+    ? (value as TransactionType)
+    : "unknown";
+}
+
+function normalizeTypedTransactionFields(
+  rawValue: Record<string, unknown>,
+  fallback: TransactionType,
+): TypedTransactionFields {
+  return {
+    transaction_type: normalizeTransactionType(rawValue.transaction_type, fallback),
+    token_contract: stringOrNull(rawValue.token_contract),
+    recipient: stringOrNull(rawValue.recipient),
+    amount_raw: stringOrNull(rawValue.amount_raw),
+    decimals: numberOrNull(rawValue.decimals),
+    token_symbol: stringOrNull(rawValue.token_symbol),
+    token_name: stringOrNull(rawValue.token_name),
+    token_metadata_source: stringOrNull(rawValue.token_metadata_source),
+    selector: stringOrNull(rawValue.selector),
+    method_name: stringOrNull(rawValue.method_name),
+    native_value_wei: stringOrNull(rawValue.native_value_wei),
+  };
+}
+
+function transactionTypeFallbackForSubmission(kind: SubmissionKind): TransactionType {
+  return kind === "erc20Transfer" ? "erc20Transfer" : "nativeTransfer";
+}
+
+function normalizeTransactionIntent(rawIntent: unknown): HistoryTransactionIntent {
+  const intent = objectOrEmpty(rawIntent);
+  return {
+    ...normalizeTypedTransactionFields(intent, "nativeTransfer"),
+    rpc_url: stringOrNull(intent.rpc_url),
+    account_index: numberOrNull(intent.account_index),
+    chain_id: numberOrNull(intent.chain_id),
+    from: stringOrNull(intent.from),
+    to: stringOrNull(intent.to),
+    value_wei: stringOrNull(intent.value_wei),
+    nonce: numberOrNull(intent.nonce),
+    gas_limit: stringOrNull(intent.gas_limit),
+    max_fee_per_gas: stringOrNull(intent.max_fee_per_gas),
+    max_priority_fee_per_gas: stringOrNull(intent.max_priority_fee_per_gas),
+  };
 }
 
 function normalizeOutcomeState(value: unknown): ChainOutcomeState {
@@ -173,10 +282,12 @@ function normalizeOutcomeState(value: unknown): ChainOutcomeState {
 
 function normalizeSubmission(rawSubmission: unknown): SubmissionRecord {
   const submission = objectOrEmpty(rawSubmission);
+  const kind = normalizeSubmissionKind(submission.kind);
   return {
+    ...normalizeTypedTransactionFields(submission, transactionTypeFallbackForSubmission(kind)),
     frozen_key: stringOrDefault(submission.frozen_key),
     tx_hash: stringOrDefault(submission.tx_hash),
-    kind: normalizeSubmissionKind(submission.kind),
+    kind,
     source: stringOrDefault(submission.source, LEGACY),
     chain_id: numberOrNull(submission.chain_id),
     account_index: numberOrNull(submission.account_index),
@@ -290,7 +401,7 @@ export function normalizeHistoryRecord(rawRecord: unknown): HistoryRecord {
   const intentSnapshot = objectOrEmpty(record.intent_snapshot);
   return {
     schema_version: numberOrNull(record.schema_version) ?? 1,
-    intent: record.intent as NativeTransferIntent,
+    intent: normalizeTransactionIntent(record.intent),
     intent_snapshot: {
       source: stringOrDefault(intentSnapshot.source, LEGACY),
       captured_at: stringOrNull(intentSnapshot.captured_at),

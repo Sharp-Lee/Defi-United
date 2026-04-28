@@ -9,7 +9,12 @@ export type HistoryStatus =
   | "dropped"
   | "unknown";
 
-export type HistorySubmissionRole = "legacy" | "submission" | "replacement" | "cancellation";
+export type HistorySubmissionRole =
+  | "legacy"
+  | "submission"
+  | "replacement"
+  | "cancellation"
+  | "unsupported";
 export type HistoryIdentitySource = "submission" | "nonceThread" | "intent";
 export type HistoryIdentityIssueKind = "incomplete" | "inconsistent";
 
@@ -195,11 +200,14 @@ export function selectSubmissionRole(kind: SubmissionKind): HistorySubmissionRol
     case "legacy":
       return "legacy";
     case "nativeTransfer":
+    case "erc20Transfer":
       return "submission";
     case "replacement":
       return "replacement";
     case "cancellation":
       return "cancellation";
+    case "unsupported":
+      return "unsupported";
   }
 }
 
