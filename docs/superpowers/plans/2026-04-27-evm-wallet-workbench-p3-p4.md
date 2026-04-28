@@ -1224,10 +1224,182 @@ P5-1 提供 ABI source/cache/read model，不实现 ABI 调用器、raw calldata
 
 #### Task P5-2: ABI read/write 调用器
 
-- 目标：基于已管理 ABI 提供 read-only call 与 write transaction 调用器，参数可读化并接入历史三层模型。
-- 依赖：P5-1；P4-8 的交易类型扩展经验。
-- 关键边界：read call 不签名广播；write transaction 必须走 Rust/Tauri command；复杂 tuple/array 参数需可预览和验证，不能把解析失败的参数伪装为安全。
-- 是否先 spec/design：是，尤其是 write 调用历史模型和确认页。
+P5-2 仍是计划能力，不能写成当前已可用。目标是在 Tauri desktop 主线中，基于 P5-1 的 selected ABI source/cache/read model 提供 read-only call 与 write transaction caller，并在 write path 复用既有确认页、Rust/Tauri 签名广播边界和交易历史三层模型。Browser 版本不是本阶段主线。
+
+##### Task P5-2a: ABI read/write caller spec/design（状态：本任务，doc-only）
+
+**目标**
+
+补齐 ABI read/write caller 的项目级设计，明确 ABI read model 消费、函数分类、参数模型、read call 行为、write draft/history/confirm/submit 边界、diagnostics 脱敏和测试拆分。
+
+**依赖**
+
+- P5-1 ABI source/cache/read model 设计。
+- P4-8/P4-13 的 typed intent/submission/outcome 扩展经验。
+- 现有确认页、交易历史、Rust signing/broadcast 和 diagnostics 脱敏边界。
+
+**边界**
+
+- 只改文档，不改 `src` 或 `src-tauri`。
+- 不实现 ABI caller、raw calldata sender/preview、revoke、asset/allowance scanning、hot tx parsing、签名、广播或 UI。
+- 不把 P5-2 写成当前已完成或可用能力。
+- 明确 P5-3 才处理 raw calldata sender；P5-2 只基于 managed ABI entry。
+
+**验收/测试建议**
+
+- `docs/specs/evm-wallet-workbench.md` 包含 P5-2 计划/设计，覆盖 scope/non-goals、ABI source consumption、function classification、parameter model、read behavior、write behavior、history model、diagnostics/security 和 edge cases。
+- 本计划文件将 P5-2 拆成可实现、可 review 的后续子任务，且每个子任务有依赖、边界和验收。
+- 验证命令：`git diff --check`。
+
+##### Task P5-2b: read-only call engine and backend read model
+
+**目标**
+
+实现只读 ABI call 的 Rust/Tauri command 和可消费 read model：按 selected ABI entry、函数 signature 和 canonical params 执行 `eth_call`，并返回 decode result 或脱敏失败状态。
+
+**依赖**
+
+- P5-2a spec/design。
+- P5-1b/P5-1c 的 ABI cache/read model、validation summary、source/version identity。
+- Chain config/RPC profile 的 chainId 校验能力。
+
+**边界**
+
+- 只支持 `view`/`pure` read calls；fallback/receive/constructor 不支持。
+- Read call 不签名、不广播、不创建普通交易历史记录；最多记录有限 diagnostic event。
+- 不提供 raw calldata 输入；calldata 只能由 selected ABI + canonical params 编码。
+- React 不持久化 raw ABI body；artifact loading 和 fingerprint/version 校验在 Rust/Tauri 或受控 read-model 路径完成。
+
+**验收/测试建议**
+
+- Command 在调用前校验 actual RPC `chainId` 与 expected `chainId`，并确认 selected ABI version/fingerprint/hash 未漂移。
+- 状态处理覆盖 P5-1 的 fetch/source、parse/validation、cache 和 source-selection 状态，包括 `notConfigured`、`unsupportedChain`、`notVerified`、`fetchFailed`、`rateLimited`、`malformedResponse`、`parseFailed`、`malformedAbi`、`emptyAbiItems`、`payloadTooLarge`、`sourceConflict`、`needsUserChoice`、`cacheStale`、`refreshing`、`refreshFailed`、`versionSuperseded`、`selectorConflict`。每个 non-callable/error/loading/superseded state 都必须可见，并按 spec 明确映射为 blocked、loading 或 recoverable blocked。
+- `selectorConflict` 默认 non-callable；React 不能本地 override。只有未来 backend/domain resolution command 返回并冻结具体 resolved source/version/signature/selector identity 后，调用器才能把该 resolved entry 当作 callable。
+- Decode 成功、empty return、malformed return、revert data、RPC failure、timeout、chain mismatch、ABI decode error 都有脱敏 read model。
+- Rust tests 覆盖 overloaded signature selection、selector conflict blocking、tuple arrays/nested tuple return decode、chain mismatch 和 revert/decode failure。
+
+##### Task P5-2c: ABI parameter editor and calldata preview
+
+**目标**
+
+实现 Tauri desktop 的 ABI function picker、signature-level overload selection、参数编辑器和 calldata preview，让用户能在 read/write 前看到 selector、length、hash 和参数摘要。
+
+**依赖**
+
+- P5-2a spec/design。
+- P5-1d/P5-1e 的 frontend ABI read model 或等价 list/get selected ABI view。
+- P5-2b 的 canonical type/validation contract，或先以 shared parser contract stub 推进。
+
+**边界**
+
+- 参数编辑器只服务 managed ABI functions，不提供 raw calldata textarea 或 raw sender。
+- Parse/validate 失败不能自动 coerce 成零地址、0、false、空 bytes 或其他默认值。
+- 支持 primitives、address、bytes/fixed bytes、bool、string、int/uint bounds、arrays、fixed arrays、tuple、nested tuple 和 tuple arrays；unsupported type 必须显式 blocked。
+- Preview 只展示 ABI 编码摘要，不把 selector match 或 semantic decode 当作安全保证。
+
+**验收/测试建议**
+
+- UI/logic tests 覆盖 malformed address、integer out of bounds、bytes length mismatch、array length mismatch、tuple field missing、nested tuple arrays、overloaded functions 和 large payload summary。
+- Preview 输出 function signature、selector、param summary、calldata length/hash，并在 blocking states 下禁用 call/submit。
+- Snapshot/diagnostics 不包含 raw ABI body、大型 raw calldata、完整 unbounded tuple/string/bytes/array 参数或 API/RPC secrets；canonical params 可以在内存/submit-time validation 中存在，但持久化只保存 bounded summary/hash/redacted display value。
+
+##### Task P5-2d: arbitrary ABI write draft/history schema
+
+**目标**
+
+扩展交易 draft 和 history schema，表达 arbitrary ABI write call 的 typed intent，并为 future submit 预留 nullable submission/outcome/broadcast/recovery fields；本任务只提供 schema/read model/migration 边界，不实现 submit/broadcast。
+
+**依赖**
+
+- P5-2a spec/design。
+- 现有 transaction history 三层模型、confirmation draft 模型、replacement/cancellation/reconcile 模式。
+- P5-1 selected ABI identity/version/fingerprint/hash。
+
+**边界**
+
+- 不把 ABI write call 伪装成 native transfer、ERC-20 transfer 或 batch。
+- 不签名、不广播、不提供 UI 提交；本任务只建立 schema、migration/read model 和单元测试。
+- Submission/outcome/broadcast 字段在 P5-2d 是 schema placeholders 或 nullable recovery fields，供 P5-2f submit/broadcast 后填充；P5-2d 不应产生真实 tx hash、broadcast attempt 或链上 outcome。
+- History 不保存 raw ABI body、private key/mnemonic/signed tx secret material、API key、完整 unbounded tuple/string/bytes/array 参数或未经明确边界允许的巨大 raw calldata。
+
+**验收/测试建议**
+
+- Draft/history 能冻结 `chainId`、from、to contract、ABI source identity、version、abiHash、sourceFingerprint、function signature、selector、canonical params summary/hash、native value、gas/fee/nonce、selected RPC identity 和 warning statuses；不得持久化完整 unbounded canonical params。
+- History record 包含 typed intent、nullable schema-only submission/outcome placeholders、calldata selector/length/hash、argument summary/hash 和 nullable broadcast/recovery metadata placeholders。
+- Migration/backward compatibility 不破坏 existing native/ERC-20/batch/replacement/cancellation records。
+- Rust tests 覆盖 history serialization、recovery metadata、diagnostics export redaction 和 unknown/future enum handling。
+
+##### Task P5-2e: write gas/fee/nonce draft and confirmation UI
+
+**目标**
+
+基于 P5-2d 的 write draft 提供 arbitrary ABI write confirmation page，展示 contract、function、args summary、value、gas/fee/nonce、ABI source status 和风险提示。
+
+**依赖**
+
+- P5-2c parameter editor/preview。
+- P5-2d write draft/history schema。
+- 现有 gas/fee/nonce/base fee/priority fee/multiplier UI 与确认页组件。
+
+**边界**
+
+- 不签名、不广播；提交按钮可以保持 disabled/stub，直到 P5-2f。
+- Nonpayable function 的 native value 必须为零；payable function 才允许 value 输入和确认。
+- Fallback/receive/constructor 仍不作为普通函数提交。
+- Pending `sourceConflict`、`needsUserChoice`、unresolved `selectorConflict`、chain mismatch、validation failure 必须阻塞。
+
+**验收/测试建议**
+
+- 确认页显示 contract、chain、from、function signature、selector、decoded args summary、native value、gas limit、max fee/fee cap、priority fee、base fee、fee multiplier、nonce、selected RPC identity、ABI source/status 和 warning/blocking states。
+- Gas estimation failure 可见且可恢复，不静默用危险默认值。
+- Frontend tests 覆盖 payable value、nonpayable nonzero value blocking、`cacheStale` blocks calls/submission until refreshed or explicitly resolved by backend/domain flow、selector conflict blocking、large args summary 和 mobile/desktop layout。
+
+##### Task P5-2f: write submit Rust command and history persistence
+
+**目标**
+
+实现 arbitrary ABI write submit command：从冻结 draft 重新校验 ABI/source/RPC/signer/fees/calldata 后，由 Rust/Tauri 签名广播并按既有模式持久化 history。
+
+**依赖**
+
+- P5-2d write draft/history schema。
+- P5-2e confirmation UI。
+- 现有 Rust signer/from account、RPC send raw tx、history persistence、reconcile/recovery pattern。
+
+**边界**
+
+- 不提供前端签名或广播出口。
+- 不支持 raw calldata sender；submit 的 calldata 必须由 selected ABI function + canonical params 构造或复验。
+- 不实现 revoke、asset scanning、hot tx parsing 或 selector safety scoring。
+- Pending conflicts、ABI version drift、chain mismatch、from mismatch、nonce/fee invalid、calldata mismatch、value mismatch 必须阻塞。
+
+**验收/测试建议**
+
+- Submit command 重新校验 actual chainId/RPC、signer/from、ABI version/fingerprint/hash、function signature/selector、canonical params/calldata、value、gas/fee/nonce 和 warning resolution。
+- History 在 broadcast 前后按既有可恢复模式记录 typed intent/submission/outcome、tx hash、RPC identity、broadcast attempt、chain outcome 和 recovery metadata。
+- Tests 覆盖 successful broadcast、RPC send failure、signer missing/locked、ABI version drift、source conflict、chain mismatch、gas estimation stale、nonce conflict、history recovery。
+
+##### Task P5-2g: integration/security regression tests
+
+**目标**
+
+为 P5-2 的 read/write caller 建立跨层回归测试，确保 ABI read model、参数编码、确认页、submit command、history 和 diagnostics 的安全边界持续有效。
+
+**依赖**
+
+- P5-2b 到 P5-2f。
+- P4-2 diagnostics export 测试工具或等价 fixture。
+
+**边界**
+
+- 只测试 P5-2 managed ABI caller，不测试 P5-3 raw calldata sender。
+- 不引入真实 API key、真实 mnemonic/private key 或生产 RPC secret。
+
+**验收/测试建议**
+
+- Edge cases 覆盖 overloaded functions、tuple arrays、selector conflicts、stale ABI、source conflict、not verified ABI、chain mismatch、decode errors、reverts、payable value、gas estimation failure、RPC failure、broadcast retry 和 history recovery。
+- Diagnostics/export/history 不包含 raw large ABI、API key、RPC URL secret、private key、mnemonic、signed tx secret material；calldata 按 selector/length/hash/summary 边界处理。
+- 建议验证：`cargo test --manifest-path src-tauri/Cargo.toml`、`npm test -- src/core src/features`、`npm run typecheck`、`git diff --check`。
 
 #### Task P5-3: raw calldata 发送与预览
 

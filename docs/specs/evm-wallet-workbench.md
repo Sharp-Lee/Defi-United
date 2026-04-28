@@ -485,6 +485,67 @@ v1 + P3/P4 已将基础历史列表升级为可筛选、可分组、可审计的
 - P5-3 raw calldata 可以使用 selector summary 辅助解释 calldata，但未匹配或冲突 selector 必须显示 unknown/conflict。
 - P6 tx hash/contract hot 解析可以消费 ABI cache 和 source metadata，但解析结果仍是依赖数据源的推断，不能把未验证 ABI 或冲突 selector 展示为确定事实。
 
+### 9.7 ABI read/write 调用器（P5-2 计划/设计）
+
+本小节定义 P5-2 的计划设计，不能被理解为当前已可用能力。P5-2 的实现目标是基于 P5-1 的 ABI source/cache/read model 提供只读 ABI call 和写交易调用器，并继续以 Tauri desktop 为主线目标。Browser 版本不是本阶段主线；任何 write path 都必须复用现有 Rust/Tauri 签名、广播、确认页和交易历史边界。
+
+**范围与非目标**
+
+- P5-2 支持基于已管理 ABI 的 read-only call 和 write transaction caller：用户选择 `chain_id + contract_address + selected source` 下的 ABI entry，再按函数签名编辑参数、预览 calldata 摘要，并执行只读调用或进入写交易确认。
+- P5-2 不提供 raw calldata sender；raw calldata 的输入、发送和高级预览由 P5-3 单独设计。
+- P5-2 不实现 revoke、allowance/asset scanning、hot tx parsing、代理自动解析完整方案、任意合约风险评级或 selector 数据库。
+- P5-2 不提供前端签名或广播出口。写交易提交必须通过 Rust/Tauri command 重新校验、签名、广播并按既有交易历史模式落盘。
+- Selector match 不是安全保证。selector summary 只能说明 ABI 文本中的编码匹配关系；ABI stale、source conflict、unknown ABI、selector conflict、链/RPC 不一致等状态必须阻塞或要求显式解决，不能被函数名或 selector 匹配静默覆盖。
+
+**ABI read model 消费**
+
+- 调用器只消费 P5-1 输出的 selected ABI entry，定位条件至少是 `chain_id + contract_address + selected source + version_id/source_fingerprint/abi_hash`。`contract_address` 必须使用 P5-1 的 normalized/checksum 策略。
+- 可调用的 ABI entry 必须满足：`selected`、validation `ok`、cache status 为 `cacheFresh`、无 `sourceConflict`、无 `needsUserChoice`、无未解决的 provider/user source 冲突。任何 stale/conflict/unknown 状态都必须阻塞，除非后续 backend/domain command 明确定义 resolution 并在 draft/submit 中冻结 resolution 结果。
+- `selectorConflict` 是 P5-1 validation status，不等同于 validation `ok`。P5-2 默认把 `selectorConflict` ABI entry 视为 non-callable：React 只能展示冲突摘要和阻塞原因，不能通过本地选择、函数名匹配或 warning acknowledge 把它提升为 callable。未来若支持冲突 resolution，必须由 Rust/Tauri backend/domain command 产出具体已解析的 callable source/version/signature/selector identity，并在 read call 或 write draft/submit 中冻结该 resolved identity。
+- `cacheStale`、`notConfigured`、`notVerified`、`fetchFailed`、`rateLimited`、`malformedResponse`、`unsupportedChain`、`parseFailed`、`malformedAbi`、`emptyAbiItems`、`payloadTooLarge`、`refreshing`、`refreshFailed`、`versionSuperseded`、`sourceConflict`、`needsUserChoice`、`selectorConflict` 和 selected ABI missing 必须在调用器入口可见并明确映射。`refreshing` 映射为 loading/temporarily blocked；`refreshFailed` 映射为 recoverable blocked，除非仍有 fresh prior version 被选中；`cacheStale` blocks calls/submission until refreshed or explicitly resolved by backend/domain flow；其他 non-`ok` validation/source/cache states 也必须阻塞调用/提交，除非 backend/domain resolution flow 明确返回 frozen resolved callable identity。`notVerified` 至少需要显式警告，写交易默认阻塞或要求后续设计中的明确用户确认和后台复验。
+- Artifact/ABI body 加载、canonicalization、hash/fingerprint 校验和 source/version resolution 应在 Rust/Tauri command 或受控 read-model 路径完成。React 可以短暂持有当前表单参数和函数摘要，但不得把 raw ABI body 持久化到 local storage、diagnostics、history、export、日志或测试快照。
+
+**函数分类与选择**
+
+- `view`、`pure` 函数进入 read-only call 路径。缺失 `stateMutability` 的 legacy ABI item 需要按 `constant/payable` 做保守兼容；无法可靠分类时不得自动当作可写或可读。
+- `nonpayable` 和 `payable` 函数进入 write transaction draft 路径。`payable` 允许 native value；`nonpayable` 默认 value 必须为零，非零 value 直接校验失败。
+- 构造函数不在 P5-2 调用器范围内。`fallback` 和 `receive` 不作为普通 ABI 函数调用；P5-2 可展示为 unsupported/blocked，后续若支持也必须走单独确认模型。
+- 重载函数必须按完整 signature 选择，例如 `transfer(address,uint256)`，不能只按 name 选择。UI、draft、history、diagnostics 都应保存 signature 和 selector 摘要，避免重载歧义。
+
+**参数模型与 calldata 预览**
+
+- 参数编辑器必须覆盖常见 ABI 类型：address、bool、string、bytes、fixed bytes、int/uint 及 bounds、arrays、fixed arrays、tuple 和 nested tuple/tuple arrays。展示层可以提供人类可读输入，但 canonical value 必须能按 ABI 类型无歧义编码。
+- Parse/validate 失败必须显示具体字段和错误类别，例如 malformed address、bytes length mismatch、integer out of bounds、array length mismatch、tuple field missing、unsupported type。失败值不得被自动改成零地址、0、false、空 bytes 或其他看似安全的默认值。
+- 预览应展示 encoded calldata 的 function signature、selector、参数摘要、calldata length、calldata hash，以及 value/gas/fee/nonce 的 draft 状态。预览不应把 semantic decode 当作安全保证；它只是基于当前 selected ABI 和 canonical params 的编码结果。
+- Canonical parameter values 可在 React 表单状态、Rust command 入参、submit-time revalidation 和 calldata 编码过程中短暂存在；这个 in-memory/submit-time 边界不同于持久化边界。Draft persistence、history、diagnostics、export、日志和测试快照只能保存 bounded summary、argument/calldata hash、长度、类型路径和必要的 redacted display value；不得保存完整且无上限的 tuple/string/bytes/array 参数或 raw calldata。大型 bytes/string/array 参数在 UI、history、diagnostics 中应摘要化显示。完整参数值和 calldata 的持久化规则必须由 write draft/history schema 明确限制。
+
+**Read-only call 行为**
+
+- Read call 执行前必须用 selected RPC profile 校验 actual `chainId` 与 expected `chain_id` 一致，并确认目标 contract address、ABI entry version/fingerprint 和函数 signature 未漂移。
+- `from` account 对 read call 是可选上下文：若用户选择账户，则作为 `eth_call.from` 传入并在结果中展示；未选择时不伪造账户。read call 不签名、不广播、不创建普通交易历史记录。
+- Read call 默认不携带 native value。若 ABI 标记为 `payable view/pure` 这类少见组合，P5-2 初版仍应保守地不提供 value 输入；后续如支持 value-bearing `eth_call`，必须显式展示风险和失败语义，且不得复用写交易 value 默认。
+- 返回值按 selected ABI decode；空返回、malformed return、revert data、RPC failure、timeout、chain mismatch 和 ABI decode error 都必须可见且脱敏。可记录有限 diagnostic event，但不能把 read call 伪装成已提交交易，也不能写入普通 tx history。
+
+**Write transaction draft 与提交**
+
+- 写交易 draft 必须冻结身份与版本：`chain_id`、from account、to contract、ABI source identity、`version_id`、`abi_hash`、`source_fingerprint`、function signature、selector、canonical params summary/hash、native value、gas/fee/nonce、selected RPC identity、warning/blocking statuses 和 draft creation time。完整 canonical params 只能作为 submit-time command input 或受控内存状态参与重新编码/复验，不作为 unbounded durable draft/history payload。
+- 确认页必须显示 contract、chain、from、function signature、selector、decoded args 摘要、native value、gas limit、fee cap/max fee、priority fee、base fee、fee multiplier、nonce、selected RPC identity、ABI source/status、cache/source warnings 和风险提示。复杂参数必须能展开查看摘要，但不能在普通日志或 diagnostics 中泄漏大 payload。
+- Write submit 必须调用 Rust/Tauri command。Command 需要重新校验 actual chainId/RPC、signer/from、account availability、ABI entry version/fingerprint/hash、function signature/selector、canonical params/call data、value、gas/fee/nonce、source conflict/`cacheStale` 状态和 pending warning resolution，再签名广播。
+- 提交流程应复用既有 signing/broadcast/history pattern：在广播前后按现有可恢复策略持久化 typed intent/submission/outcome，记录 tx hash、broadcast attempt、RPC identity、chain outcome、replacement/cancel 关系等恢复材料。
+- 历史模型需要扩展 arbitrary ABI write call intent/submission/outcome，不能伪装成 native/ERC-20/batch。建议字段包括 typed intent kind、contract、function signature、selector、argument summary、argument hash、calldata length/hash、value、fee/nonce、ABI source identity/version/fingerprint、submission status、chain outcome、recovery metadata。历史不得保存 raw ABI body、secret、mnemonic/private key、完整 unbounded tuple/string/bytes/array 参数或未经明确边界允许的巨大 raw calldata。
+
+**Diagnostics 与安全**
+
+- Diagnostics、history、export、日志和测试快照不得包含 private keys、mnemonics、signed tx secret material、API keys、认证 URL、query token、raw large ABI body 或用户敏感路径。
+- RPC URL、explorer URL、provider error、ABI/cache error 和 revert/RPC error 都必须脱敏。可保留 chainId、provider kind、host/config 摘要、error class、status code、rate-limit hint、selector、calldata length/hash 等排障信息。
+- Full calldata 的持久化必须有明确安全边界。P5-2 初版默认只持久化 selector、length、hash 和参数/intent摘要；若后续为了恢复需要保存完整 calldata，也必须限定在本地 history schema、脱敏导出策略和用户可见说明中。
+
+**测试与验收方向**
+
+- Rust 测试建议覆盖 ABI source/version resolution、signature-level overload selection、tuple arrays/nested tuple encoding、selector conflict blocking、`cacheStale` blocking、source conflict blocking、chain mismatch、payable/nonpayable value validation、gas estimation failure、submit revalidation 和 history recovery metadata。
+- Frontend 测试建议覆盖参数编辑器校验、预览摘要、read call result/revert/decode error 展示、write confirmation warnings、blocking states、large payload summary、重载函数选择和不把 raw ABI body 写入 snapshot。
+- 端到端验收应包含：overloaded functions、tuple arrays、selector conflicts、stale ABI、chain mismatch、decode errors、reverts、payable value、gas estimation failure、broadcast failure/retry 和 history recovery。
+
 ## 10. P3/P4 已完成范围与后续 P4+ 方向
 
 ### 10.1 P3 History UX hardening 已完成
