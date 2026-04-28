@@ -1,6 +1,6 @@
 # EVM Wallet Workbench P3/P4 后续执行计划
 
-> 面向 subagent-driven-development：本文件同时保留 P3 与 P4-1 到 P4-7 的完成记录，以及 P4+ 探索 backlog。只有标记为未完成、探索或后续计划的条目表示待执行任务，不代表能力已经完成；后续任务仍由 controller 按任务串行派发和收口。
+> 面向 subagent-driven-development：本文件同时保留 P3 与 P4-1 到 P4-7 的完成记录，以及 P4+/P5/P6 交易能力 backlog。只有标记为未完成、探索或后续计划的条目表示待执行任务，不代表能力已经完成；后续任务仍由 controller 按任务串行派发和收口。
 
 ## 1. 基线与方向
 
@@ -8,7 +8,7 @@
 - 主线：后续产品、测试、发布和技术债治理都以 Tauri desktop app 为准。
 - 非主线：浏览器版只作为历史参考或迁移来源，不继续投入功能补齐。
 - 已有 v1 能力：vault/mnemonic、账户派生与链上扫描、RPC 验证和 app-config、native transfer draft/submit、native transfer fee reference/base fee customization、pending history/reconcile、replace/cancel、anvil smoke check。
-- 后续重点：P4-8+ 先做探索/设计，不把 ERC-20、ABI 调用、批量策略或资产扫描写成当前承诺交付。
+- 后续重点：P4-8+ 按 spec/design -> 最小实现 -> 扩展能力的顺序推进，不把 ERC-20、ABI 调用、批量策略、资产/授权扫描或 hot 交易解析写成当前已完成能力。
 
 ## 2. 执行规则
 
@@ -51,9 +51,9 @@
 7. 适用动作入口与 gating 测试
 8. P3 回归测试与文档收口
 
-### P4: Recovery, Observability, and Focused Extensions（P4-1 到 P4-7 已完成；P4-8+ 探索/设计）
+### P4: Recovery, Observability, and Focused Extensions（P4-1 到 P4-7 已完成；P4-8+ 交易能力路线）
 
-目标是在 P3 稳定历史体验之后，补强诊断、恢复和少量明确依赖 P3 的能力。P4-1 到 P4-7 已完成诊断事件、诊断导出、历史恢复、广播补录、dropped 复核、pending 老化和 anvil smoke 回归。P4-8+ 属于探索/设计优先，不提前把 ERC-20、ABI 调用、批量策略做成当前承诺。
+目标是在 P3 稳定历史体验之后，补强诊断、恢复和少量明确依赖 P3 的能力。P4-1 到 P4-7 已完成诊断事件、诊断导出、历史恢复、广播补录、dropped 复核、pending 老化和 anvil smoke 回归。P4-8+ 开始进入交易能力路线，但必须先做 spec/design 和历史模型契约收口，再拆最小实现；任何实现任务都不得绕过 Rust/Tauri command 签名广播边界。
 
 ### P4+ 已收口: Native transfer fee reference / base fee customization
 
@@ -668,16 +668,147 @@
 - 回归任务容易扩大范围，非阻断问题应进入后续 backlog。
 - smoke check 可能读取真实本地路径，输出前仍需做路径和端点最小化。
 
-## 7. P4+ 探索/设计优先任务池
+## 7. P4+/P5/P6 交易能力路线
 
-以下任务不属于当前已承诺实现范围。controller 若要推进，先派发 spec/design 任务，经评审后再决定是否拆实现任务。
+以下任务不属于当前已完成能力。controller 若要推进，仍按 `implementer -> spec reviewer -> code quality reviewer` 串行派发；subagent 不提交、不 push；controller 在每个任务收口后 commit + push，并在每个里程碑完成后 merge。所有任务都必须保持 Tauri desktop 为主线，最终签名/广播走 Rust/Tauri command，React 不接触助记词、私钥或 raw signed tx。
 
-| ID | 优先级 | 方向 | 依赖 | 当前状态 |
-| --- | --- | --- | --- | --- |
-| P4-8 | P2 | ERC-20 转账探索 | P3-0, P3-3, P3-7, P4-2 | 先写 spec/设计，再决定是否实现；需要复用 Intent/Submission/ChainOutcome。 |
-| P4-9 | P2 | 资产与授权扫描探索 | P3-7, P4-2 | 先做只读诊断设计，不与交易提交混合。 |
-| P4-10 | P3 | 批量分发/策略编排探索 | P3-7, P4-8 | 高风险能力，不应在没有更强审计、模拟和恢复能力前实现。 |
-| P4-11 | P3 | ABI 调用器或 raw calldata 探索 | P4-1, P4-2, P4-5 | 需要额外安全确认和参数可读化，不作为近期主线。 |
+### 7.1 建议里程碑顺序
+
+1. P4-8 ERC-20 转账 spec/最小实现方案（本任务仅 spec/design）。
+2. P4-9 token watchlist/ERC-20 余额扫描。
+3. P4-10 多账户选择器与账户编排基础。
+4. P4-11 批量分发/归集 spec。
+5. P4-12 batch native 分发/归集。
+6. P4-13 batch ERC-20 分发/归集。
+7. P5-1 ABI 管理 fetch/import/paste/cache。
+8. P5-2 ABI read/write 调用器。
+9. P5-3 raw calldata 发送与预览。
+10. P5-4 资产/授权扫描与 revoke 工作流。
+11. P6-1 tx hash 逆向解析。
+12. P6-2 contract address hot 交易/selector 分析。
+
+### 7.2 Task P4-8: ERC-20 转账 spec/design（下一步任务）
+
+**目标**
+
+完成 ERC-20 转账的产品 spec、历史模型设计和实现拆分方案，作为后续最小实现任务的输入。本任务不直接实现交易发送代码，除非 controller 后续另派实现任务并明确范围。
+
+**改动范围**
+
+- 更新项目 spec 中 ERC-20 转账的目标、非目标、安全边界和验收原则。
+- 设计 ERC-20 Intent/Submission/ChainOutcome 扩展：token contract、decimals、symbol 展示来源、recipient、amount、nonce、gas/fee、tx hash、receipt/log 摘要和失败原因。
+- 设计 Rust/TypeScript 类型演进方案，明确当前 `HistoryRecord.intent` 仍是 `NativeTransferIntent`，后续需要交易类型枚举或兼容迁移；`SubmissionKind` 需要新增 ERC-20 普通提交，并保持 replacement/cancellation 语义清晰。
+- 设计 draft/confirm/submit 工作流：React 表达 ERC-20 转账意图和展示冻结参数，Rust command 负责构建 calldata、签名、广播和历史写入。
+- 设计 token metadata 与 decimals 获取策略：优先链上 `decimals/symbol/name` 只读 call 或 watchlist 缓存，失败时允许用户明确处理，但不得把 symbol 当作身份。
+- 设计测试计划和最小实现拆分，例如先支持单 token、单接收方、EIP-1559 fee、无 allowance 工作流。
+
+**非目标**
+
+- 不实现 ERC-20 发送代码。
+- 不实现批量分发/归集。
+- 不实现 token watchlist UI 或全账户余额扫描。
+- 不实现 ABI 调用器、raw calldata、资产/授权扫描或 hot 交易解析。
+- 不新增前端签名、广播或 raw signed tx 出口。
+
+**验收标准**
+
+- 文档明确 ERC-20 当前尚未可用，P4-8 只是 spec/design。
+- 后续实现代理能根据任务卡直接拆出最小实现，不需要重新猜历史模型或安全边界。
+- ERC-20 交易类型与 native transfer、replacement、cancellation 的关系清楚，旧历史记录兼容策略清楚。
+- 设计覆盖 metadata/decimals 获取失败、余额不足、gas 由发送账户支付、receipt failed/reverted、history write failed、chainId mismatch 等关键路径。
+- 敏感信息边界明确：日志、诊断、历史、导出不包含助记词、私钥、raw signed tx、完整 RPC token 或 explorer API key。
+
+**建议测试/验证命令**
+
+- 只改 Markdown 时运行 `git diff --check`。
+- 若任务意外涉及 TypeScript 类型草案或测试 fixture，应补充 `npm run typecheck` 和对应 `npm test -- <path>`。
+- 若任务意外涉及 Rust 类型草案，应补充 `cargo test --manifest-path src-tauri/Cargo.toml`。
+
+**风险点**
+
+- 容易把 spec/design 写成已实现承诺，必须始终标注为下一步或后续实现。
+- ERC-20 metadata 不可信，合约地址和 chainId 才是稳定身份。
+- 不能为了预览 calldata 把签名材料或 raw signed tx 暴露给 React。
+- 历史模型迁移要保持旧 native transfer 记录可读，不能破坏 P3/P4 现有历史 UX。
+
+### 7.3 后续任务卡 / Backlog
+
+#### Task P4-9: token watchlist/ERC-20 余额扫描
+
+- 目标：实现或先设计 token watchlist，按 `account + chainId + token contract` 扫描 ERC-20 余额，并为 P4-8 最小实现提供 token 选择来源。
+- 依赖：P4-8 spec/design。
+- 关键边界：watchlist 是本地配置；symbol/name/decimals 只是展示 metadata；RPC 失败、合约非 ERC-20、decimals call 失败必须有可恢复状态。
+- 是否先 spec/design：是，若 P4-8 未覆盖 watchlist 数据模型，应先做轻量 spec。
+
+#### Task P4-10: 多账户选择器与账户编排基础
+
+- 目标：提供可复用的多本地账户选择、外部地址输入、账户集合预览、余额/nonce 可用性检查和操作冻结摘要，为批量分发/归集做准备。
+- 依赖：P3 历史 UX、P4-9 余额扫描。
+- 关键边界：本地账户与外部地址必须清楚区分；不得自动推断用户未选择的账户；不得在 UI 或日志中泄漏敏感材料。
+- 是否先 spec/design：可直接做窄实现，但账户编排数据结构应先在任务内写清楚。
+
+#### Task P4-11: 批量分发/归集 spec
+
+- 目标：定义 batch 模型、分发/归集场景、历史聚合、部分成功、失败恢复和安全确认。
+- 依赖：P4-8、P4-9、P4-10。
+- 关键边界：批量分发除外部账户外，必须支持选择本地账户作为接收方；归集必须支持 native + ERC-20，从部分或全部本地账户归集到一个指定账户，目标账户可以是本地账户或外部地址。
+- 是否先 spec/design：是，必须先 spec/design，不直接实现发送。
+
+#### Task P4-12: batch native 分发/归集
+
+- 目标：实现 native 分发/归集的最小批量能力，支持多个本地源账户和多个接收目标的受控组合。
+- 依赖：P4-10、P4-11。
+- 关键边界：每笔子交易独立 nonce、fee、tx hash 和 outcome；native 归集必须预留 gas；部分失败不能被 batch 总状态掩盖。
+- 是否先 spec/design：若 P4-11 已足够细，可进入最小实现；否则补实现级设计。
+
+#### Task P4-13: batch ERC-20 分发/归集
+
+- 目标：在 P4-12 的 batch 基础上实现 ERC-20 分发/归集，覆盖 token decimals、余额扫描和 receipt/log 结果展示。
+- 依赖：P4-8、P4-9、P4-11、P4-12。
+- 关键边界：ERC-20 归集 gas 由每个源账户支付；不应承诺原子性；每笔 transfer 的 failed/reverted 必须单独可见。
+- 是否先 spec/design：是，除非 P4-11 已包含 ERC-20 实现级细节。
+
+#### Task P5-1: ABI 管理 fetch/import/paste/cache
+
+- 目标：提供 ABI 来源管理，支持按合约地址获取、导入文件、粘贴 ABI JSON 和本地缓存。
+- 依赖：P4-9 或基础 chain config；P4-2 诊断脱敏。
+- 关键边界：普通 RPC 通常拿不到 ABI；按合约地址获取 ABI 需要 explorer/indexer API 或类似数据源，并需要 chain-specific 配置、失败处理、缓存失效和 API key 脱敏；示例不得包含真实 key。
+- 是否先 spec/design：是，先定义数据源配置和失败状态。
+
+#### Task P5-2: ABI read/write 调用器
+
+- 目标：基于已管理 ABI 提供 read-only call 与 write transaction 调用器，参数可读化并接入历史三层模型。
+- 依赖：P5-1；P4-8 的交易类型扩展经验。
+- 关键边界：read call 不签名广播；write transaction 必须走 Rust/Tauri command；复杂 tuple/array 参数需可预览和验证，不能把解析失败的参数伪装为安全。
+- 是否先 spec/design：是，尤其是 write 调用历史模型和确认页。
+
+#### Task P5-3: raw calldata 发送与预览
+
+- 目标：为高级用户提供 raw calldata 发送路径，展示 selector、to、value、gas/fee、nonce、calldata 摘要/长度和高风险确认。
+- 依赖：P5-1 可选、P5-2 的确认页模式。
+- 关键边界：raw calldata 本身不可完全语义化；能解析 selector 时展示推断，不能解析时必须明确 unknown；最终签名广播仍在 Rust。
+- 是否先 spec/design：是。
+
+#### Task P5-4: 资产/授权扫描与 revoke 工作流
+
+- 目标：扫描 token/NFT/allowance 等资产和授权，并为 revoke 提供受控交易工作流。
+- 依赖：P4-9、P5-1、P5-2。
+- 关键边界：资产/授权扫描先只读；revoke 是 write transaction，必须进入确认页、历史三层模型和 Rust 签名广播；第三方 indexer 数据只能作为辅助，不是交易真相来源。
+- 是否先 spec/design：是。
+
+#### Task P6-1: tx hash 逆向解析
+
+- 目标：提供按交易 hash 的逆向解析入口，读取 transaction、receipt、logs 和相关 metadata，展示可解释的交互摘要。
+- 依赖：P5-1/P5-2 的 ABI/selector 能力，P4-2 诊断脱敏。
+- 关键边界：tx hash 解析依赖 RPC/explorer 数据可用性；代理合约、未验证合约、selector 冲突、缺失 logs 都必须显示为不确定或 unknown。
+- 是否先 spec/design：是。
+
+#### Task P6-2: contract address hot 交易/selector 分析
+
+- 目标：提供按合约地址的 hot 交易、selector 和交互模式分析入口，用于理解某合约近期常见调用和风险提示。
+- 依赖：P6-1；P5-1 数据源配置。
+- 关键边界：contract address 入口通常需要 explorer/indexer、ABI/selector 数据库或采样交易数据；RPC 只能提供有限链上读取，不能保证拿到历史热度；分析结果是推断，不是确定事实。
+- 是否先 spec/design：是。
 
 ## 8. 全局验收清单
 
@@ -687,4 +818,4 @@
 - 不新增前端签名或广播出口：最终提交仍必须走 Rust command。
 - 不把助记词、私钥、签名材料写入 UI、日志、历史、错误消息或 app-config。
 - 不把浏览器版重新设为后续主线。
-- 不把 P4 探索能力写成当前已完成或 P3 必须交付。
+- 不把 P4+/P5/P6 计划能力写成当前已完成或 P3/P4-1 到 P4-7 必须交付。
