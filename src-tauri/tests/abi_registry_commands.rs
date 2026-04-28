@@ -997,6 +997,55 @@ fn abi_registry_validate_payload_canonicalizes_selector_type_aliases() {
 }
 
 #[test]
+fn abi_registry_validate_payload_reports_event_topic_duplicates_and_error_selector_conflicts() {
+    with_test_app_dir("abi-registry-event-error-selector-conflicts", |_| {
+        let payload = json!([
+            {
+                "type": "event",
+                "name": "Transfer",
+                "inputs": [
+                    { "type": "address", "indexed": true },
+                    { "type": "address", "indexed": true },
+                    { "type": "uint256", "indexed": false }
+                ]
+            },
+            {
+                "type": "event",
+                "name": "Transfer",
+                "inputs": [
+                    { "type": "address", "indexed": true },
+                    { "type": "address", "indexed": true },
+                    { "type": "uint256", "indexed": false }
+                ]
+            },
+            { "type": "error", "name": "InsufficientBalance", "inputs": [{ "type": "uint256" }] },
+            { "type": "error", "name": "InsufficientBalance", "inputs": [{ "type": "uint256" }] },
+            { "type": "error", "name": "burn", "inputs": [{ "type": "uint256" }] },
+            { "type": "error", "name": "collate_propagate_storage", "inputs": [{ "type": "bytes16" }] }
+        ])
+        .to_string();
+
+        let validation = validate_abi_payload(ValidateAbiPayloadInput { payload })
+            .expect("event and error selector validation");
+
+        assert_eq!(validation.validation_status, "selectorConflict");
+        assert_eq!(validation.function_count, 0);
+        assert_eq!(validation.event_count, 2);
+        assert_eq!(validation.error_count, 4);
+        let summary = validation.selector_summary;
+        assert_eq!(summary.function_selector_count, Some(0));
+        assert_eq!(summary.event_topic_count, Some(1));
+        assert_eq!(summary.error_selector_count, Some(2));
+        assert_eq!(summary.duplicate_selector_count, Some(2));
+        assert_eq!(summary.conflict_count, Some(1));
+        assert_eq!(
+            summary.notes.as_deref(),
+            Some("duplicate selectors: 2; selector conflicts: 1")
+        );
+    });
+}
+
+#[test]
 fn abi_registry_import_and_paste_preserve_source_kind_write_artifact_and_hide_payload() {
     with_test_app_dir("abi-registry-import-paste", |dir| {
         let import = import_abi_payload(UserAbiPayloadInput {
@@ -1281,6 +1330,22 @@ fn abi_registry_fetch_etherscan_success_uses_env_key_sanitizes_and_writes_artifa
         let returned = serde_json::to_string(&result).expect("result json");
         assert!(!returned.contains("super-secret-test-key"));
         assert!(!returned.contains("transfer"));
+
+        let validation_summary_json =
+            serde_json::to_string(&result.validation.selector_summary).expect("selector summary");
+        assert!(!validation_summary_json.contains("super-secret-test-key"));
+        assert!(!validation_summary_json.contains(&server.url));
+        assert!(!validation_summary_json.contains("apikey"));
+        let entry_summary_json = serde_json::to_string(
+            &result
+                .cache_entry
+                .as_ref()
+                .and_then(|entry| entry.selector_summary.as_ref()),
+        )
+        .expect("entry selector summary");
+        assert!(!entry_summary_json.contains("super-secret-test-key"));
+        assert!(!entry_summary_json.contains(&server.url));
+        assert!(!entry_summary_json.contains("apikey"));
     });
 }
 
