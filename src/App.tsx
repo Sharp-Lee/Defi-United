@@ -85,6 +85,10 @@ export function isTokenOperationCurrent(
   return sessionStatus === "ready" && operationGeneration === currentGeneration;
 }
 
+export function nextTokenOperationGeneration(currentGeneration: number) {
+  return currentGeneration + 1;
+}
+
 export async function ensureRpcChainMatchesSelectedChain(
   rpcUrl: string,
   expectedChainId: bigint,
@@ -592,7 +596,8 @@ export function App() {
   }
 
   function beginTokenOperation() {
-    const operationGeneration = tokenOperationGenerationRef.current;
+    const operationGeneration = nextTokenOperationGeneration(tokenOperationGenerationRef.current);
+    tokenOperationGenerationRef.current = operationGeneration;
     setTokenWatchlistError(null);
     setBusy(true);
     return operationGeneration;

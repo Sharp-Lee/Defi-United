@@ -5,6 +5,7 @@ import {
   isAccountsRefreshCurrent,
   isTokenOperationCurrent,
   mergeRefreshedAccounts,
+  nextTokenOperationGeneration,
 } from "./App";
 
 describe("mergeRefreshedAccounts", () => {
@@ -40,6 +41,16 @@ describe("isTokenOperationCurrent", () => {
     expect(isTokenOperationCurrent(3, 3, "ready")).toBe(true);
     expect(isTokenOperationCurrent(2, 3, "ready")).toBe(false);
     expect(isTokenOperationCurrent(3, 3, "locked")).toBe(false);
+  });
+
+  it("treats an older token operation as stale after a newer operation starts", () => {
+    const firstOperation = nextTokenOperationGeneration(3);
+    const secondOperation = nextTokenOperationGeneration(firstOperation);
+
+    expect(firstOperation).toBe(4);
+    expect(secondOperation).toBe(5);
+    expect(isTokenOperationCurrent(firstOperation, secondOperation, "ready")).toBe(false);
+    expect(isTokenOperationCurrent(secondOperation, secondOperation, "locked")).toBe(false);
   });
 });
 

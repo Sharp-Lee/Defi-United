@@ -628,11 +628,44 @@ pub fn upsert_token_metadata_cache(
     let existing_index =
         metadata_cache_index(&state.token_metadata_cache, chain_id, &token_contract);
     let existing = existing_index.and_then(|index| state.token_metadata_cache.get(index));
+    let incoming_raw_symbol = input.raw_symbol.and_then(non_empty_string);
+    let incoming_raw_name = input.raw_name.and_then(non_empty_string);
+    let incoming_raw_decimals = input.raw_decimals;
+    let preserve_existing_raw_metadata = should_preserve_existing_raw_metadata(input.status);
+    let raw_symbol = if preserve_existing_raw_metadata {
+        existing
+            .and_then(|record| record.raw_symbol.clone())
+            .or(incoming_raw_symbol)
+    } else {
+        incoming_raw_symbol
+    };
+    let raw_name = if preserve_existing_raw_metadata {
+        existing
+            .and_then(|record| record.raw_name.clone())
+            .or(incoming_raw_name)
+    } else {
+        incoming_raw_name
+    };
+    let raw_decimals = if preserve_existing_raw_metadata {
+        existing
+            .and_then(|record| record.raw_decimals)
+            .or(incoming_raw_decimals)
+    } else {
+        incoming_raw_decimals
+    };
+    let observed_decimals = if preserve_existing_raw_metadata {
+        input
+            .observed_decimals
+            .or_else(|| existing.and_then(|record| record.observed_decimals))
+    } else {
+        input.observed_decimals.or(incoming_raw_decimals)
+    };
     let previous_decimals = input.previous_decimals.or_else(|| {
+        if preserve_existing_raw_metadata {
+            return existing.and_then(|record| record.previous_decimals);
+        }
         let existing_decimals = existing.and_then(|record| record.raw_decimals);
-        if input.status == RawMetadataStatus::DecimalsChanged
-            && existing_decimals != input.raw_decimals
-        {
+        if input.status == RawMetadataStatus::DecimalsChanged && existing_decimals != raw_decimals {
             existing_decimals
         } else {
             None
@@ -641,9 +674,9 @@ pub fn upsert_token_metadata_cache(
     let record = TokenMetadataCacheRecord {
         chain_id,
         token_contract,
-        raw_symbol: input.raw_symbol.and_then(non_empty_string),
-        raw_name: input.raw_name.and_then(non_empty_string),
-        raw_decimals: input.raw_decimals,
+        raw_symbol,
+        raw_name,
+        raw_decimals,
         source: RawMetadataSource::OnChainCall,
         status: input.status,
         created_at: existing
@@ -652,7 +685,7 @@ pub fn upsert_token_metadata_cache(
         updated_at: now,
         last_scanned_at: input.last_scanned_at,
         last_error_summary: sanitize_optional(input.last_error_summary),
-        observed_decimals: input.observed_decimals.or(input.raw_decimals),
+        observed_decimals,
         previous_decimals,
     };
     upsert_by_index(&mut state.token_metadata_cache, existing_index, record);
@@ -962,6 +995,13 @@ fn raw_status_to_resolved(status: RawMetadataStatus) -> ResolvedMetadataStatus {
         RawMetadataStatus::NonErc20 => ResolvedMetadataStatus::NonErc20,
         RawMetadataStatus::DecimalsChanged => ResolvedMetadataStatus::DecimalsChanged,
     }
+}
+
+fn should_preserve_existing_raw_metadata(status: RawMetadataStatus) -> bool {
+    !matches!(
+        status,
+        RawMetadataStatus::Ok | RawMetadataStatus::DecimalsChanged
+    )
 }
 
 fn normalize_metadata_override(

@@ -593,6 +593,102 @@ fn raw_metadata_cache_only_accepts_on_chain_call_source() {
 }
 
 #[test]
+fn failed_metadata_cache_upsert_preserves_existing_raw_metadata() {
+    with_test_app_dir("token-watchlist-failed-metadata-preserves-cache", |_| {
+        add_usdc();
+        upsert_token_metadata_cache(metadata_cache_input(Some("onChainCall"))).expect("cache");
+
+        let state = upsert_token_metadata_cache(UpsertTokenMetadataCacheInput {
+            chain_id: 1,
+            token_contract: USDC.to_string(),
+            raw_symbol: Some("BAD".to_string()),
+            raw_name: Some("Bad Token".to_string()),
+            raw_decimals: None,
+            source: Some("onChainCall".to_string()),
+            status: RawMetadataStatus::CallFailed,
+            last_scanned_at: Some("1700000002".to_string()),
+            last_error_summary: Some("decimals() call failed".to_string()),
+            observed_decimals: None,
+            previous_decimals: None,
+        })
+        .expect("failed cache upsert");
+
+        let cache = &state.token_metadata_cache[0];
+        assert_eq!(cache.status, RawMetadataStatus::CallFailed);
+        assert_eq!(cache.raw_symbol.as_deref(), Some("USDC"));
+        assert_eq!(cache.raw_name.as_deref(), Some("USD Coin"));
+        assert_eq!(cache.raw_decimals, Some(6));
+        assert_eq!(cache.last_scanned_at.as_deref(), Some("1700000002"));
+        assert_eq!(
+            cache.last_error_summary.as_deref(),
+            Some("decimals() call failed")
+        );
+        assert_eq!(
+            state.resolved_token_metadata[0].status,
+            ResolvedMetadataStatus::CallFailed
+        );
+        assert_eq!(
+            state.resolved_token_metadata[0].symbol.as_deref(),
+            Some("USDC")
+        );
+        assert_eq!(state.resolved_token_metadata[0].decimals, Some(6));
+    });
+}
+
+#[test]
+fn failed_metadata_cache_upsert_preserves_decimals_changed_diagnostics() {
+    with_test_app_dir(
+        "token-watchlist-failed-metadata-preserves-decimal-diagnostics",
+        |_| {
+            add_usdc();
+            upsert_token_metadata_cache(metadata_cache_input(Some("onChainCall"))).expect("cache");
+            upsert_token_metadata_cache(UpsertTokenMetadataCacheInput {
+                chain_id: 1,
+                token_contract: USDC.to_string(),
+                raw_symbol: Some("USDC".to_string()),
+                raw_name: Some("USD Coin".to_string()),
+                raw_decimals: Some(18),
+                source: Some("onChainCall".to_string()),
+                status: RawMetadataStatus::DecimalsChanged,
+                last_scanned_at: Some("1700000001".to_string()),
+                last_error_summary: None,
+                observed_decimals: Some(18),
+                previous_decimals: None,
+            })
+            .expect("decimals changed cache upsert");
+
+            let state = upsert_token_metadata_cache(UpsertTokenMetadataCacheInput {
+                chain_id: 1,
+                token_contract: USDC.to_string(),
+                raw_symbol: Some("BAD".to_string()),
+                raw_name: Some("Bad Token".to_string()),
+                raw_decimals: None,
+                source: Some("onChainCall".to_string()),
+                status: RawMetadataStatus::Malformed,
+                last_scanned_at: Some("1700000002".to_string()),
+                last_error_summary: Some("decimals() returned malformed data".to_string()),
+                observed_decimals: None,
+                previous_decimals: None,
+            })
+            .expect("failed cache upsert");
+
+            let cache = &state.token_metadata_cache[0];
+            assert_eq!(cache.status, RawMetadataStatus::Malformed);
+            assert_eq!(cache.raw_symbol.as_deref(), Some("USDC"));
+            assert_eq!(cache.raw_name.as_deref(), Some("USD Coin"));
+            assert_eq!(cache.raw_decimals, Some(18));
+            assert_eq!(cache.observed_decimals, Some(18));
+            assert_eq!(cache.previous_decimals, Some(6));
+            assert_eq!(cache.last_scanned_at.as_deref(), Some("1700000002"));
+            assert_eq!(
+                cache.last_error_summary.as_deref(),
+                Some("decimals() returned malformed data")
+            );
+        },
+    );
+}
+
+#[test]
 fn scan_state_and_failed_balance_snapshot_preserve_user_config_and_old_balance() {
     with_test_app_dir("token-watchlist-failure-preserves", |_| {
         add_usdc();
@@ -950,6 +1046,70 @@ async fn scanner_metadata_success_writes_raw_cache_and_resolved_view() {
         ResolvedMetadataSource::OnChainCall
     );
     assert_eq!(state.token_scan_state[0].status, TokenScanStatus::Ok);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn scanner_failed_metadata_scan_preserves_prior_raw_cache() {
+    let _lock = test_lock().lock().expect("test lock");
+    let _app_dir = TestAppDirGuard::new("token-scanner-failed-metadata-preserves-cache");
+    add_usdc();
+    let (first_rpc, _requests) = start_token_rpc_server(4, |request| {
+        standard_token_rpc_payload(request, U256::zero())
+    });
+    scan_watchlist_token_metadata(ScanWatchlistTokenMetadataInput {
+        rpc_url: first_rpc,
+        chain_id: 1,
+        token_contract: USDC.to_string(),
+        rpc_profile_id: None,
+    })
+    .await
+    .expect("first metadata scan");
+
+    let (failed_rpc, _requests) = start_token_rpc_server(4, |request| {
+        if request.contains("eth_chainId") {
+            rpc_result("\"0x1\"".to_string())
+        } else if request.contains("313ce567") {
+            rpc_error("decimals reverted")
+        } else if request.contains("95d89b41") {
+            rpc_result(string_result_hex("BAD"))
+        } else if request.contains("06fdde03") {
+            rpc_result(string_result_hex("Bad Token"))
+        } else {
+            rpc_result("null".to_string())
+        }
+    });
+    let state = scan_watchlist_token_metadata(ScanWatchlistTokenMetadataInput {
+        rpc_url: failed_rpc,
+        chain_id: 1,
+        token_contract: USDC.to_string(),
+        rpc_profile_id: None,
+    })
+    .await
+    .expect("failed metadata scan");
+
+    assert_eq!(state.watchlist_tokens.len(), 1);
+    let cache = &state.token_metadata_cache[0];
+    assert_eq!(cache.status, RawMetadataStatus::CallFailed);
+    assert_eq!(cache.raw_decimals, Some(6));
+    assert_eq!(cache.raw_symbol.as_deref(), Some("USDC"));
+    assert_eq!(cache.raw_name.as_deref(), Some("USD Coin"));
+    assert!(cache.last_scanned_at.is_some());
+    assert!(cache.last_error_summary.is_some());
+    assert_eq!(state.token_scan_state[0].status, TokenScanStatus::Failed);
+    assert!(state.token_scan_state[0].last_error_summary.is_some());
+    assert_eq!(
+        state.resolved_token_metadata[0].status,
+        ResolvedMetadataStatus::CallFailed
+    );
+    assert_eq!(
+        state.resolved_token_metadata[0].symbol.as_deref(),
+        Some("USDC")
+    );
+    assert_eq!(
+        state.resolved_token_metadata[0].name.as_deref(),
+        Some("USD Coin")
+    );
+    assert_eq!(state.resolved_token_metadata[0].decimals, Some(6));
 }
 
 #[tokio::test(flavor = "current_thread")]
