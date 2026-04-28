@@ -11,6 +11,8 @@ pub fn run() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
             commands::abi_caller::call_read_only_abi_function,
+            commands::abi_caller::list_managed_abi_functions,
+            commands::abi_caller::preview_managed_abi_calldata,
             commands::abi_registry::delete_abi_cache_entry,
             commands::abi_registry::fetch_explorer_abi,
             commands::abi_registry::import_abi_payload,

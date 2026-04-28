@@ -1,7 +1,13 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type {
   AbiCacheEntryRecord,
+  AbiCalldataPreviewInput,
+  AbiCalldataPreviewResult,
   AbiDataSourceConfigRecord,
+  AbiDecodedValueSummary,
+  AbiFunctionCatalogResult,
+  AbiFunctionSchema,
+  AbiManagedEntryInput,
   AbiPayloadValidationReadModel,
   AbiProviderKind,
   AbiRegistryMutationResult,
@@ -35,6 +41,8 @@ export interface AbiLibraryViewProps {
   ) => Promise<AbiMutationHandlerResult> | AbiMutationHandlerResult;
   onMarkStale: (entry: AbiCacheEntryRecord) => Promise<boolean | void> | boolean | void;
   onDeleteEntry: (entry: AbiCacheEntryRecord) => Promise<boolean | void> | boolean | void;
+  onListFunctions?: (input: AbiManagedEntryInput) => Promise<AbiFunctionCatalogResult>;
+  onPreviewCalldata?: (input: AbiCalldataPreviewInput) => Promise<AbiCalldataPreviewResult>;
 }
 
 const providerKinds: AbiProviderKind[] = [
@@ -160,6 +168,95 @@ function isUsableAbiMutationResult(result: AbiRegistryMutationResult) {
   );
 }
 
+function isCallableEntry(entry: AbiCacheEntryRecord) {
+  return (
+    entry.selected &&
+    entry.fetchSourceStatus === "ok" &&
+    entry.validationStatus === "ok" &&
+    entry.cacheStatus === "cacheFresh" &&
+    entry.selectionStatus === "selected"
+  );
+}
+
+function blockingReasons(entry: AbiCacheEntryRecord) {
+  const reasons: string[] = [];
+  if (!entry.selected) reasons.push("notSelected");
+  if (entry.fetchSourceStatus !== "ok") reasons.push(entry.fetchSourceStatus);
+  if (entry.validationStatus !== "ok") reasons.push(entry.validationStatus);
+  if (entry.cacheStatus !== "cacheFresh") reasons.push(entry.cacheStatus);
+  if (entry.selectionStatus !== "selected") reasons.push(entry.selectionStatus);
+  return Array.from(new Set(reasons));
+}
+
+function entryInput(entry: AbiCacheEntryRecord): AbiManagedEntryInput {
+  return {
+    chainId: entry.chainId,
+    contractAddress: entry.contractAddress,
+    sourceKind: entry.sourceKind,
+    providerConfigId: entry.providerConfigId ?? null,
+    userSourceId: entry.userSourceId ?? null,
+    versionId: entry.versionId,
+    abiHash: entry.abiHash,
+    sourceFingerprint: entry.sourceFingerprint,
+  };
+}
+
+function functionOptionLabel(fn: AbiFunctionSchema) {
+  const path = fn.callKind === "read" ? "read" : fn.callKind === "writeDraft" ? "write" : "blocked";
+  return `${fn.signature} / ${path} / ${fn.stateMutability}`;
+}
+
+function functionPreviewModeLabel(fn: AbiFunctionSchema) {
+  if (!fn.supported || fn.callKind === "unsupported") {
+    return "Blocked preview";
+  }
+  if (fn.callKind === "read") {
+    return "Read-only preview";
+  }
+  if (fn.callKind === "writeDraft") {
+    return "Write draft preview";
+  }
+  return "Blocked preview";
+}
+
+function summaryLine(summary: AbiDecodedValueSummary): string {
+  const parts = [summary.type, summary.kind];
+  if (summary.value !== null && summary.value !== undefined) {
+    parts.push(summary.truncated ? `${summary.value}...` : summary.value);
+  }
+  if (summary.byteLength !== null && summary.byteLength !== undefined) {
+    parts.push(`${summary.byteLength} bytes`);
+  }
+  if (summary.hash) {
+    parts.push(`hash ${compact(summary.hash, 14, 8)}`);
+  }
+  if (summary.truncated && (summary.value === null || summary.value === undefined)) {
+    parts.push("truncated");
+  }
+  return parts.join(" / ");
+}
+
+function renderSummary(summary: AbiDecodedValueSummary, key: string) {
+  return (
+    <li key={key}>
+      <span>{summaryLine(summary)}</span>
+      {summary.fields && summary.fields.length > 0 && (
+        <ul>
+          {summary.fields.map((field, index) => (
+            <li key={`${key}-field-${index}`}>
+              <span>{field.name ?? `field ${index}`}: </span>
+              <span>{summaryLine(field.value)}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+      {summary.items && summary.items.length > 0 && (
+        <ul>{summary.items.map((item, index) => renderSummary(item, `${key}-item-${index}`))}</ul>
+      )}
+    </li>
+  );
+}
+
 function validationDetails(validation: AbiPayloadValidationReadModel) {
   const diagnostics = validation.diagnostics;
   return [
@@ -187,6 +284,32 @@ export function AbiLibraryView({
   onFetchExplorerAbi,
   onMarkStale,
   onDeleteEntry,
+  onListFunctions = async (input) => ({
+    status: "blocked",
+    reasons: ["unknown"],
+    contractAddress: input.contractAddress,
+    sourceKind: input.sourceKind,
+    providerConfigId: input.providerConfigId ?? null,
+    userSourceId: input.userSourceId ?? null,
+    versionId: input.versionId,
+    abiHash: input.abiHash,
+    sourceFingerprint: input.sourceFingerprint,
+    functions: [],
+    unsupportedItemCount: 0,
+  }),
+  onPreviewCalldata = async (input) => ({
+    status: "blocked",
+    reasons: ["unknown"],
+    functionSignature: input.functionSignature,
+    contractAddress: input.contractAddress,
+    sourceKind: input.sourceKind,
+    providerConfigId: input.providerConfigId ?? null,
+    userSourceId: input.userSourceId ?? null,
+    versionId: input.versionId,
+    abiHash: input.abiHash,
+    sourceFingerprint: input.sourceFingerprint,
+    parameterSummary: [],
+  }),
 }: AbiLibraryViewProps) {
   const [targetChainId, setTargetChainId] = useState(selectedChainId.toString());
   const [targetAddress, setTargetAddress] = useState("");
@@ -202,8 +325,21 @@ export function AbiLibraryView({
   const [validation, setValidation] = useState<AbiPayloadValidationReadModel | null>(
     emptyValidation,
   );
+  const [selectedPreviewEntryKey, setSelectedPreviewEntryKey] = useState("");
+  const [functionCatalog, setFunctionCatalog] = useState<AbiFunctionCatalogResult | null>(null);
+  const [selectedFunctionSignature, setSelectedFunctionSignature] = useState("");
+  const [paramsText, setParamsText] = useState("[]");
+  const [preview, setPreview] = useState<AbiCalldataPreviewResult | null>(null);
+  const [previewBusy, setPreviewBusy] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
   const [localMessage, setLocalMessage] = useState<string | null>(null);
+  const latestPreviewStateRef = useRef({
+    entryKey: "",
+    functionSignature: "",
+    paramsText: "[]",
+  });
+  const catalogRequestIdRef = useRef(0);
+  const previewRequestIdRef = useRef(0);
 
   useEffect(() => {
     setTargetChainId(selectedChainId.toString());
@@ -231,6 +367,26 @@ export function AbiLibraryView({
       }),
     [state, targetAddress, targetChain, targetChainId],
   );
+  const selectedPreviewEntry = useMemo(
+    () => targetEntries.find((entry) => cacheIdentity(entry) === selectedPreviewEntryKey) ?? null,
+    [selectedPreviewEntryKey, targetEntries],
+  );
+  const selectedFunction = useMemo(
+    () =>
+      functionCatalog?.functions.find(
+        (fn) => fn.signature === selectedFunctionSignature,
+      ) ?? null,
+    [functionCatalog, selectedFunctionSignature],
+  );
+  const selectedEntryReasons = selectedPreviewEntry ? blockingReasons(selectedPreviewEntry) : [];
+  const selectedEntryCallable = selectedPreviewEntry ? isCallableEntry(selectedPreviewEntry) : false;
+  const previewDisabled =
+    busy ||
+    previewBusy ||
+    !selectedPreviewEntry ||
+    !selectedEntryCallable ||
+    !selectedFunction ||
+    !selectedFunction.supported;
   const statusCounts = useMemo(() => {
     const counts = new Map<string, number>();
     for (const entry of state?.cacheEntries ?? []) {
@@ -245,6 +401,38 @@ export function AbiLibraryView({
     }
     return Array.from(counts.entries()).sort(([left], [right]) => left.localeCompare(right));
   }, [state]);
+
+  useEffect(() => {
+    latestPreviewStateRef.current = {
+      entryKey: selectedPreviewEntryKey,
+      functionSignature: selectedFunctionSignature,
+      paramsText,
+    };
+  }, [paramsText, selectedFunctionSignature, selectedPreviewEntryKey]);
+
+  useEffect(() => {
+    if (selectedPreviewEntryKey && selectedPreviewEntry) return;
+    const selected = targetEntries.find((entry) => entry.selected) ?? targetEntries[0] ?? null;
+    setSelectedPreviewEntryKey(selected ? cacheIdentity(selected) : "");
+  }, [selectedPreviewEntry, selectedPreviewEntryKey, targetEntries]);
+
+  useEffect(() => {
+    setFunctionCatalog(null);
+    setSelectedFunctionSignature("");
+    setParamsText("[]");
+    setPreview(null);
+  }, [selectedPreviewEntryKey]);
+
+  useEffect(() => {
+    if (!functionCatalog || selectedFunctionSignature) return;
+    const firstCallable =
+      functionCatalog.functions.find((fn) => fn.supported && fn.callKind !== "unsupported") ??
+      functionCatalog.functions[0] ??
+      null;
+    if (firstCallable) {
+      setSelectedFunctionSignature(firstCallable.signature);
+    }
+  }, [functionCatalog, selectedFunctionSignature]);
 
   function parseTarget() {
     const chainId = Number(targetChainId);
@@ -347,6 +535,123 @@ export function AbiLibraryView({
       setLocalMessage("Explorer ABI cached.");
     } catch (err) {
       setLocalError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function handleLoadFunctions() {
+    setLocalError(null);
+    setLocalMessage(null);
+    setFunctionCatalog(null);
+    setSelectedFunctionSignature("");
+    setPreview(null);
+    if (!selectedPreviewEntry) {
+      setLocalError("Select a managed ABI entry.");
+      return;
+    }
+    const requestId = catalogRequestIdRef.current + 1;
+    catalogRequestIdRef.current = requestId;
+    const requestEntryKey = cacheIdentity(selectedPreviewEntry);
+    setPreviewBusy(true);
+    try {
+      const result = await onListFunctions(entryInput(selectedPreviewEntry));
+      if (
+        catalogRequestIdRef.current !== requestId ||
+        latestPreviewStateRef.current.entryKey !== requestEntryKey
+      ) {
+        return;
+      }
+      setFunctionCatalog(result);
+      if (result.status !== "success") {
+        setLocalError(
+          `Function catalog blocked: ${result.reasons.map(statusLabel).join(", ") || statusLabel(result.status)}.`,
+        );
+      }
+    } catch (err) {
+      if (
+        catalogRequestIdRef.current !== requestId ||
+        latestPreviewStateRef.current.entryKey !== requestEntryKey
+      ) {
+        return;
+      }
+      setLocalError(err instanceof Error ? err.message : String(err));
+    } finally {
+      if (catalogRequestIdRef.current === requestId) {
+        setPreviewBusy(false);
+      }
+    }
+  }
+
+  async function handlePreviewCalldata() {
+    setLocalError(null);
+    setLocalMessage(null);
+    setPreview(null);
+    if (!selectedPreviewEntry || !selectedFunction) {
+      setLocalError("Select a managed ABI entry and function.");
+      return;
+    }
+    if (!selectedEntryCallable) {
+      setLocalError(`ABI entry is blocked: ${selectedEntryReasons.map(statusLabel).join(", ")}.`);
+      return;
+    }
+    if (!selectedFunction.supported) {
+      setLocalError(`Function is blocked: ${selectedFunction.unsupportedReason ?? "unsupported type"}.`);
+      return;
+    }
+    let canonicalParams: unknown;
+    try {
+      canonicalParams = JSON.parse(paramsText);
+    } catch {
+      setLocalError("Canonical params must be a valid JSON array.");
+      return;
+    }
+    if (!Array.isArray(canonicalParams)) {
+      setLocalError("Canonical params must be a JSON array.");
+      return;
+    }
+    const requestId = previewRequestIdRef.current + 1;
+    previewRequestIdRef.current = requestId;
+    const requestEntryKey = cacheIdentity(selectedPreviewEntry);
+    const requestFunctionSignature = selectedFunction.signature;
+    const requestParamsText = paramsText;
+    setPreviewBusy(true);
+    try {
+      const result = await onPreviewCalldata({
+        ...entryInput(selectedPreviewEntry),
+        functionSignature: requestFunctionSignature,
+        canonicalParams,
+      });
+      const latest = latestPreviewStateRef.current;
+      if (
+        previewRequestIdRef.current !== requestId ||
+        latest.entryKey !== requestEntryKey ||
+        latest.functionSignature !== requestFunctionSignature ||
+        latest.paramsText !== requestParamsText
+      ) {
+        return;
+      }
+      setPreview(result);
+      if (result.status !== "success") {
+        const reasonText = result.reasons.map(statusLabel).join(", ");
+        const previewReason = result.errorSummary ?? (reasonText || statusLabel(result.status));
+        setLocalError(
+          `Preview blocked: ${previewReason}.`,
+        );
+      }
+    } catch (err) {
+      const latest = latestPreviewStateRef.current;
+      if (
+        previewRequestIdRef.current !== requestId ||
+        latest.entryKey !== requestEntryKey ||
+        latest.functionSignature !== requestFunctionSignature ||
+        latest.paramsText !== requestParamsText
+      ) {
+        return;
+      }
+      setLocalError(err instanceof Error ? err.message : String(err));
+    } finally {
+      if (previewRequestIdRef.current === requestId) {
+        setPreviewBusy(false);
+      }
     }
   }
 
@@ -633,6 +938,175 @@ export function AbiLibraryView({
               .map((detail) => (
                 <span key={detail}>{detail}</span>
               ))}
+          </div>
+        )}
+      </section>
+
+      <section className="abi-panel" aria-label="ABI calldata preview">
+        <header className="abi-panel-header">
+          <h3>Calldata Preview</h3>
+          {preview && <span className={statusClass(preview.status)}>{statusLabel(preview.status)}</span>}
+        </header>
+        <div className="abi-caller-grid">
+          <label>
+            Managed entry
+            <select
+              onChange={(event) => {
+                const entryKey = event.target.value;
+                latestPreviewStateRef.current = {
+                  ...latestPreviewStateRef.current,
+                  entryKey,
+                };
+                setSelectedPreviewEntryKey(entryKey);
+              }}
+              value={selectedPreviewEntryKey}
+            >
+              <option value="">Select ABI entry</option>
+              {targetEntries.map((entry) => (
+                <option key={cacheIdentity(entry)} value={cacheIdentity(entry)}>
+                  {entry.chainId} / {compact(entry.contractAddress, 12, 8)} / {sourceDisplay(entry)} /{" "}
+                  {entry.versionId}
+                </option>
+              ))}
+            </select>
+          </label>
+          <button
+            className="secondary-button"
+            disabled={busy || previewBusy || !selectedPreviewEntry}
+            onClick={handleLoadFunctions}
+            type="button"
+          >
+            Load Functions
+          </button>
+          <label>
+            Function signature
+            <select
+              disabled={!functionCatalog || functionCatalog.functions.length === 0}
+              onChange={(event) => {
+                const functionSignature = event.target.value;
+                latestPreviewStateRef.current = {
+                  ...latestPreviewStateRef.current,
+                  functionSignature,
+                  paramsText: "[]",
+                };
+                setSelectedFunctionSignature(functionSignature);
+                setParamsText("[]");
+                setPreview(null);
+              }}
+              value={selectedFunctionSignature}
+            >
+              <option value="">Select function</option>
+              {(functionCatalog?.functions ?? []).map((fn) => (
+                <option key={fn.signature} value={fn.signature}>
+                  {functionOptionLabel(fn)}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+
+        {selectedPreviewEntry && (
+          <div className="abi-validation-summary" aria-label="ABI preview entry status">
+            <span>{sourceDisplay(selectedPreviewEntry)}</span>
+            <span>{statusLabel(selectedPreviewEntry.fetchSourceStatus)}</span>
+            <span>{statusLabel(selectedPreviewEntry.validationStatus)}</span>
+            <span>{statusLabel(selectedPreviewEntry.cacheStatus)}</span>
+            <span>{statusLabel(selectedPreviewEntry.selectionStatus)}</span>
+            {selectedEntryReasons.map((reason) => (
+              <span key={reason}>Blocked {statusLabel(reason)}</span>
+            ))}
+          </div>
+        )}
+
+        {functionCatalog && (
+          <div className="abi-validation-summary" aria-label="ABI function catalog summary">
+            <span>Functions {functionCatalog.functions.length}</span>
+            <span>Unsupported {functionCatalog.unsupportedItemCount}</span>
+            <span>{statusLabel(functionCatalog.status)}</span>
+            {functionCatalog.reasons.map((reason) => (
+              <span key={reason}>{statusLabel(reason)}</span>
+            ))}
+          </div>
+        )}
+
+        {selectedFunction && (
+          <div className="abi-function-detail" aria-label="ABI selected function schema">
+            <div>
+              <strong className="mono">{selectedFunction.signature}</strong>
+              <div className="abi-resolution-guidance">
+                {functionPreviewModeLabel(selectedFunction)}.
+                Encoding preview only; no semantic safety claim.
+              </div>
+            </div>
+            <div className="abi-validation-summary">
+              <span>Selector {selectedFunction.selector ?? "blocked"}</span>
+              <span>{statusLabel(selectedFunction.stateMutability)}</span>
+              <span>{selectedFunction.supported ? "Supported" : selectedFunction.unsupportedReason ?? "Blocked"}</span>
+              <span>Inputs {selectedFunction.inputs.length}</span>
+              <span>Outputs {selectedFunction.outputs.length}</span>
+            </div>
+            {selectedFunction.inputs.length > 0 && (
+              <div className="abi-param-list">
+                {selectedFunction.inputs.map((input, index) => (
+                  <span className="mono" key={`${selectedFunction.signature}-input-${index}`}>
+                    {input.name ?? `arg${index}`}: {input.type}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        <label className="abi-param-editor">
+          Canonical params JSON array
+          <textarea
+            className="mono"
+            onChange={(event) => {
+              const nextParamsText = event.target.value;
+              latestPreviewStateRef.current = {
+                ...latestPreviewStateRef.current,
+                paramsText: nextParamsText,
+              };
+              setParamsText(nextParamsText);
+              setPreview(null);
+            }}
+            rows={7}
+            value={paramsText}
+          />
+        </label>
+
+        <div className="button-row abi-payload-actions">
+          <button disabled={previewDisabled} onClick={handlePreviewCalldata} type="button">
+            Preview Encoding
+          </button>
+          <button disabled type="button">
+            Read Call
+          </button>
+          <button disabled type="button">
+            Submit Transaction
+          </button>
+        </div>
+
+        {preview && (
+          <div className="abi-preview-result" aria-label="ABI calldata preview result">
+            <div className="confirmation-grid">
+              <div>Signature</div>
+              <div className="mono">{preview.functionSignature}</div>
+              <div>Selector</div>
+              <div className="mono">{preview.selector ?? "none"}</div>
+              <div>Calldata bytes</div>
+              <div>{preview.calldata?.byteLength ?? "none"}</div>
+              <div>Calldata hash</div>
+              <div className="mono">{preview.calldata?.hash ?? "none"}</div>
+              <div>Status</div>
+              <div>{statusLabel(preview.status)}</div>
+            </div>
+            {preview.errorSummary && <div className="inline-error">{preview.errorSummary}</div>}
+            {preview.parameterSummary.length > 0 && (
+              <ul className="abi-summary-tree">
+                {preview.parameterSummary.map((summary, index) => renderSummary(summary, `param-${index}`))}
+              </ul>
+            )}
           </div>
         )}
       </section>

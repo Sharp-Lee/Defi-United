@@ -12,6 +12,7 @@ import {
   fetchExplorerAbi,
   inspectTransactionHistoryStorage,
   importAbiPayload,
+  listManagedAbiFunctions,
   loadAppConfig,
   loadAbiRegistryState,
   loadAccounts,
@@ -21,6 +22,7 @@ import {
   lockVault,
   markAbiCacheStale,
   pasteAbiPayload,
+  previewManagedAbiCalldata,
   cancelPendingTransfer,
   quarantineTransactionHistory,
   rememberValidatedRpc,
@@ -1345,6 +1347,8 @@ export function App() {
       onTransferSubmitted={handleTransferSubmitted}
       onUnlock={handleUnlock}
       onValidateAbiPayload={(payload) => validateAbiPayload({ payload })}
+      onListAbiFunctions={listManagedAbiFunctions}
+      onPreviewAbiCalldata={previewManagedAbiCalldata}
       onValidateRpc={handleValidateRpc}
       rpcUrl={rpcUrl}
       selectedChainId={selectedChainId}

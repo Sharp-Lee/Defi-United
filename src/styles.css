@@ -343,6 +343,49 @@ td {
   align-items: end;
 }
 
+.abi-caller-grid {
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) auto minmax(320px, 1.3fr);
+  gap: 10px;
+  align-items: end;
+}
+
+.abi-function-detail,
+.abi-preview-result {
+  display: grid;
+  gap: 10px;
+}
+
+.abi-param-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.abi-param-list span {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+  background: var(--panel-soft);
+}
+
+.abi-param-editor {
+  display: grid;
+  gap: 6px;
+}
+
+.abi-summary-tree {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.abi-summary-tree ul {
+  margin: 4px 0 0;
+  padding-left: 18px;
+}
+
 .abi-payload-field {
   min-width: 0;
 }
@@ -1101,6 +1144,7 @@ td {
   .history-controls,
   .diagnostics-controls,
   .abi-target-grid,
+  .abi-caller-grid,
   .abi-source-form,
   .abi-payload-grid {
     grid-template-columns: 1fr;

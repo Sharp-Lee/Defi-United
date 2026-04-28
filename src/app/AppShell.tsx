@@ -21,6 +21,10 @@ import type {
   PendingMutationRequest,
   AddWatchlistTokenInput,
   AbiCacheEntryRecord,
+  AbiCalldataPreviewInput,
+  AbiCalldataPreviewResult,
+  AbiFunctionCatalogResult,
+  AbiManagedEntryInput,
   AbiPayloadValidationReadModel,
   AbiRegistryState,
   FetchExplorerAbiInput,
@@ -109,6 +113,10 @@ export interface AppShellProps {
   ) => Promise<AbiMutationHandlerResult> | AbiMutationHandlerResult;
   onMarkAbiStale?: (entry: AbiCacheEntryRecord) => Promise<boolean | void> | boolean | void;
   onDeleteAbiEntry?: (entry: AbiCacheEntryRecord) => Promise<boolean | void> | boolean | void;
+  onListAbiFunctions?: (input: AbiManagedEntryInput) => Promise<AbiFunctionCatalogResult>;
+  onPreviewAbiCalldata?: (
+    input: AbiCalldataPreviewInput,
+  ) => Promise<AbiCalldataPreviewResult>;
   onRefreshAccounts?: () => Promise<void> | void;
   onRefreshHistory?: () => Promise<void> | void;
   onQuarantineHistory?: () => Promise<void> | void;
@@ -193,6 +201,26 @@ export function AppShell({
   onFetchExplorerAbi = async () => {},
   onMarkAbiStale = async () => {},
   onDeleteAbiEntry = async () => {},
+  onListAbiFunctions = async () => ({
+    status: "blocked",
+    reasons: ["unknown"],
+    sourceKind: "userPasted",
+    versionId: "",
+    abiHash: "",
+    sourceFingerprint: "",
+    functions: [],
+    unsupportedItemCount: 0,
+  }),
+  onPreviewAbiCalldata = async (input) => ({
+    status: "blocked",
+    reasons: ["unknown"],
+    functionSignature: input.functionSignature,
+    sourceKind: input.sourceKind,
+    versionId: input.versionId,
+    abiHash: input.abiHash,
+    sourceFingerprint: input.sourceFingerprint,
+    parameterSummary: [],
+  }),
   onRefreshAccounts = async () => {},
   onRefreshHistory = async () => {},
   onQuarantineHistory = async () => {},
@@ -311,6 +339,8 @@ export function AppShell({
                 onImportPayload={onImportAbiPayload}
                 onMarkStale={onMarkAbiStale}
                 onPastePayload={onPasteAbiPayload}
+                onListFunctions={onListAbiFunctions}
+                onPreviewCalldata={onPreviewAbiCalldata}
                 onRefresh={onRefreshAbiRegistry}
                 onRemoveDataSource={onRemoveAbiDataSource}
                 onSaveDataSource={onSaveAbiDataSource}

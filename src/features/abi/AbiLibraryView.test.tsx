@@ -1,8 +1,12 @@
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type {
   AbiCacheEntryRecord,
+  AbiCalldataPreviewInput,
+  AbiCalldataPreviewResult,
   AbiFetchSourceStatus,
+  AbiFunctionCatalogResult,
+  AbiManagedEntryInput,
   AbiRegistryMutationResult,
   AbiRegistryState,
   AbiValidationStatus,
@@ -53,6 +57,17 @@ function cacheEntry(
     updatedAt: "1710000001",
     ...overrides,
   };
+}
+
+function cacheKey(entry: AbiCacheEntryRecord) {
+  return [
+    entry.chainId,
+    entry.contractAddress.toLowerCase(),
+    entry.sourceKind,
+    entry.providerConfigId ?? "",
+    entry.userSourceId ?? "",
+    entry.versionId,
+  ].join(":");
 }
 
 function registryState(overrides: Partial<AbiRegistryState> = {}): AbiRegistryState {
@@ -139,6 +154,14 @@ function registryState(overrides: Partial<AbiRegistryState> = {}): AbiRegistrySt
   };
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((innerResolve) => {
+    resolve = innerResolve;
+  });
+  return { promise, resolve };
+}
+
 function failedMutationResult(
   overrides: Partial<AbiRegistryMutationResult["validation"]>,
 ): AbiRegistryMutationResult {
@@ -179,6 +202,8 @@ function renderAbi(
     onFetchExplorerAbi: ReturnType<typeof vi.fn>;
     onMarkStale: ReturnType<typeof vi.fn>;
     onDeleteEntry: ReturnType<typeof vi.fn>;
+    onListFunctions: ReturnType<typeof vi.fn>;
+    onPreviewCalldata: ReturnType<typeof vi.fn>;
   }> = {},
 ) {
   const props = {
@@ -210,6 +235,36 @@ function renderAbi(
     onFetchExplorerAbi: handlers.onFetchExplorerAbi ?? vi.fn(),
     onMarkStale: handlers.onMarkStale ?? vi.fn(),
     onDeleteEntry: handlers.onDeleteEntry ?? vi.fn(),
+    onListFunctions:
+      handlers.onListFunctions ??
+      vi.fn(async (input: AbiManagedEntryInput): Promise<AbiFunctionCatalogResult> => ({
+        status: "blocked",
+        reasons: ["unknown"],
+        contractAddress: input.contractAddress,
+        sourceKind: input.sourceKind,
+        providerConfigId: input.providerConfigId ?? null,
+        userSourceId: input.userSourceId ?? null,
+        versionId: input.versionId,
+        abiHash: input.abiHash,
+        sourceFingerprint: input.sourceFingerprint,
+        functions: [],
+        unsupportedItemCount: 0,
+      })),
+    onPreviewCalldata:
+      handlers.onPreviewCalldata ??
+      vi.fn(async (input: AbiCalldataPreviewInput): Promise<AbiCalldataPreviewResult> => ({
+        status: "blocked",
+        reasons: ["unknown"],
+        functionSignature: input.functionSignature,
+        contractAddress: input.contractAddress,
+        sourceKind: input.sourceKind,
+        providerConfigId: input.providerConfigId ?? null,
+        userSourceId: input.userSourceId ?? null,
+        versionId: input.versionId,
+        abiHash: input.abiHash,
+        sourceFingerprint: input.sourceFingerprint,
+        parameterSummary: [],
+      })),
   };
   renderScreen(
     <AbiLibraryView
@@ -443,5 +498,287 @@ describe("AbiLibraryView", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /Remove ABI data source etherscan-mainnet/ }));
     expect(onRemoveDataSource).toHaveBeenCalledWith("etherscan-mainnet");
+  });
+
+  it("selects overloaded functions by full signature and renders bounded calldata preview", async () => {
+    const onListFunctions = vi.fn(async (input: AbiManagedEntryInput): Promise<AbiFunctionCatalogResult> => ({
+      status: "success",
+      reasons: [],
+      contractAddress: input.contractAddress,
+      sourceKind: input.sourceKind,
+      providerConfigId: input.providerConfigId ?? null,
+      userSourceId: input.userSourceId ?? null,
+      versionId: input.versionId,
+      abiHash: input.abiHash,
+      sourceFingerprint: input.sourceFingerprint,
+      unsupportedItemCount: 1,
+      functions: [
+        {
+          name: "lookup",
+          signature: "lookup(uint256)",
+          selector: "0x9d46a1a8",
+          stateMutability: "view",
+          callKind: "read",
+          supported: true,
+          unsupportedReason: null,
+          inputs: [{ name: "id", type: "uint256", kind: "uint", arrayLength: null, components: null }],
+          outputs: [],
+        },
+        {
+          name: "lookup",
+          signature: "lookup(address)",
+          selector: "0xf23a6e61",
+          stateMutability: "view",
+          callKind: "read",
+          supported: true,
+          unsupportedReason: null,
+          inputs: [{ name: "owner", type: "address", kind: "address", arrayLength: null, components: null }],
+          outputs: [],
+        },
+      ],
+    }));
+    const onPreviewCalldata = vi.fn(
+      async (input: AbiCalldataPreviewInput): Promise<AbiCalldataPreviewResult> => ({
+        status: "success",
+        reasons: [],
+        functionSignature: input.functionSignature,
+        selector: "0xf23a6e61",
+        contractAddress: input.contractAddress,
+        sourceKind: input.sourceKind,
+        providerConfigId: input.providerConfigId ?? null,
+        userSourceId: input.userSourceId ?? null,
+        versionId: input.versionId,
+        abiHash: input.abiHash,
+        sourceFingerprint: input.sourceFingerprint,
+        parameterSummary: [
+          {
+            kind: "address",
+            type: "address",
+            value: "0x2222222222222222222222222222222222222222",
+            byteLength: null,
+            hash: null,
+            items: null,
+            fields: null,
+            truncated: false,
+          },
+          {
+            kind: "string",
+            type: "string",
+            value: "x".repeat(256),
+            byteLength: null,
+            hash: null,
+            items: null,
+            fields: null,
+            truncated: true,
+          },
+        ],
+        calldata: {
+          byteLength: 36,
+          hash: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        },
+      }),
+    );
+    renderAbi(registryState({ cacheEntries: [cacheEntry("v1")] }), {
+      onListFunctions,
+      onPreviewCalldata,
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Load Functions" }));
+    await waitFor(() => expect(onListFunctions).toHaveBeenCalledWith(expect.objectContaining({
+      chainId: 1,
+      abiHash: expect.stringContaining("abi-hash"),
+    })));
+    fireEvent.change(screen.getByLabelText("Function signature"), {
+      target: { value: "lookup(address)" },
+    });
+    fireEvent.change(screen.getByLabelText("Canonical params JSON array"), {
+      target: { value: '["0x2222222222222222222222222222222222222222"]' },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Preview Encoding" }));
+
+    await waitFor(() =>
+      expect(onPreviewCalldata).toHaveBeenCalledWith(
+        expect.objectContaining({
+          functionSignature: "lookup(address)",
+          canonicalParams: ["0x2222222222222222222222222222222222222222"],
+        }),
+      ),
+    );
+    const preview = screen.getByLabelText("ABI calldata preview result");
+    expect(preview).toHaveTextContent("lookup(address)");
+    expect(preview).toHaveTextContent("0xf23a6e61");
+    expect(preview).toHaveTextContent("36");
+    expect(preview).toHaveTextContent("0xaaaaaaaaaa");
+    expect(preview).not.toHaveTextContent("0xf23a6e61000000000000000000000000");
+  });
+
+  it("keeps preview call and submit disabled for selector-conflict entries", async () => {
+    const blocked = cacheEntry("blocked", {
+      selected: false,
+      validationStatus: "selectorConflict",
+      selectionStatus: "needsUserChoice",
+    });
+    const onListFunctions = vi.fn(async (input: AbiManagedEntryInput): Promise<AbiFunctionCatalogResult> => ({
+      status: "blocked",
+      reasons: ["selectorConflict", "needsUserChoice"],
+      contractAddress: input.contractAddress,
+      sourceKind: input.sourceKind,
+      providerConfigId: input.providerConfigId ?? null,
+      userSourceId: input.userSourceId ?? null,
+      versionId: input.versionId,
+      abiHash: input.abiHash,
+      sourceFingerprint: input.sourceFingerprint,
+      functions: [],
+      unsupportedItemCount: 0,
+    }));
+    renderAbi(registryState({ cacheEntries: [blocked] }), { onListFunctions });
+
+    await waitFor(() =>
+      expect(screen.getByLabelText("ABI preview entry status")).toHaveTextContent(
+        "Blocked Selector conflict",
+      ),
+    );
+    expect(screen.getByRole("button", { name: "Preview Encoding" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Read Call" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Submit Transaction" })).toBeDisabled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Load Functions" }));
+    await waitFor(() => expect(onListFunctions).toHaveBeenCalled());
+    expect(screen.getByRole("alert")).toHaveTextContent("Selector conflict");
+  });
+
+  it("ignores stale function catalogs when the selected ABI entry changes", async () => {
+    const catalog = deferred<AbiFunctionCatalogResult>();
+    const selected = cacheEntry("v1");
+    const replacement = cacheEntry("v2", {
+      selected: false,
+      selectionStatus: "unselected",
+      userSourceId: null,
+    });
+    const onListFunctions = vi.fn(() => catalog.promise);
+    renderAbi(registryState({ cacheEntries: [selected, replacement] }), { onListFunctions });
+
+    await waitFor(() =>
+      expect(screen.getByLabelText("ABI preview entry status")).toHaveTextContent("explorerFetched"),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Load Functions" }));
+    await waitFor(() => expect(onListFunctions).toHaveBeenCalledTimes(1));
+
+    fireEvent.change(screen.getByLabelText("Managed entry"), {
+      target: { value: cacheKey(replacement) },
+    });
+    await act(async () => {
+      catalog.resolve({
+        status: "success",
+        reasons: [],
+        contractAddress: selected.contractAddress,
+        sourceKind: selected.sourceKind,
+        providerConfigId: selected.providerConfigId,
+        userSourceId: selected.userSourceId,
+        versionId: selected.versionId,
+        abiHash: selected.abiHash,
+        sourceFingerprint: selected.sourceFingerprint,
+        unsupportedItemCount: 0,
+        functions: [
+          {
+            name: "stale",
+            signature: "stale()",
+            selector: "0x00000000",
+            stateMutability: "view",
+            callKind: "read",
+            supported: true,
+            unsupportedReason: null,
+            inputs: [],
+            outputs: [],
+          },
+        ],
+      });
+      await catalog.promise;
+    });
+
+    expect(screen.queryByLabelText("ABI function catalog summary")).not.toBeInTheDocument();
+    expect(screen.queryByText("stale()")).not.toBeInTheDocument();
+  });
+
+  it("ignores stale calldata previews when params change in flight", async () => {
+    const previewResult = deferred<AbiCalldataPreviewResult>();
+    const entry = cacheEntry("v1");
+    const onListFunctions = vi.fn(async (input: AbiManagedEntryInput): Promise<AbiFunctionCatalogResult> => ({
+      status: "success",
+      reasons: [],
+      contractAddress: input.contractAddress,
+      sourceKind: input.sourceKind,
+      providerConfigId: input.providerConfigId ?? null,
+      userSourceId: input.userSourceId ?? null,
+      versionId: input.versionId,
+      abiHash: input.abiHash,
+      sourceFingerprint: input.sourceFingerprint,
+      unsupportedItemCount: 0,
+      functions: [
+        {
+          name: "lookup",
+          signature: "lookup(uint256)",
+          selector: "0x9d46a1a8",
+          stateMutability: "view",
+          callKind: "read",
+          supported: true,
+          unsupportedReason: null,
+          inputs: [{ name: "id", type: "uint256", kind: "uint", arrayLength: null, components: null }],
+          outputs: [],
+        },
+      ],
+    }));
+    const onPreviewCalldata = vi.fn(() => previewResult.promise);
+    renderAbi(registryState({ cacheEntries: [entry] }), {
+      onListFunctions,
+      onPreviewCalldata,
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Load Functions" }));
+    await waitFor(() => expect(screen.getByLabelText("Function signature")).toHaveValue("lookup(uint256)"));
+    fireEvent.change(screen.getByLabelText("Canonical params JSON array"), {
+      target: { value: '["1"]' },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Preview Encoding" }));
+    await waitFor(() => expect(onPreviewCalldata).toHaveBeenCalledTimes(1));
+
+    fireEvent.change(screen.getByLabelText("Canonical params JSON array"), {
+      target: { value: '["2"]' },
+    });
+    await act(async () => {
+      previewResult.resolve({
+        status: "success",
+        reasons: [],
+        functionSignature: "lookup(uint256)",
+        selector: "0x9d46a1a8",
+        contractAddress: entry.contractAddress,
+        sourceKind: entry.sourceKind,
+        providerConfigId: entry.providerConfigId,
+        userSourceId: entry.userSourceId,
+        versionId: entry.versionId,
+        abiHash: entry.abiHash,
+        sourceFingerprint: entry.sourceFingerprint,
+        parameterSummary: [
+          {
+            kind: "uint",
+            type: "uint256",
+            value: "1",
+            byteLength: null,
+            hash: null,
+            items: null,
+            fields: null,
+            truncated: false,
+          },
+        ],
+        calldata: {
+          byteLength: 36,
+          hash: "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        },
+      });
+      await previewResult.promise;
+    });
+
+    expect(screen.queryByLabelText("ABI calldata preview result")).not.toBeInTheDocument();
+    expect(screen.queryByText("0xbbbbbbbbbb")).not.toBeInTheDocument();
   });
 });

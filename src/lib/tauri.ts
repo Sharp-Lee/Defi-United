@@ -300,6 +300,22 @@ export interface AbiReadCallInput {
   from?: string | null;
 }
 
+export interface AbiManagedEntryInput {
+  chainId: number;
+  contractAddress: string;
+  sourceKind: AbiSourceKind;
+  providerConfigId?: string | null;
+  userSourceId?: string | null;
+  versionId: string;
+  abiHash: string;
+  sourceFingerprint: string;
+}
+
+export interface AbiCalldataPreviewInput extends AbiManagedEntryInput {
+  functionSignature: string;
+  canonicalParams?: unknown[];
+}
+
 export interface AbiCallDataSummary {
   byteLength: number;
   hash: string;
@@ -343,6 +359,58 @@ export interface AbiReadCallResult {
   calldata?: AbiCallDataSummary | null;
   outputs: AbiDecodedValueSummary[];
   rpc: AbiReadRpcSummary;
+  errorSummary?: string | null;
+}
+
+export interface AbiParamSchema {
+  name?: string | null;
+  type: string;
+  kind: string;
+  arrayLength?: number | null;
+  components?: AbiParamSchema[] | null;
+}
+
+export interface AbiFunctionSchema {
+  name: string;
+  signature: string;
+  selector?: string | null;
+  stateMutability: string;
+  callKind: "read" | "writeDraft" | "unsupported" | string;
+  supported: boolean;
+  unsupportedReason?: string | null;
+  inputs: AbiParamSchema[];
+  outputs: AbiParamSchema[];
+}
+
+export interface AbiFunctionCatalogResult {
+  status: AbiReadCallStatus;
+  reasons: string[];
+  contractAddress?: string | null;
+  sourceKind: AbiSourceKind;
+  providerConfigId?: string | null;
+  userSourceId?: string | null;
+  versionId: string;
+  abiHash: string;
+  sourceFingerprint: string;
+  functions: AbiFunctionSchema[];
+  unsupportedItemCount: number;
+  errorSummary?: string | null;
+}
+
+export interface AbiCalldataPreviewResult {
+  status: AbiReadCallStatus;
+  reasons: string[];
+  functionSignature: string;
+  selector?: string | null;
+  contractAddress?: string | null;
+  sourceKind: AbiSourceKind;
+  providerConfigId?: string | null;
+  userSourceId?: string | null;
+  versionId: string;
+  abiHash: string;
+  sourceFingerprint: string;
+  parameterSummary: AbiDecodedValueSummary[];
+  calldata?: AbiCallDataSummary | null;
   errorSummary?: string | null;
 }
 
@@ -805,6 +873,14 @@ export function fetchExplorerAbi(input: FetchExplorerAbiInput) {
 
 export function callReadOnlyAbiFunction(input: AbiReadCallInput) {
   return invoke<AbiReadCallResult>("call_read_only_abi_function", { input });
+}
+
+export function listManagedAbiFunctions(input: AbiManagedEntryInput) {
+  return invoke<AbiFunctionCatalogResult>("list_managed_abi_functions", { input });
+}
+
+export function previewManagedAbiCalldata(input: AbiCalldataPreviewInput) {
+  return invoke<AbiCalldataPreviewResult>("preview_managed_abi_calldata", { input });
 }
 
 export function loadTokenWatchlistState() {

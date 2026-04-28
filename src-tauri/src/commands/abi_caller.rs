@@ -53,6 +53,38 @@ pub struct AbiReadCallInput {
     pub from: Option<String>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AbiManagedEntryInput {
+    #[serde(alias = "chain_id")]
+    pub chain_id: u64,
+    #[serde(alias = "contract_address")]
+    pub contract_address: String,
+    #[serde(alias = "source_kind")]
+    pub source_kind: String,
+    #[serde(default, alias = "provider_config_id")]
+    pub provider_config_id: Option<String>,
+    #[serde(default, alias = "user_source_id")]
+    pub user_source_id: Option<String>,
+    #[serde(alias = "version_id")]
+    pub version_id: String,
+    #[serde(alias = "abi_hash")]
+    pub abi_hash: String,
+    #[serde(alias = "source_fingerprint")]
+    pub source_fingerprint: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AbiCalldataPreviewInput {
+    #[serde(flatten)]
+    pub entry: AbiManagedEntryInput,
+    #[serde(alias = "function_signature")]
+    pub function_signature: String,
+    #[serde(default, alias = "canonical_params")]
+    pub canonical_params: Vec<Value>,
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct AbiReadCallResult {
@@ -71,6 +103,67 @@ pub struct AbiReadCallResult {
     pub calldata: Option<AbiCallDataSummary>,
     pub outputs: Vec<AbiDecodedValueSummary>,
     pub rpc: AbiReadRpcSummary,
+    pub error_summary: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AbiFunctionCatalogResult {
+    pub status: String,
+    pub reasons: Vec<String>,
+    pub contract_address: Option<String>,
+    pub source_kind: String,
+    pub provider_config_id: Option<String>,
+    pub user_source_id: Option<String>,
+    pub version_id: String,
+    pub abi_hash: String,
+    pub source_fingerprint: String,
+    pub functions: Vec<AbiFunctionSchema>,
+    pub unsupported_item_count: usize,
+    pub error_summary: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AbiFunctionSchema {
+    pub name: String,
+    pub signature: String,
+    pub selector: Option<String>,
+    pub state_mutability: String,
+    pub call_kind: String,
+    pub supported: bool,
+    pub unsupported_reason: Option<String>,
+    pub inputs: Vec<AbiParamSchema>,
+    pub outputs: Vec<AbiParamSchema>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AbiParamSchema {
+    pub name: Option<String>,
+    #[serde(rename = "type")]
+    pub type_label: String,
+    pub kind: String,
+    pub array_length: Option<usize>,
+    pub components: Option<Vec<AbiParamSchema>>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AbiCalldataPreviewResult {
+    pub status: String,
+    pub reasons: Vec<String>,
+    pub function_signature: String,
+    pub selector: Option<String>,
+    pub contract_address: Option<String>,
+    pub source_kind: String,
+    pub provider_config_id: Option<String>,
+    pub user_source_id: Option<String>,
+    pub version_id: String,
+    pub abi_hash: String,
+    pub source_fingerprint: String,
+    pub parameter_summary: Vec<AbiDecodedValueSummary>,
+    pub calldata: Option<AbiCallDataSummary>,
     pub error_summary: Option<String>,
 }
 
@@ -108,6 +201,164 @@ pub struct AbiDecodedValueSummary {
     pub items: Option<Vec<AbiDecodedValueSummary>>,
     pub fields: Option<Vec<AbiDecodedFieldSummary>>,
     pub truncated: bool,
+}
+
+#[tauri::command]
+pub async fn list_managed_abi_functions(
+    input: AbiManagedEntryInput,
+) -> Result<AbiFunctionCatalogResult, String> {
+    let normalized = match normalize_managed_entry_input(input) {
+        Ok(normalized) => normalized,
+        Err(result) => return Ok(result),
+    };
+    let entry = match selected_cache_entry_for_managed(&normalized) {
+        Ok(entry) => entry,
+        Err(result) => return Ok(result),
+    };
+    if let Some(blocked) = non_callable_catalog_result(&normalized, &entry) {
+        return Ok(blocked);
+    }
+    let artifact = match read_abi_artifact_for_managed(&normalized) {
+        Ok(artifact) => artifact,
+        Err(result) => return Ok(result),
+    };
+    if hash_text(&artifact) != normalized.abi_hash {
+        return Ok(catalog_result(&normalized)
+            .status("artifactDrift")
+            .reason("artifactHashDrift")
+            .error("ABI artifact hash does not match selected ABI hash")
+            .finish());
+    }
+    let raw_abi = match serde_json::from_str::<Value>(&artifact) {
+        Ok(raw_abi) => raw_abi,
+        Err(_) => {
+            return Ok(catalog_result(&normalized)
+                .status("artifactDrift")
+                .reason("malformedAbiArtifact")
+                .error("ABI artifact could not be parsed")
+                .finish());
+        }
+    };
+    match function_catalog_from_raw_abi(&raw_abi) {
+        Ok((functions, unsupported_item_count)) => Ok(catalog_result(&normalized)
+            .status("success")
+            .functions(functions)
+            .unsupported_item_count(unsupported_item_count)
+            .finish()),
+        Err(RawFunctionSelectionError::Malformed) => Ok(catalog_result(&normalized)
+            .status("artifactDrift")
+            .reason("malformedAbiArtifact")
+            .error("ABI artifact could not be parsed")
+            .finish()),
+        Err(_) => Ok(catalog_result(&normalized)
+            .status("artifactDrift")
+            .reason("malformedAbiArtifact")
+            .finish()),
+    }
+}
+
+#[tauri::command]
+pub async fn preview_managed_abi_calldata(
+    input: AbiCalldataPreviewInput,
+) -> Result<AbiCalldataPreviewResult, String> {
+    let normalized = match normalize_preview_input(input) {
+        Ok(normalized) => normalized,
+        Err(result) => return Ok(result),
+    };
+    let entry = match selected_cache_entry_for_managed(&normalized.entry) {
+        Ok(entry) => entry,
+        Err(result) => return Ok(preview_from_catalog_block(&normalized, result)),
+    };
+    if let Some(blocked) = non_callable_catalog_result(&normalized.entry, &entry) {
+        return Ok(preview_from_catalog_block(&normalized, blocked));
+    }
+    let artifact = match read_abi_artifact_for_managed(&normalized.entry) {
+        Ok(artifact) => artifact,
+        Err(result) => return Ok(preview_from_catalog_block(&normalized, result)),
+    };
+    if hash_text(&artifact) != normalized.entry.abi_hash {
+        return Ok(preview_result(&normalized)
+            .status("artifactDrift")
+            .reason("artifactHashDrift")
+            .error("ABI artifact hash does not match selected ABI hash")
+            .finish());
+    }
+    let raw_abi = match serde_json::from_str::<Value>(&artifact) {
+        Ok(raw_abi) => raw_abi,
+        Err(_) => {
+            return Ok(preview_result(&normalized)
+                .status("artifactDrift")
+                .reason("malformedAbiArtifact")
+                .error("ABI artifact could not be parsed")
+                .finish());
+        }
+    };
+    let function = match select_raw_function_by_signature(&raw_abi, &normalized.function_signature)
+    {
+        Ok(RawFunctionSelection::Callable(function)) => function,
+        Ok(RawFunctionSelection::UnsupportedFunctionType) => {
+            return Ok(preview_result(&normalized)
+                .selector(selector_for_signature(&normalized.function_signature))
+                .status("functionNotCallable")
+                .reason("unsupportedFunctionType")
+                .finish());
+        }
+        Err(RawFunctionSelectionError::Unknown) => {
+            return Ok(preview_result(&normalized)
+                .status("functionNotFound")
+                .reason("functionSignatureUnknown")
+                .finish());
+        }
+        Err(RawFunctionSelectionError::Ambiguous) => {
+            return Ok(preview_result(&normalized)
+                .status("functionNotFound")
+                .reason("functionSignatureAmbiguous")
+                .finish());
+        }
+        Err(RawFunctionSelectionError::Malformed) => {
+            return Ok(preview_result(&normalized)
+                .status("artifactDrift")
+                .reason("malformedAbiArtifact")
+                .error("ABI artifact could not be parsed")
+                .finish());
+        }
+    };
+    let signature = function_signature(&function);
+    let selector = selector_for_signature(&signature);
+    let tokens = match encode_tokens(&function.inputs, &normalized.canonical_params) {
+        Ok(tokens) => tokens,
+        Err(error) => {
+            return Ok(preview_result(&normalized)
+                .selector(selector)
+                .status("validationError")
+                .reason("invalidParams")
+                .error(error)
+                .finish());
+        }
+    };
+    let calldata = match function.encode_input(&tokens) {
+        Ok(calldata) => calldata,
+        Err(error) => {
+            return Ok(preview_result(&normalized)
+                .selector(selector)
+                .status("validationError")
+                .reason("calldataEncodeFailed")
+                .error(error.to_string())
+                .finish());
+        }
+    };
+    let parameter_summary = function
+        .inputs
+        .iter()
+        .zip(tokens.iter())
+        .map(|(param, token)| summarize_token(token, &param.kind, Some(&param.name)))
+        .collect();
+    Ok(preview_result(&normalized)
+        .selector(selector)
+        .calldata(calldata_summary(&calldata))
+        .parameter_summary(parameter_summary)
+        .status("success")
+        .finish())
 }
 
 #[tauri::command]
@@ -342,6 +593,26 @@ struct NormalizedInput {
     from_address: Option<Address>,
 }
 
+#[derive(Debug, Clone)]
+struct NormalizedManagedEntry {
+    chain_id: u64,
+    contract_address: String,
+    contract: Address,
+    source_kind: String,
+    provider_config_id: Option<String>,
+    user_source_id: Option<String>,
+    version_id: String,
+    abi_hash: String,
+    source_fingerprint: String,
+}
+
+#[derive(Debug, Clone)]
+struct NormalizedPreviewInput {
+    entry: NormalizedManagedEntry,
+    function_signature: String,
+    canonical_params: Vec<Value>,
+}
+
 fn normalize_input(input: AbiReadCallInput) -> Result<NormalizedInput, AbiReadCallResult> {
     let mut seed = NormalizedInput {
         chain_id: input.chain_id,
@@ -447,6 +718,116 @@ fn normalize_input(input: AbiReadCallInput) -> Result<NormalizedInput, AbiReadCa
     Ok(seed)
 }
 
+fn normalize_managed_entry_seed(input: AbiManagedEntryInput) -> NormalizedManagedEntry {
+    NormalizedManagedEntry {
+        chain_id: input.chain_id,
+        contract_address: input.contract_address.trim().to_string(),
+        contract: Address::zero(),
+        source_kind: input.source_kind.trim().to_string(),
+        provider_config_id: normalize_optional_string(input.provider_config_id),
+        user_source_id: normalize_optional_string(input.user_source_id),
+        version_id: input.version_id.trim().to_string(),
+        abi_hash: normalize_hash_like(&input.abi_hash),
+        source_fingerprint: normalize_hash_like(&input.source_fingerprint),
+    }
+}
+
+fn validate_managed_entry_seed(
+    seed: &mut NormalizedManagedEntry,
+) -> Option<(&'static str, String)> {
+    if seed.chain_id == 0 {
+        return Some((
+            "invalidChainId",
+            "chainId must be greater than zero".to_string(),
+        ));
+    }
+    if !matches!(
+        seed.source_kind.as_str(),
+        "explorerFetched" | "userImported" | "userPasted"
+    ) {
+        return Some((
+            "invalidSourceKind",
+            "sourceKind is not supported".to_string(),
+        ));
+    }
+    let contract = match parse_address(&seed.contract_address, "contract address") {
+        Ok(address) if address != Address::zero() => address,
+        Ok(_) => {
+            return Some((
+                "invalidContractAddress",
+                "contract address cannot be the zero address".to_string(),
+            ));
+        }
+        Err(error) => return Some(("invalidContractAddress", error)),
+    };
+    seed.contract = contract;
+    seed.contract_address = to_checksum(&contract, None);
+    if seed.version_id.is_empty() {
+        return Some(("invalidVersionId", "versionId is required".to_string()));
+    }
+    if !is_hash_like(&seed.abi_hash) {
+        return Some((
+            "invalidAbiHash",
+            "abiHash must be a 0x-prefixed 32-byte hash".to_string(),
+        ));
+    }
+    if !is_hash_like(&seed.source_fingerprint) {
+        return Some((
+            "invalidSourceFingerprint",
+            "sourceFingerprint must be a 0x-prefixed 32-byte hash".to_string(),
+        ));
+    }
+    None
+}
+
+fn normalize_managed_entry_input(
+    input: AbiManagedEntryInput,
+) -> Result<NormalizedManagedEntry, AbiFunctionCatalogResult> {
+    let mut seed = normalize_managed_entry_seed(input);
+    if let Some((reason, error)) = validate_managed_entry_seed(&mut seed) {
+        return Err(catalog_result(&seed)
+            .status("validationError")
+            .reason(reason)
+            .error(error)
+            .finish());
+    }
+    Ok(seed)
+}
+
+fn normalize_preview_input(
+    input: AbiCalldataPreviewInput,
+) -> Result<NormalizedPreviewInput, AbiCalldataPreviewResult> {
+    let mut seed = normalize_managed_entry_seed(input.entry);
+    let function_signature = input.function_signature.trim().to_string();
+    if let Some((reason, error)) = validate_managed_entry_seed(&mut seed) {
+        return Err(preview_result(&NormalizedPreviewInput {
+            entry: seed,
+            function_signature,
+            canonical_params: input.canonical_params,
+        })
+        .status("validationError")
+        .reason(reason)
+        .error(error)
+        .finish());
+    }
+    if function_signature.is_empty() || !function_signature.contains('(') {
+        return Err(preview_result(&NormalizedPreviewInput {
+            entry: seed,
+            function_signature,
+            canonical_params: input.canonical_params,
+        })
+        .status("validationError")
+        .reason("invalidFunctionSignature")
+        .error("functionSignature must be a full ABI function signature")
+        .finish());
+    }
+    Ok(NormalizedPreviewInput {
+        entry: seed,
+        function_signature,
+        canonical_params: input.canonical_params,
+    })
+}
+
 fn selected_cache_entry(input: &NormalizedInput) -> Result<AbiCacheEntryRecord, AbiReadCallResult> {
     let state = match load_abi_registry_state() {
         Ok(state) => state,
@@ -494,6 +875,55 @@ fn selected_cache_entry(input: &NormalizedInput) -> Result<AbiCacheEntryRecord, 
     Ok(entry)
 }
 
+fn selected_cache_entry_for_managed(
+    input: &NormalizedManagedEntry,
+) -> Result<AbiCacheEntryRecord, AbiFunctionCatalogResult> {
+    let state = match load_abi_registry_state() {
+        Ok(state) => state,
+        Err(error) => {
+            return Err(catalog_result(input)
+                .status("blocked")
+                .reason("selectedAbiUnknown")
+                .error(error)
+                .finish());
+        }
+    };
+    let Some(entry) = state.cache_entries.into_iter().find(|entry| {
+        entry.chain_id == input.chain_id
+            && normalize_address_key(&entry.contract_address)
+                == normalize_address_key(&input.contract_address)
+            && entry.source_kind == input.source_kind
+            && optional_eq(
+                entry.provider_config_id.as_deref(),
+                input.provider_config_id.as_deref(),
+            )
+            && optional_eq(
+                entry.user_source_id.as_deref(),
+                input.user_source_id.as_deref(),
+            )
+            && entry.version_id == input.version_id
+    }) else {
+        return Err(catalog_result(input)
+            .status("blocked")
+            .reason("selectedAbiMissing")
+            .finish());
+    };
+
+    if entry.abi_hash != input.abi_hash {
+        return Err(catalog_result(input)
+            .status("artifactDrift")
+            .reason("abiHashDrift")
+            .finish());
+    }
+    if entry.source_fingerprint != input.source_fingerprint {
+        return Err(catalog_result(input)
+            .status("artifactDrift")
+            .reason("sourceFingerprintDrift")
+            .finish());
+    }
+    Ok(entry)
+}
+
 fn non_callable_entry_result(
     input: &NormalizedInput,
     entry: &AbiCacheEntryRecord,
@@ -504,6 +934,22 @@ fn non_callable_entry_result(
     }
     let status = blocked_status_for_reasons(&reasons);
     let mut builder = base_result(input, summarize_rpc_endpoint(&input.rpc_url)).status(status);
+    for reason in reasons {
+        builder = builder.reason(reason);
+    }
+    Some(builder.finish())
+}
+
+fn non_callable_catalog_result(
+    input: &NormalizedManagedEntry,
+    entry: &AbiCacheEntryRecord,
+) -> Option<AbiFunctionCatalogResult> {
+    let reasons = non_callable_entry_reasons(entry);
+    if reasons.is_empty() {
+        return None;
+    }
+    let status = blocked_status_for_reasons(&reasons);
+    let mut builder = catalog_result(input).status(status);
     for reason in reasons {
         builder = builder.reason(reason);
     }
@@ -553,6 +999,28 @@ fn read_abi_artifact(input: &NormalizedInput) -> Result<String, AbiReadCallResul
         .join(format!("{}.json", input.abi_hash.trim_start_matches("0x")));
     fs::read_to_string(path).map_err(|error| {
         base_result(input, summarize_rpc_endpoint(&input.rpc_url))
+            .status("blocked")
+            .reason("artifactUnavailable")
+            .error(artifact_read_error_summary(&error))
+            .finish()
+    })
+}
+
+fn read_abi_artifact_for_managed(
+    input: &NormalizedManagedEntry,
+) -> Result<String, AbiFunctionCatalogResult> {
+    let path = ensure_app_dir()
+        .map_err(|_| {
+            catalog_result(input)
+                .status("blocked")
+                .reason("artifactUnavailable")
+                .error("ABI artifact storage is unavailable")
+                .finish()
+        })?
+        .join("abi-artifacts")
+        .join(format!("{}.json", input.abi_hash.trim_start_matches("0x")));
+    fs::read_to_string(path).map_err(|error| {
+        catalog_result(input)
             .status("blocked")
             .reason("artifactUnavailable")
             .error(artifact_read_error_summary(&error))
@@ -617,8 +1085,8 @@ fn select_raw_function_by_signature(
         return Err(RawFunctionSelectionError::Malformed);
     };
 
-    if raw_params_use_function_type(object.get("inputs"))?
-        || raw_params_use_function_type(object.get("outputs"))?
+    if raw_params_use_unsupported_type(object.get("inputs"))?
+        || raw_params_use_unsupported_type(object.get("outputs"))?
     {
         return Ok(RawFunctionSelection::UnsupportedFunctionType);
     }
@@ -633,6 +1101,241 @@ fn select_raw_function_by_signature(
         return Err(RawFunctionSelectionError::Ambiguous);
     }
     Ok(RawFunctionSelection::Callable(function))
+}
+
+fn function_catalog_from_raw_abi(
+    abi: &Value,
+) -> Result<(Vec<AbiFunctionSchema>, usize), RawFunctionSelectionError> {
+    let Value::Array(items) = abi else {
+        return Err(RawFunctionSelectionError::Malformed);
+    };
+    let mut functions = Vec::new();
+    let mut unsupported_item_count = 0;
+    for item in items {
+        let Value::Object(object) = item else {
+            return Err(RawFunctionSelectionError::Malformed);
+        };
+        let item_type = object
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or("function");
+        if item_type != "function" {
+            if matches!(item_type, "constructor" | "fallback" | "receive") {
+                unsupported_item_count += 1;
+            }
+            continue;
+        }
+        match function_schema_from_raw_object(object) {
+            Ok(schema) => {
+                if !schema.supported {
+                    unsupported_item_count += 1;
+                }
+                functions.push(schema);
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    functions.sort_by(|left, right| {
+        left.name
+            .cmp(&right.name)
+            .then_with(|| left.signature.cmp(&right.signature))
+    });
+    Ok((functions, unsupported_item_count))
+}
+
+fn function_schema_from_raw_object(
+    object: &serde_json::Map<String, Value>,
+) -> Result<AbiFunctionSchema, RawFunctionSelectionError> {
+    let name = object
+        .get("name")
+        .and_then(Value::as_str)
+        .ok_or(RawFunctionSelectionError::Malformed)?
+        .to_string();
+    let input_types = raw_param_list(object.get("inputs"))?;
+    let signature = format!("{name}({})", input_types.join(","));
+    let selector = Some(selector_for_signature(&signature));
+    if raw_params_use_unsupported_type(object.get("inputs"))?
+        || raw_params_use_unsupported_type(object.get("outputs"))?
+    {
+        return Ok(AbiFunctionSchema {
+            name,
+            signature,
+            selector,
+            state_mutability: raw_state_mutability(object),
+            call_kind: "unsupported".to_string(),
+            supported: false,
+            unsupported_reason: Some("unsupportedFunctionType".to_string()),
+            inputs: raw_param_schema_list(object.get("inputs"))?,
+            outputs: raw_param_schema_list(object.get("outputs"))?,
+        });
+    }
+
+    let abi = serde_json::from_value::<Abi>(Value::Array(vec![Value::Object(object.clone())]))
+        .map_err(|_| RawFunctionSelectionError::Malformed)?;
+    let mut parsed = abi.functions();
+    let Some(function) = parsed.next().cloned() else {
+        return Err(RawFunctionSelectionError::Malformed);
+    };
+    if parsed.next().is_some() {
+        return Err(RawFunctionSelectionError::Ambiguous);
+    }
+    let call_kind = if is_read_only_function(&function) {
+        "read"
+    } else {
+        "writeDraft"
+    };
+    Ok(AbiFunctionSchema {
+        name,
+        signature: function_signature(&function),
+        selector,
+        state_mutability: state_mutability_label(&function),
+        call_kind: call_kind.to_string(),
+        supported: true,
+        unsupported_reason: None,
+        inputs: function.inputs.iter().map(param_schema).collect(),
+        outputs: function.outputs.iter().map(param_schema).collect(),
+    })
+}
+
+fn param_schema(param: &Param) -> AbiParamSchema {
+    param_type_schema(
+        &param.kind,
+        normalize_optional_string(Some(param.name.clone())),
+    )
+}
+
+fn param_type_schema(kind: &ParamType, name: Option<String>) -> AbiParamSchema {
+    match kind {
+        ParamType::Address => leaf_param_schema(name, "address", "address"),
+        ParamType::Bytes => leaf_param_schema(name, "bytes", "bytes"),
+        ParamType::FixedBytes(size) => {
+            leaf_param_schema(name, &format!("bytes{size}"), "fixedBytes")
+        }
+        ParamType::Int(bits) => leaf_param_schema(name, &format!("int{bits}"), "int"),
+        ParamType::Uint(bits) => leaf_param_schema(name, &format!("uint{bits}"), "uint"),
+        ParamType::Bool => leaf_param_schema(name, "bool", "bool"),
+        ParamType::String => leaf_param_schema(name, "string", "string"),
+        ParamType::Array(inner) => AbiParamSchema {
+            name,
+            type_label: canonical_param_type(kind),
+            kind: "array".to_string(),
+            array_length: None,
+            components: Some(vec![param_type_schema(inner, None)]),
+        },
+        ParamType::FixedArray(inner, size) => AbiParamSchema {
+            name,
+            type_label: canonical_param_type(kind),
+            kind: "array".to_string(),
+            array_length: Some(*size),
+            components: Some(vec![param_type_schema(inner, None)]),
+        },
+        ParamType::Tuple(items) => AbiParamSchema {
+            name,
+            type_label: canonical_param_type(kind),
+            kind: "tuple".to_string(),
+            array_length: None,
+            components: Some(
+                items
+                    .iter()
+                    .enumerate()
+                    .map(|(index, item)| param_type_schema(item, Some(index.to_string())))
+                    .collect(),
+            ),
+        },
+    }
+}
+
+fn leaf_param_schema(name: Option<String>, type_label: &str, kind: &str) -> AbiParamSchema {
+    AbiParamSchema {
+        name,
+        type_label: type_label.to_string(),
+        kind: kind.to_string(),
+        array_length: None,
+        components: None,
+    }
+}
+
+fn raw_param_schema_list(
+    value: Option<&Value>,
+) -> Result<Vec<AbiParamSchema>, RawFunctionSelectionError> {
+    let Some(value) = value else {
+        return Ok(Vec::new());
+    };
+    let Value::Array(items) = value else {
+        return Err(RawFunctionSelectionError::Malformed);
+    };
+    items.iter().map(raw_param_schema).collect()
+}
+
+fn raw_param_schema(value: &Value) -> Result<AbiParamSchema, RawFunctionSelectionError> {
+    let Value::Object(object) = value else {
+        return Err(RawFunctionSelectionError::Malformed);
+    };
+    let type_label = raw_param_type(value)?;
+    let raw_type = object
+        .get("type")
+        .and_then(Value::as_str)
+        .ok_or(RawFunctionSelectionError::Malformed)?;
+    let name = object
+        .get("name")
+        .and_then(Value::as_str)
+        .and_then(|value| normalize_optional_string(Some(value.to_string())));
+    let suffix_start = raw_type.find('[').unwrap_or(raw_type.len());
+    let base_type = &raw_type[..suffix_start];
+    let kind = match base_type {
+        "tuple" => "tuple",
+        "function" => "unsupported",
+        "fixed" | "ufixed" => "unsupported",
+        "bytes" if raw_type.len() > suffix_start => "array",
+        "bytes" => "bytes",
+        value if value.starts_with("fixed") => "unsupported",
+        value if value.starts_with("ufixed") => "unsupported",
+        value if value.starts_with("bytes") => "fixedBytes",
+        value if value.starts_with("uint") => "uint",
+        value if value.starts_with("int") => "int",
+        other => other,
+    };
+    let components = if base_type == "tuple" {
+        let Value::Array(items) = object
+            .get("components")
+            .ok_or(RawFunctionSelectionError::Malformed)?
+        else {
+            return Err(RawFunctionSelectionError::Malformed);
+        };
+        Some(
+            items
+                .iter()
+                .map(raw_param_schema)
+                .collect::<Result<Vec<_>, _>>()?,
+        )
+    } else {
+        None
+    };
+    Ok(AbiParamSchema {
+        name,
+        type_label,
+        kind: kind.to_string(),
+        array_length: None,
+        components,
+    })
+}
+
+fn raw_state_mutability(object: &serde_json::Map<String, Value>) -> String {
+    object
+        .get("stateMutability")
+        .and_then(Value::as_str)
+        .unwrap_or("nonpayable")
+        .to_string()
+}
+
+fn state_mutability_label(function: &Function) -> String {
+    match function.state_mutability {
+        StateMutability::Pure => "pure",
+        StateMutability::View => "view",
+        StateMutability::NonPayable => "nonpayable",
+        StateMutability::Payable => "payable",
+    }
+    .to_string()
 }
 
 fn raw_param_list(value: Option<&Value>) -> Result<Vec<String>, RawFunctionSelectionError> {
@@ -681,7 +1384,9 @@ fn raw_param_type(value: &Value) -> Result<String, RawFunctionSelectionError> {
     Ok(format!("{canonical_base}{array_suffix}"))
 }
 
-fn raw_params_use_function_type(value: Option<&Value>) -> Result<bool, RawFunctionSelectionError> {
+fn raw_params_use_unsupported_type(
+    value: Option<&Value>,
+) -> Result<bool, RawFunctionSelectionError> {
     let Some(value) = value else {
         return Ok(false);
     };
@@ -689,11 +1394,11 @@ fn raw_params_use_function_type(value: Option<&Value>) -> Result<bool, RawFuncti
         return Err(RawFunctionSelectionError::Malformed);
     };
     items.iter().try_fold(false, |found, item| {
-        Ok(found || raw_param_uses_function_type(item)?)
+        Ok(found || raw_param_uses_unsupported_type(item)?)
     })
 }
 
-fn raw_param_uses_function_type(value: &Value) -> Result<bool, RawFunctionSelectionError> {
+fn raw_param_uses_unsupported_type(value: &Value) -> Result<bool, RawFunctionSelectionError> {
     let Value::Object(object) = value else {
         return Err(RawFunctionSelectionError::Malformed);
     };
@@ -703,7 +1408,7 @@ fn raw_param_uses_function_type(value: &Value) -> Result<bool, RawFunctionSelect
         .ok_or(RawFunctionSelectionError::Malformed)?;
     let suffix_start = raw_type.find('[').unwrap_or(raw_type.len());
     let base_type = &raw_type[..suffix_start];
-    if base_type == "function" {
+    if is_unsupported_raw_base_type(base_type) {
         return Ok(true);
     }
     if base_type != "tuple" {
@@ -716,10 +1421,34 @@ fn raw_param_uses_function_type(value: &Value) -> Result<bool, RawFunctionSelect
         return Err(RawFunctionSelectionError::Malformed);
     };
     items.iter().try_fold(false, |found, item| {
-        Ok(found || raw_param_uses_function_type(item)?)
+        Ok(found || raw_param_uses_unsupported_type(item)?)
     })
 }
 
+fn is_unsupported_raw_base_type(base_type: &str) -> bool {
+    base_type == "function"
+        || base_type == "fixed"
+        || base_type == "ufixed"
+        || is_fixed_point_raw_base_type(base_type)
+}
+
+fn is_fixed_point_raw_base_type(base_type: &str) -> bool {
+    let Some(rest) = base_type
+        .strip_prefix("fixed")
+        .or_else(|| base_type.strip_prefix("ufixed"))
+    else {
+        return false;
+    };
+    let Some((bits, precision)) = rest.split_once('x') else {
+        return false;
+    };
+    !bits.is_empty()
+        && !precision.is_empty()
+        && bits.chars().all(|ch| ch.is_ascii_digit())
+        && precision.chars().all(|ch| ch.is_ascii_digit())
+}
+
+#[cfg(test)]
 fn select_function_by_signature<'a>(
     abi: &'a Abi,
     signature: &str,
@@ -798,8 +1527,8 @@ fn encode_tokens(params: &[Param], values: &[Value]) -> Result<Vec<Token>, Strin
 fn token_from_json(value: &Value, kind: &ParamType, label: &str) -> Result<Token, String> {
     match kind {
         ParamType::Address => {
-            let raw = string_value(value, label)?;
-            Address::from_str(raw.trim())
+            let raw = strict_scalar_string_value(value, label)?;
+            Address::from_str(raw)
                 .map(Token::Address)
                 .map_err(|_| format!("{label} must be a valid EVM address"))
         }
@@ -843,6 +1572,12 @@ fn token_from_json(value: &Value, kind: &ParamType, label: &str) -> Result<Token
         }
         ParamType::Tuple(items) => {
             let tuple_values = array_value(value, label)?;
+            if tuple_values.len() < items.len() {
+                return Err(format!(
+                    "{label}.{} tuple field missing",
+                    tuple_values.len()
+                ));
+            }
             if tuple_values.len() != items.len() {
                 return Err(format!(
                     "{label} must contain exactly {} tuple items",
@@ -1063,7 +1798,7 @@ fn parse_int_token(value: &Value, bits: usize, label: &str) -> Result<U256, Stri
         return Err(format!("{label} has unsupported int bit width"));
     }
     let raw = match value {
-        Value::String(value) => value.trim().to_string(),
+        Value::String(value) => strict_scalar_string_text(value, label)?.to_string(),
         Value::Number(number) if number.is_i64() => {
             let value = number.as_i64().unwrap_or_default();
             if value.unsigned_abs() > MAX_SAFE_JSON_INTEGER {
@@ -1110,7 +1845,9 @@ fn parse_int_token(value: &Value, bits: usize, label: &str) -> Result<U256, Stri
 
 fn parse_u256_value(value: &Value, label: &str) -> Result<U256, String> {
     match value {
-        Value::String(value) => parse_u256_decimal_or_hex(value.trim(), label),
+        Value::String(value) => {
+            parse_u256_decimal_or_hex(strict_scalar_string_text(value, label)?, label)
+        }
         Value::Number(number) if number.is_u64() => {
             let value = number.as_u64().unwrap_or_default();
             if value > MAX_SAFE_JSON_INTEGER {
@@ -1145,7 +1882,7 @@ fn parse_u256_decimal_or_hex(value: &str, label: &str) -> Result<U256, String> {
 }
 
 fn parse_hex_value(value: &Value, label: &str) -> Result<Vec<u8>, String> {
-    let raw = string_value(value, label)?.trim();
+    let raw = strict_scalar_string_value(value, label)?;
     let Some(hex) = raw.strip_prefix("0x").or_else(|| raw.strip_prefix("0X")) else {
         return Err(format!("{label} must be a 0x-prefixed hex string"));
     };
@@ -1167,6 +1904,19 @@ fn string_value<'a>(value: &'a Value, label: &str) -> Result<&'a str, String> {
     value
         .as_str()
         .ok_or_else(|| format!("{label} must be a string"))
+}
+
+fn strict_scalar_string_value<'a>(value: &'a Value, label: &str) -> Result<&'a str, String> {
+    strict_scalar_string_text(string_value(value, label)?, label)
+}
+
+fn strict_scalar_string_text<'a>(value: &'a str, label: &str) -> Result<&'a str, String> {
+    if value.trim() != value {
+        return Err(format!(
+            "{label} must not include leading or trailing whitespace"
+        ));
+    }
+    Ok(value)
 }
 
 fn array_value<'a>(value: &'a Value, label: &str) -> Result<&'a [Value], String> {
@@ -1330,6 +2080,87 @@ impl ResultBuilder {
     }
 }
 
+#[derive(Debug, Clone)]
+struct CatalogResultBuilder {
+    result: AbiFunctionCatalogResult,
+}
+
+impl CatalogResultBuilder {
+    fn status(mut self, status: &str) -> Self {
+        self.result.status = status.to_string();
+        self
+    }
+
+    fn reason(mut self, reason: impl Into<String>) -> Self {
+        self.result.reasons.push(reason.into());
+        self.result.reasons = dedupe(self.result.reasons);
+        self
+    }
+
+    fn error(mut self, error: impl AsRef<str>) -> Self {
+        self.result.error_summary = Some(sanitize_diagnostic_message(error.as_ref()));
+        self
+    }
+
+    fn functions(mut self, functions: Vec<AbiFunctionSchema>) -> Self {
+        self.result.functions = functions;
+        self
+    }
+
+    fn unsupported_item_count(mut self, count: usize) -> Self {
+        self.result.unsupported_item_count = count;
+        self
+    }
+
+    fn finish(mut self) -> AbiFunctionCatalogResult {
+        self.result.reasons = dedupe(self.result.reasons);
+        self.result
+    }
+}
+
+#[derive(Debug, Clone)]
+struct PreviewResultBuilder {
+    result: AbiCalldataPreviewResult,
+}
+
+impl PreviewResultBuilder {
+    fn status(mut self, status: &str) -> Self {
+        self.result.status = status.to_string();
+        self
+    }
+
+    fn reason(mut self, reason: impl Into<String>) -> Self {
+        self.result.reasons.push(reason.into());
+        self.result.reasons = dedupe(self.result.reasons);
+        self
+    }
+
+    fn error(mut self, error: impl AsRef<str>) -> Self {
+        self.result.error_summary = Some(sanitize_diagnostic_message(error.as_ref()));
+        self
+    }
+
+    fn selector(mut self, selector: String) -> Self {
+        self.result.selector = Some(selector);
+        self
+    }
+
+    fn calldata(mut self, calldata: AbiCallDataSummary) -> Self {
+        self.result.calldata = Some(calldata);
+        self
+    }
+
+    fn parameter_summary(mut self, summary: Vec<AbiDecodedValueSummary>) -> Self {
+        self.result.parameter_summary = summary;
+        self
+    }
+
+    fn finish(mut self) -> AbiCalldataPreviewResult {
+        self.result.reasons = dedupe(self.result.reasons);
+        self.result
+    }
+}
+
 fn base_result(input: &NormalizedInput, rpc_identity: String) -> ResultBuilder {
     ResultBuilder {
         result: AbiReadCallResult {
@@ -1363,6 +2194,68 @@ fn base_result(input: &NormalizedInput, rpc_identity: String) -> ResultBuilder {
             error_summary: None,
         },
     }
+}
+
+fn catalog_result(input: &NormalizedManagedEntry) -> CatalogResultBuilder {
+    CatalogResultBuilder {
+        result: AbiFunctionCatalogResult {
+            status: "blocked".to_string(),
+            reasons: Vec::new(),
+            contract_address: if input.contract == Address::zero() {
+                normalize_optional_string(Some(input.contract_address.clone()))
+            } else {
+                Some(to_checksum(&input.contract, None))
+            },
+            source_kind: input.source_kind.clone(),
+            provider_config_id: input.provider_config_id.clone(),
+            user_source_id: input.user_source_id.clone(),
+            version_id: input.version_id.clone(),
+            abi_hash: input.abi_hash.clone(),
+            source_fingerprint: input.source_fingerprint.clone(),
+            functions: Vec::new(),
+            unsupported_item_count: 0,
+            error_summary: None,
+        },
+    }
+}
+
+fn preview_result(input: &NormalizedPreviewInput) -> PreviewResultBuilder {
+    PreviewResultBuilder {
+        result: AbiCalldataPreviewResult {
+            status: "blocked".to_string(),
+            reasons: Vec::new(),
+            function_signature: input.function_signature.clone(),
+            selector: None,
+            contract_address: if input.entry.contract == Address::zero() {
+                normalize_optional_string(Some(input.entry.contract_address.clone()))
+            } else {
+                Some(to_checksum(&input.entry.contract, None))
+            },
+            source_kind: input.entry.source_kind.clone(),
+            provider_config_id: input.entry.provider_config_id.clone(),
+            user_source_id: input.entry.user_source_id.clone(),
+            version_id: input.entry.version_id.clone(),
+            abi_hash: input.entry.abi_hash.clone(),
+            source_fingerprint: input.entry.source_fingerprint.clone(),
+            parameter_summary: Vec::new(),
+            calldata: None,
+            error_summary: None,
+        },
+    }
+}
+
+fn preview_from_catalog_block(
+    input: &NormalizedPreviewInput,
+    catalog: AbiFunctionCatalogResult,
+) -> AbiCalldataPreviewResult {
+    let mut builder = preview_result(input).status(&catalog.status);
+    for reason in catalog.reasons {
+        builder = builder.reason(reason);
+    }
+    if let Some(error) = catalog.error_summary {
+        builder = builder.error(error);
+    }
+    builder.finish()
 }
 
 trait WithRpcSummary {
@@ -1566,6 +2459,13 @@ mod tests {
         ])
     }
 
+    fn raw_named_param_item(name: &str, raw_type: &str) -> Value {
+        object_value(vec![
+            ("name", Value::String(name.to_string())),
+            ("type", Value::String(raw_type.to_string())),
+        ])
+    }
+
     fn raw_tuple_param(components: Vec<Value>) -> Value {
         object_value(vec![
             ("name", Value::String(String::new())),
@@ -1656,6 +2556,103 @@ mod tests {
             select_function_by_signature(&abi, "lookup").unwrap_err(),
             "functionSignatureUnknown"
         );
+    }
+
+    #[test]
+    fn function_catalog_preserves_overload_signatures_and_blocks_unsupported_items() {
+        let abi = raw_abi(vec![
+            raw_function_item(
+                "lookup",
+                vec![raw_named_param_item("id", "uint256")],
+                Vec::new(),
+            ),
+            raw_function_item(
+                "lookup",
+                vec![raw_named_param_item("owner", "address")],
+                Vec::new(),
+            ),
+            raw_function_item("callback", vec![raw_param_item("function")], Vec::new()),
+            object_value(vec![("type", Value::String("constructor".to_string()))]),
+            object_value(vec![("type", Value::String("fallback".to_string()))]),
+        ]);
+
+        let (functions, unsupported_count) = function_catalog_from_raw_abi(&abi).unwrap();
+
+        assert_eq!(unsupported_count, 3);
+        assert!(functions
+            .iter()
+            .any(|function| function.signature == "lookup(uint256)"));
+        assert!(functions
+            .iter()
+            .any(|function| function.signature == "lookup(address)"));
+        let callback = functions
+            .iter()
+            .find(|function| function.signature == "callback(function)")
+            .unwrap();
+        assert!(!callback.supported);
+        assert_eq!(
+            callback.unsupported_reason.as_deref(),
+            Some("unsupportedFunctionType")
+        );
+    }
+
+    #[test]
+    fn fixed_point_function_params_are_explicitly_unsupported_not_malformed() {
+        let abi = raw_abi(vec![
+            raw_function_item("legacyFixed", vec![raw_param_item("fixed")], Vec::new()),
+            raw_function_item(
+                "preciseFixed",
+                vec![raw_param_item("fixed128x18")],
+                Vec::new(),
+            ),
+            raw_function_item(
+                "preciseUfixed",
+                vec![raw_param_item("ufixed64x10")],
+                Vec::new(),
+            ),
+            raw_function_item("fixedArray", vec![raw_param_item("ufixed[2]")], Vec::new()),
+            raw_function_item(
+                "nestedFixed",
+                vec![raw_tuple_param(vec![raw_param_item("fixed32x4")])],
+                Vec::new(),
+            ),
+            raw_function_item(
+                "returnsFixed",
+                Vec::new(),
+                vec![raw_param_item("ufixed128x18")],
+            ),
+        ]);
+
+        for signature in [
+            "legacyFixed(fixed128x18)",
+            "preciseFixed(fixed128x18)",
+            "preciseUfixed(ufixed64x10)",
+            "fixedArray(ufixed128x18[2])",
+            "nestedFixed((fixed32x4))",
+            "returnsFixed()",
+        ] {
+            assert!(
+                matches!(
+                    select_raw_function_by_signature(&abi, signature).unwrap(),
+                    RawFunctionSelection::UnsupportedFunctionType
+                ),
+                "{signature} should be explicitly unsupported"
+            );
+        }
+
+        let (functions, unsupported_count) = function_catalog_from_raw_abi(&abi).unwrap();
+
+        assert_eq!(unsupported_count, 6);
+        assert!(functions.iter().all(|function| {
+            !function.supported
+                && function.unsupported_reason.as_deref() == Some("unsupportedFunctionType")
+        }));
+        assert!(functions
+            .iter()
+            .any(|function| function.signature == "legacyFixed(fixed128x18)"));
+        assert!(functions
+            .iter()
+            .any(|function| function.signature == "nestedFixed((fixed32x4))"));
     }
 
     #[test]
@@ -1842,6 +2839,113 @@ mod tests {
         let fields = first.fields.unwrap();
         assert_eq!(fields[0].value.kind, "address");
         assert_eq!(fields[1].value.kind, "tuple");
+    }
+
+    #[test]
+    fn param_validation_errors_are_explicit_and_field_scoped() {
+        let params = vec![
+            param("owner", ParamType::Address),
+            param("amount", ParamType::Uint(8)),
+            param("tag", ParamType::FixedBytes(4)),
+            param(
+                "ids",
+                ParamType::FixedArray(Box::new(ParamType::Uint(256)), 2),
+            ),
+            param(
+                "config",
+                ParamType::Tuple(vec![ParamType::Address, ParamType::Bool]),
+            ),
+        ];
+
+        let malformed_address =
+            encode_tokens(&[params[0].clone()], &[json!("0xnot-an-address")]).unwrap_err();
+        assert_eq!(malformed_address, "owner must be a valid EVM address");
+
+        let out_of_bounds = encode_tokens(&[params[1].clone()], &[json!("256")]).unwrap_err();
+        assert_eq!(out_of_bounds, "amount exceeds uint8 range");
+
+        let bytes_mismatch = encode_tokens(&[params[2].clone()], &[json!("0x010203")]).unwrap_err();
+        assert_eq!(bytes_mismatch, "tag must be exactly 4 bytes");
+
+        let array_mismatch = encode_tokens(&[params[3].clone()], &[json!(["1"])]).unwrap_err();
+        assert_eq!(array_mismatch, "ids must contain exactly 2 items");
+
+        let tuple_missing = encode_tokens(
+            &[params[4].clone()],
+            &[json!(["0x1111111111111111111111111111111111111111"])],
+        )
+        .unwrap_err();
+        assert_eq!(tuple_missing, "config.1 tuple field missing");
+    }
+
+    #[test]
+    fn strict_scalar_params_reject_padding_but_string_preserves_whitespace() {
+        let address_error = encode_tokens(
+            &[param("owner", ParamType::Address)],
+            &[json!(" 0x1111111111111111111111111111111111111111 ")],
+        )
+        .unwrap_err();
+        assert_eq!(
+            address_error,
+            "owner must not include leading or trailing whitespace"
+        );
+
+        let uint_error =
+            encode_tokens(&[param("amount", ParamType::Uint(256))], &[json!(" 1 ")]).unwrap_err();
+        assert_eq!(
+            uint_error,
+            "amount must not include leading or trailing whitespace"
+        );
+
+        let bytes_error =
+            encode_tokens(&[param("data", ParamType::Bytes)], &[json!(" 0x0102 ")]).unwrap_err();
+        assert_eq!(
+            bytes_error,
+            "data must not include leading or trailing whitespace"
+        );
+
+        let tokens =
+            encode_tokens(&[param("memo", ParamType::String)], &[json!("  keep me  ")]).unwrap();
+        assert_eq!(tokens, vec![Token::String("  keep me  ".to_string())]);
+    }
+
+    #[test]
+    fn summaries_bound_large_payloads_without_raw_bytes() {
+        let long_string = "x".repeat(MAX_SUMMARY_STRING_CHARS + 20);
+        let string_summary = summarize_token(
+            &Token::String(long_string.clone()),
+            &ParamType::String,
+            Some("memo"),
+        );
+        assert!(string_summary.truncated);
+        assert_eq!(
+            string_summary.value.as_ref().unwrap().chars().count(),
+            MAX_SUMMARY_STRING_CHARS
+        );
+
+        let bytes = vec![0xab; 512];
+        let bytes_summary = summarize_token(&Token::Bytes(bytes), &ParamType::Bytes, Some("blob"));
+        assert_eq!(bytes_summary.byte_length, Some(512));
+        assert!(bytes_summary.hash.as_ref().unwrap().starts_with("0x"));
+        assert!(bytes_summary.value.is_none());
+
+        let items = (0..(MAX_SUMMARY_ITEMS + 4))
+            .map(|index| Token::Uint(U256::from(index)))
+            .collect::<Vec<_>>();
+        let array_summary = summarize_token(
+            &Token::Array(items),
+            &ParamType::Array(Box::new(ParamType::Uint(256))),
+            Some("values"),
+        );
+        assert!(array_summary.truncated);
+        assert_eq!(
+            array_summary.items.as_ref().unwrap().len(),
+            MAX_SUMMARY_ITEMS
+        );
+        assert!(!serde_json::to_string(&bytes_summary)
+            .unwrap()
+            .contains("abababababababab"));
+        assert_ne!(string_summary.value.as_deref(), Some(long_string.as_str()));
     }
 
     #[test]
