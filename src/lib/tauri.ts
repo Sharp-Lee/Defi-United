@@ -268,6 +268,84 @@ export interface AbiRegistryMutationResult {
   cacheEntry?: AbiCacheEntryRecord | null;
 }
 
+export type AbiReadCallStatus =
+  | "success"
+  | "blocked"
+  | "loading"
+  | "recoverableBlocked"
+  | "validationError"
+  | "chainMismatch"
+  | "artifactDrift"
+  | "functionNotFound"
+  | "functionNotCallable"
+  | "emptyReturn"
+  | "malformedReturn"
+  | "reverted"
+  | "rpcFailure"
+  | "timeout"
+  | "abiDecodeError";
+
+export interface AbiReadCallInput {
+  chainId: number;
+  rpcUrl: string;
+  contractAddress: string;
+  sourceKind: AbiSourceKind;
+  providerConfigId?: string | null;
+  userSourceId?: string | null;
+  versionId: string;
+  abiHash: string;
+  sourceFingerprint: string;
+  functionSignature: string;
+  canonicalParams?: unknown[];
+  from?: string | null;
+}
+
+export interface AbiCallDataSummary {
+  byteLength: number;
+  hash: string;
+}
+
+export interface AbiReadRpcSummary {
+  endpoint: string;
+  expectedChainId?: number | null;
+  actualChainId?: number | null;
+}
+
+export interface AbiDecodedFieldSummary {
+  name?: string | null;
+  value: AbiDecodedValueSummary;
+}
+
+export interface AbiDecodedValueSummary {
+  kind: string;
+  type: string;
+  value?: string | null;
+  byteLength?: number | null;
+  hash?: string | null;
+  items?: AbiDecodedValueSummary[] | null;
+  fields?: AbiDecodedFieldSummary[] | null;
+  truncated: boolean;
+}
+
+export interface AbiReadCallResult {
+  status: AbiReadCallStatus;
+  reasons: string[];
+  functionSignature: string;
+  selector?: string | null;
+  contractAddress?: string | null;
+  from?: string | null;
+  sourceKind: AbiSourceKind;
+  providerConfigId?: string | null;
+  userSourceId?: string | null;
+  versionId: string;
+  abiHash: string;
+  sourceFingerprint: string;
+  calldata?: AbiCallDataSummary | null;
+  outputs: AbiDecodedValueSummary[];
+  rpc: AbiReadRpcSummary;
+  errorSummary?: string | null;
+}
+
 export type UserMetadataSource = "userConfirmed";
 export type RawMetadataSource = "onChainCall";
 export type RawMetadataStatus =
@@ -723,6 +801,10 @@ export function pasteAbiPayload(input: UserAbiPayloadInput) {
 
 export function fetchExplorerAbi(input: FetchExplorerAbiInput) {
   return invoke<AbiRegistryMutationResult>("fetch_explorer_abi", { input });
+}
+
+export function callReadOnlyAbiFunction(input: AbiReadCallInput) {
+  return invoke<AbiReadCallResult>("call_read_only_abi_function", { input });
 }
 
 export function loadTokenWatchlistState() {
