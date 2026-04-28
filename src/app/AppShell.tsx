@@ -1,6 +1,7 @@
 import { AccountsView } from "../features/accounts/AccountsView";
 import { DiagnosticsView } from "../features/diagnostics/DiagnosticsView";
 import { HistoryView } from "../features/history/HistoryView";
+import { AccountOrchestrationView } from "../features/orchestration/AccountOrchestrationView";
 import { SettingsView } from "../features/settings/SettingsView";
 import { TokensView } from "../features/tokens/TokensView";
 import { TransferView } from "../features/transfer/TransferView";
@@ -24,6 +25,7 @@ import type { AccountChainState } from "../lib/rpc";
 export type WorkspaceTab =
   | "accounts"
   | "tokens"
+  | "orchestration"
   | "transfer"
   | "history"
   | "diagnostics"
@@ -96,6 +98,7 @@ export interface AppShellProps {
 const workspaceTabs: WorkspaceTab[] = [
   "accounts",
   "tokens",
+  "orchestration",
   "transfer",
   "history",
   "diagnostics",
@@ -241,6 +244,14 @@ export function AppShell({
                 rpcReady={chainReady}
                 selectedChainId={selectedChainId}
                 state={tokenWatchlistState}
+              />
+            )}
+            {activeTab === "orchestration" && (
+              <AccountOrchestrationView
+                accounts={accounts}
+                chainName={selectedChain?.name ?? "Unknown chain"}
+                selectedChainId={selectedChainId}
+                tokenWatchlistState={tokenWatchlistState}
               />
             )}
             {activeTab === "history" && (

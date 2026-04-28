@@ -308,6 +308,27 @@ v1 + P3/P4 已将基础历史列表升级为可筛选、可分组、可审计的
 - P4-11/P4-13 batch 分发/归集可以消费 watchlist token 和 account balance snapshots；每笔实际 transfer 仍必须走 P4-8 的 ERC-20 submit/history 模型。
 - P5 资产/授权扫描可以在 P4-9 基础上扩展 token/NFT/allowance/indexer，但 P4-9 不引入外部 indexer 作为必需项，也不实现 revoke。
 
+### 9.4 多账户选择与账户编排基础（P4-10 设计）
+
+本小节定义 P4-10 的账户集合选择、预检查和冻结摘要基础。P4-10 的目标是为后续批量分发/归集准备可复用的本地账户选择器、外部地址输入、账户集合预览、余额/nonce 可用性检查和操作前冻结摘要。它只表达用户显式选择和当前只读快照状态，不创建可提交交易计划。
+
+**数据结构**
+
+- `LocalAccountReference`：`kind = localAccount`，包含 `accountIndex`、`address`、`label` 和按所选 `chainId` 计算的 `chainSnapshotStatus`。`chainSnapshotStatus` 至少包含 native balance 是否 present/missing、nonce 是否 present/missing、最近同步错误摘要。它不得包含助记词、私钥、seed、raw signed transaction 或任何签名材料。
+- `ExternalAddressReference`：`kind = externalAddress`，包含校验并规范化后的 EVM `address`，以及可选 `label`、`notes`。外部地址必须始终以 `externalAddress` 类型存在，不得因为地址碰巧匹配某个本地账户而被静默转换为本地账户，也不得和本地账户目标混在同一未标记数组里。
+- `AccountOrchestrationPreview`：按本地账户生成，只读展示 native balance present/missing、nonce present/missing、最近同步错误，以及 ERC-20 balance snapshot 计数。ERC-20 snapshot 计数至少区分 `ok`、`zero`、`stale`、`failure`、`missing`；缺失快照不得显示为 0 余额。
+- `OrchestrationDraft`：包含 `selectedChainId`、用户显式选择的 source `LocalAccountReference[]`、用户显式选择的 local target `LocalAccountReference[]`、external target `ExternalAddressReference[]`、source account preview、`createdAt`。不得自动推断或默认选择所有本地账户。
+- `FrozenOrchestrationSummary`：在 draft 基础上增加 `frozenAt` 和 deterministic `frozenKey`。`frozenKey` 覆盖 `chainId`、source/local/external target 地址、本地账户索引与标签、native/nonce availability、ERC-20 snapshot status counts 和同步错误摘要；不覆盖易变 UI 状态或时间戳。summary 和 key 都不得包含签名材料、raw signed tx、RPC secret、助记词、私钥或 seed。
+
+**行为边界**
+
+- P4-10 不发交易、不签名、不广播、不写 transaction history、不生成 batch plan，也不估算每笔交易费用。
+- Source accounts 必须由用户显式多选；没有选择时 preview 显示空集合，不能自动把全部本地账户当作 source。
+- Local targets 与 external targets 使用不同类型和不同 UI 控件。后续 batch 能力消费时必须继续保留目标来源类型，不能只拿裸地址数组。
+- External address 输入必须使用 EVM address 校验和规范化；无效地址保持错误可见，重复 external 地址必须拒绝或去重。P4-10 不把 external address book 保存到磁盘。
+- 冻结摘要是操作前只读快照。用户改变 `chainId`、source selection、local target selection 或 external target list 后，旧 summary 必须清空或明确失效，避免被误认为仍可使用。
+- ERC-20 可用性只消费 P4-9 watchlist/balance snapshot read model。metadata、symbol、name 不能参与账户或 token 身份判断；缺失/失败/stale 状态必须可见，不能静默隐藏。
+
 ## 10. P3/P4 已完成范围与后续 P4+ 方向
 
 ### 10.1 P3 History UX hardening 已完成
