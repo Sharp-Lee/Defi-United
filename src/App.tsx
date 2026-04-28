@@ -7,14 +7,20 @@ import type { AccountChainState } from "./lib/rpc";
 import {
   createAndScanAccount,
   createVault,
+  deleteAbiCacheEntry,
   dismissHistoryRecoveryIntent,
+  fetchExplorerAbi,
   inspectTransactionHistoryStorage,
+  importAbiPayload,
   loadAppConfig,
+  loadAbiRegistryState,
   loadAccounts,
   loadHistoryRecoveryIntents,
   loadTokenWatchlistState,
   loadTransactionHistory,
   lockVault,
+  markAbiCacheStale,
+  pasteAbiPayload,
   cancelPendingTransfer,
   quarantineTransactionHistory,
   rememberValidatedRpc,
@@ -30,11 +36,19 @@ import {
   scanErc20Balance,
   scanWatchlistBalances,
   scanWatchlistTokenMetadata,
+  removeAbiDataSourceConfig,
+  upsertAbiDataSourceConfig,
   unlockVault,
+  validateAbiPayload,
 } from "./lib/tauri";
 import type {
   AccountRecord,
   AddWatchlistTokenInput,
+  AbiCacheEntryIdentityInput,
+  AbiCacheEntryRecord,
+  AbiRegistryMutationResult,
+  AbiRegistryState,
+  FetchExplorerAbiInput,
   AppConfig,
   EditWatchlistTokenInput,
   HistoryRecord,
@@ -44,6 +58,8 @@ import type {
   PendingMutationRequest,
   StoredAccountRecord,
   TokenWatchlistState,
+  UpsertAbiDataSourceConfigInput,
+  UserAbiPayloadInput,
 } from "./lib/tauri";
 
 type AccountViewModel = AccountRecord & AccountChainState;
@@ -89,6 +105,40 @@ export function nextTokenOperationGeneration(currentGeneration: number) {
   return currentGeneration + 1;
 }
 
+export function isAbiOperationCurrent(
+  operationGeneration: number,
+  currentGeneration: number,
+  sessionStatus: "locked" | "ready",
+) {
+  return sessionStatus === "ready" && operationGeneration === currentGeneration;
+}
+
+export function nextAbiOperationGeneration(currentGeneration: number) {
+  return currentGeneration + 1;
+}
+
+export function isUsableAbiRegistryMutationResult(result: AbiRegistryMutationResult) {
+  return (
+    result.cacheEntry !== null &&
+    result.cacheEntry !== undefined &&
+    result.validation.fetchSourceStatus === "ok" &&
+    (result.validation.validationStatus === "ok" ||
+      result.validation.validationStatus === "selectorConflict")
+  );
+}
+
+export function abiRegistryMutationFailureMessage(result: AbiRegistryMutationResult) {
+  const diagnostics = result.validation.diagnostics;
+  const details = [
+    `fetch ${result.validation.fetchSourceStatus}`,
+    `validation ${result.validation.validationStatus}`,
+    diagnostics.failureClass ? `failure ${diagnostics.failureClass}` : null,
+    diagnostics.providerConfigId ? `provider ${diagnostics.providerConfigId}` : null,
+    diagnostics.rateLimitHint ? `rate limit ${diagnostics.rateLimitHint}` : null,
+  ].filter(Boolean);
+  return `ABI cache was not saved (${details.join(", ")}).`;
+}
+
 export async function ensureRpcChainMatchesSelectedChain(
   rpcUrl: string,
   expectedChainId: bigint,
@@ -129,6 +179,17 @@ function localSyncErrorMessage(err: unknown) {
   return errorMessage(err).replace(/https?:\/\/\S+/g, "[redacted RPC URL]");
 }
 
+function abiCacheIdentityInput(entry: AbiCacheEntryRecord): AbiCacheEntryIdentityInput {
+  return {
+    chainId: entry.chainId,
+    contractAddress: entry.contractAddress,
+    sourceKind: entry.sourceKind,
+    providerConfigId: entry.providerConfigId ?? null,
+    userSourceId: entry.userSourceId ?? null,
+    versionId: entry.versionId,
+  };
+}
+
 export function App() {
   const [sessionStatus, setSessionStatus] = useState<"locked" | "ready">("locked");
   const [activeTab, setActiveTab] = useState<WorkspaceTab>("accounts");
@@ -148,12 +209,15 @@ export function App() {
   const [tokenWatchlistState, setTokenWatchlistState] =
     useState<TokenWatchlistState | null>(null);
   const [tokenWatchlistError, setTokenWatchlistError] = useState<string | null>(null);
+  const [abiRegistryState, setAbiRegistryState] = useState<AbiRegistryState | null>(null);
+  const [abiRegistryError, setAbiRegistryError] = useState<string | null>(null);
   const [lastHistoryQuarantine, setLastHistoryQuarantine] =
     useState<HistoryStorageQuarantineResult | null>(null);
   const [historyRecoveryIntents, setHistoryRecoveryIntents] = useState<HistoryRecoveryIntent[]>([]);
   const selectedChainIdRef = useRef<bigint>(1n);
   const sessionStatusRef = useRef<"locked" | "ready">("locked");
   const tokenOperationGenerationRef = useRef(0);
+  const abiOperationGenerationRef = useRef(0);
   const diskAccountsRefreshRequestRef = useRef(0);
   const allowedDiskAccountsRefreshRequestRef = useRef(0);
   const remoteAccountsRefreshRequestRef = useRef(0);
@@ -289,11 +353,15 @@ export function App() {
     const remoteRequestId = remoteAccountsRefreshRequestRef.current;
     const remoteWasInFlight = remoteAccountsRefreshInFlightRef.current > 0;
     const tokenGeneration = tokenOperationGenerationRef.current;
-    const [stored, tokenResult, historyResult] = await Promise.all([
+    const abiGeneration = abiOperationGenerationRef.current;
+    const [stored, tokenResult, abiResult, historyResult] = await Promise.all([
       loadAccounts(),
       loadTokenWatchlistState()
         .then((state) => ({ state, error: null as string | null }))
         .catch((err) => ({ state: null as TokenWatchlistState | null, error: errorMessage(err) })),
+      loadAbiRegistryState()
+        .then((state) => ({ state, error: null as string | null }))
+        .catch((err) => ({ state: null as AbiRegistryState | null, error: errorMessage(err) })),
       loadTransactionHistory()
         .then((records) => ({ records, error: null as string | null }))
         .catch((err) => ({ records: [] as HistoryRecord[], error: errorMessage(err) })),
@@ -314,6 +382,14 @@ export function App() {
     )) {
       setTokenWatchlistState(tokenResult.state);
       setTokenWatchlistError(tokenResult.error);
+    }
+    if (isAbiOperationCurrent(
+      abiGeneration,
+      abiOperationGenerationRef.current,
+      sessionStatusRef.current,
+    )) {
+      setAbiRegistryState(abiResult.state);
+      setAbiRegistryError(abiResult.error);
     }
     setHistory([...historyResult.records].reverse());
     setHistoryError(historyResult.error);
@@ -346,6 +422,7 @@ export function App() {
     setAppError(null);
     await unlockVault(password);
     tokenOperationGenerationRef.current += 1;
+    abiOperationGenerationRef.current += 1;
     sessionStatusRef.current = "ready";
     setSessionStatus("ready");
     await restoreWorkspaceAfterUnlock();
@@ -356,6 +433,7 @@ export function App() {
     await createVault(password);
     await unlockVault(password);
     tokenOperationGenerationRef.current += 1;
+    abiOperationGenerationRef.current += 1;
     sessionStatusRef.current = "ready";
     setSessionStatus("ready");
     await restoreWorkspaceAfterUnlock();
@@ -365,6 +443,7 @@ export function App() {
     setBusy(true);
     const previousSessionStatus = sessionStatusRef.current;
     tokenOperationGenerationRef.current += 1;
+    abiOperationGenerationRef.current += 1;
     sessionStatusRef.current = "locked";
     try {
       await lockVault();
@@ -373,6 +452,8 @@ export function App() {
       setHistory([]);
       setTokenWatchlistState(null);
       setTokenWatchlistError(null);
+      setAbiRegistryState(null);
+      setAbiRegistryError(null);
       setHistoryRecoveryIntents([]);
       setActiveTab("accounts");
     } catch (err) {
@@ -778,6 +859,209 @@ export function App() {
     }
   }
 
+  function isCurrentAbiOperation(operationGeneration: number) {
+    return isAbiOperationCurrent(
+      operationGeneration,
+      abiOperationGenerationRef.current,
+      sessionStatusRef.current,
+    );
+  }
+
+  function beginAbiOperation() {
+    const operationGeneration = nextAbiOperationGeneration(abiOperationGenerationRef.current);
+    abiOperationGenerationRef.current = operationGeneration;
+    setAbiRegistryError(null);
+    setBusy(true);
+    return operationGeneration;
+  }
+
+  async function handleRefreshAbiRegistry() {
+    const operationGeneration = beginAbiOperation();
+    try {
+      const state = await loadAbiRegistryState();
+      if (!isCurrentAbiOperation(operationGeneration)) return false;
+      setAbiRegistryState(state);
+      return true;
+    } catch (err) {
+      if (isCurrentAbiOperation(operationGeneration)) {
+        setAbiRegistryError(errorMessage(err));
+      }
+      return false;
+    } finally {
+      if (isCurrentAbiOperation(operationGeneration)) {
+        setBusy(false);
+      }
+    }
+  }
+
+  async function handleSaveAbiDataSource(input: UpsertAbiDataSourceConfigInput) {
+    const operationGeneration = beginAbiOperation();
+    const previousState = abiRegistryState;
+    const previousSource = previousState?.dataSources.find((source) => source.id === input.id) ?? null;
+    const sourceChanged =
+      previousSource !== null &&
+      (previousSource.chainId !== input.chainId ||
+        previousSource.providerKind !== input.providerKind ||
+        (previousSource.baseUrl ?? null) !== (input.baseUrl ?? null) ||
+        (previousSource.apiKeyRef ?? null) !== (input.apiKeyRef ?? null) ||
+        previousSource.enabled !== (input.enabled ?? previousSource.enabled));
+    const staleEntries =
+      sourceChanged
+        ? (previousState?.cacheEntries ?? []).filter((entry) => entry.providerConfigId === input.id)
+        : [];
+    try {
+      let state = await upsertAbiDataSourceConfig(input);
+      if (!isCurrentAbiOperation(operationGeneration)) return false;
+      setAbiRegistryState(state);
+      for (const entry of staleEntries) {
+        state = await markAbiCacheStale(abiCacheIdentityInput(entry));
+        if (!isCurrentAbiOperation(operationGeneration)) return false;
+        setAbiRegistryState(state);
+      }
+      return true;
+    } catch (err) {
+      if (isCurrentAbiOperation(operationGeneration)) {
+        setAbiRegistryError(errorMessage(err));
+      }
+      return false;
+    } finally {
+      if (isCurrentAbiOperation(operationGeneration)) {
+        setBusy(false);
+      }
+    }
+  }
+
+  async function handleRemoveAbiDataSource(id: string) {
+    const operationGeneration = beginAbiOperation();
+    const staleEntries = (abiRegistryState?.cacheEntries ?? []).filter(
+      (entry) => entry.providerConfigId === id,
+    );
+    try {
+      let state = await removeAbiDataSourceConfig({ id });
+      if (!isCurrentAbiOperation(operationGeneration)) return false;
+      setAbiRegistryState(state);
+      for (const entry of staleEntries) {
+        state = await markAbiCacheStale(abiCacheIdentityInput(entry));
+        if (!isCurrentAbiOperation(operationGeneration)) return false;
+        setAbiRegistryState(state);
+      }
+      return true;
+    } catch (err) {
+      if (isCurrentAbiOperation(operationGeneration)) {
+        setAbiRegistryError(errorMessage(err));
+      }
+      return false;
+    } finally {
+      if (isCurrentAbiOperation(operationGeneration)) {
+        setBusy(false);
+      }
+    }
+  }
+
+  async function handleImportAbiPayload(input: UserAbiPayloadInput) {
+    const operationGeneration = beginAbiOperation();
+    try {
+      const result = await importAbiPayload(input);
+      if (!isCurrentAbiOperation(operationGeneration)) return false;
+      setAbiRegistryState(result.state);
+      if (!isUsableAbiRegistryMutationResult(result)) {
+        setAbiRegistryError(abiRegistryMutationFailureMessage(result));
+      }
+      return result;
+    } catch (err) {
+      if (isCurrentAbiOperation(operationGeneration)) {
+        setAbiRegistryError(errorMessage(err));
+      }
+      return false;
+    } finally {
+      if (isCurrentAbiOperation(operationGeneration)) {
+        setBusy(false);
+      }
+    }
+  }
+
+  async function handlePasteAbiPayload(input: UserAbiPayloadInput) {
+    const operationGeneration = beginAbiOperation();
+    try {
+      const result = await pasteAbiPayload(input);
+      if (!isCurrentAbiOperation(operationGeneration)) return false;
+      setAbiRegistryState(result.state);
+      if (!isUsableAbiRegistryMutationResult(result)) {
+        setAbiRegistryError(abiRegistryMutationFailureMessage(result));
+      }
+      return result;
+    } catch (err) {
+      if (isCurrentAbiOperation(operationGeneration)) {
+        setAbiRegistryError(errorMessage(err));
+      }
+      return false;
+    } finally {
+      if (isCurrentAbiOperation(operationGeneration)) {
+        setBusy(false);
+      }
+    }
+  }
+
+  async function handleFetchExplorerAbi(input: FetchExplorerAbiInput) {
+    const operationGeneration = beginAbiOperation();
+    try {
+      const result = await fetchExplorerAbi(input);
+      if (!isCurrentAbiOperation(operationGeneration)) return false;
+      setAbiRegistryState(result.state);
+      if (!isUsableAbiRegistryMutationResult(result)) {
+        setAbiRegistryError(abiRegistryMutationFailureMessage(result));
+      }
+      return result;
+    } catch (err) {
+      if (isCurrentAbiOperation(operationGeneration)) {
+        setAbiRegistryError(errorMessage(err));
+      }
+      return false;
+    } finally {
+      if (isCurrentAbiOperation(operationGeneration)) {
+        setBusy(false);
+      }
+    }
+  }
+
+  async function handleMarkAbiStale(entry: AbiCacheEntryRecord) {
+    const operationGeneration = beginAbiOperation();
+    try {
+      const state = await markAbiCacheStale(abiCacheIdentityInput(entry));
+      if (!isCurrentAbiOperation(operationGeneration)) return false;
+      setAbiRegistryState(state);
+      return true;
+    } catch (err) {
+      if (isCurrentAbiOperation(operationGeneration)) {
+        setAbiRegistryError(errorMessage(err));
+      }
+      return false;
+    } finally {
+      if (isCurrentAbiOperation(operationGeneration)) {
+        setBusy(false);
+      }
+    }
+  }
+
+  async function handleDeleteAbiEntry(entry: AbiCacheEntryRecord) {
+    const operationGeneration = beginAbiOperation();
+    try {
+      const state = await deleteAbiCacheEntry(abiCacheIdentityInput(entry));
+      if (!isCurrentAbiOperation(operationGeneration)) return false;
+      setAbiRegistryState(state);
+      return true;
+    } catch (err) {
+      if (isCurrentAbiOperation(operationGeneration)) {
+        setAbiRegistryError(errorMessage(err));
+      }
+      return false;
+    } finally {
+      if (isCurrentAbiOperation(operationGeneration)) {
+        setBusy(false);
+      }
+    }
+  }
+
   function handleTransferSubmitted(record: HistoryRecord) {
     setHistory((current) => [record, ...current]);
     void inspectTransactionHistoryStorage()
@@ -1007,6 +1291,8 @@ export function App() {
     <AppShell
       activeTab={activeTab}
       accounts={accounts}
+      abiRegistryError={abiRegistryError}
+      abiRegistryState={abiRegistryState}
       appError={appError}
       busy={busy}
       chains={availableChains}
@@ -1023,15 +1309,23 @@ export function App() {
       lastHistoryQuarantine={lastHistoryQuarantine}
       onAddAccount={handleAddAccount}
       onAddWatchlistToken={handleAddWatchlistToken}
+      onDeleteAbiEntry={handleDeleteAbiEntry}
       onEditWatchlistToken={handleEditWatchlistToken}
+      onFetchExplorerAbi={handleFetchExplorerAbi}
+      onImportAbiPayload={handleImportAbiPayload}
+      onMarkAbiStale={handleMarkAbiStale}
+      onPasteAbiPayload={handlePasteAbiPayload}
       onRemoveWatchlistToken={handleRemoveWatchlistToken}
+      onRemoveAbiDataSource={handleRemoveAbiDataSource}
       onScanErc20Balance={handleScanErc20Balance}
       onScanWatchlistBalances={handleScanWatchlistBalances}
       onScanWatchlistTokenMetadata={handleScanWatchlistTokenMetadata}
+      onSaveAbiDataSource={handleSaveAbiDataSource}
       onChainChange={handleChainChange}
       onCreateVault={handleCreateVault}
       onLock={handleLock}
       onRefreshAccounts={handleRefreshAccounts}
+      onRefreshAbiRegistry={handleRefreshAbiRegistry}
       onRefreshHistory={refreshHistory}
       onQuarantineHistory={handleQuarantineHistory}
       onRecoverBroadcastedHistory={handleRecoverBroadcastedHistory}
@@ -1050,6 +1344,7 @@ export function App() {
       onTransferSubmitFailed={handleTransferSubmitFailed}
       onTransferSubmitted={handleTransferSubmitted}
       onUnlock={handleUnlock}
+      onValidateAbiPayload={(payload) => validateAbiPayload({ payload })}
       onValidateRpc={handleValidateRpc}
       rpcUrl={rpcUrl}
       selectedChainId={selectedChainId}

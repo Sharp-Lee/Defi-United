@@ -274,6 +274,95 @@ td {
   font-size: 13px;
 }
 
+.abi-section {
+  max-width: 1280px;
+}
+
+.abi-target-grid {
+  display: grid;
+  grid-template-columns: 90px minmax(280px, 1.4fr) minmax(180px, 0.8fr) auto;
+  gap: 10px;
+  align-items: end;
+}
+
+.abi-panel {
+  display: grid;
+  gap: 12px;
+  border-top: 1px solid var(--border);
+  padding-top: 14px;
+}
+
+.abi-panel:first-of-type {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.abi-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.abi-panel-header h3 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.abi-summary-strip,
+.abi-validation-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.abi-summary-strip span,
+.abi-validation-summary span {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+  color: var(--muted);
+  background: var(--panel-soft);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.abi-source-form {
+  display: grid;
+  grid-template-columns:
+    minmax(150px, 0.8fr) 90px minmax(170px, 0.8fr) minmax(220px, 1.2fr)
+    minmax(160px, 0.8fr) auto auto;
+  gap: 10px;
+  align-items: end;
+}
+
+.abi-payload-grid {
+  display: grid;
+  grid-template-columns: minmax(180px, 0.45fr) minmax(320px, 1fr) auto;
+  gap: 10px;
+  align-items: end;
+}
+
+.abi-payload-field {
+  min-width: 0;
+}
+
+.abi-payload-actions,
+.abi-action-stack {
+  flex-wrap: wrap;
+}
+
+.abi-action-stack {
+  align-items: flex-start;
+}
+
+.abi-resolution-guidance {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
 .diagnostics-level {
   display: inline-flex;
   min-height: 26px;
@@ -1010,7 +1099,10 @@ td {
   }
 
   .history-controls,
-  .diagnostics-controls {
+  .diagnostics-controls,
+  .abi-target-grid,
+  .abi-source-form,
+  .abi-payload-grid {
     grid-template-columns: 1fr;
   }
 

@@ -31,6 +31,7 @@ describe("AppShell", () => {
     );
 
     expect(screen.getByRole("tab", { name: "Accounts" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "ABI Library" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Tokens" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Orchestration" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Transfer" })).toBeInTheDocument();
@@ -38,6 +39,25 @@ describe("AppShell", () => {
     expect(screen.getByRole("tab", { name: "Diagnostics" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Settings" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Unlock Vault" })).not.toBeInTheDocument();
+  });
+
+  it("renders ABI Library when the workspace tab is active", () => {
+    renderScreen(
+      <AppShell
+        activeTab="abi"
+        abiRegistryState={{ schemaVersion: 1, dataSources: [], cacheEntries: [] }}
+        onTabChange={() => {}}
+        onUnlock={async () => {}}
+        session={{ status: "ready" }}
+      />,
+    );
+
+    expect(screen.getByRole("tab", { name: "ABI Library" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    expect(screen.getByRole("heading", { name: "ABI Library" })).toBeInTheDocument();
+    expect(screen.getByText("No ABI data sources configured.")).toBeInTheDocument();
   });
 
   it("locks settings inputs while the workspace is busy", () => {

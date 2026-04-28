@@ -1,4 +1,6 @@
 import { AccountsView } from "../features/accounts/AccountsView";
+import { AbiLibraryView } from "../features/abi/AbiLibraryView";
+import type { AbiMutationHandlerResult } from "../features/abi/AbiLibraryView";
 import { DiagnosticsView } from "../features/diagnostics/DiagnosticsView";
 import { HistoryView } from "../features/history/HistoryView";
 import { AccountOrchestrationView } from "../features/orchestration/AccountOrchestrationView";
@@ -18,13 +20,20 @@ import type {
   HistoryStorageQuarantineResult,
   PendingMutationRequest,
   AddWatchlistTokenInput,
+  AbiCacheEntryRecord,
+  AbiPayloadValidationReadModel,
+  AbiRegistryState,
+  FetchExplorerAbiInput,
   EditWatchlistTokenInput,
   TokenWatchlistState,
+  UpsertAbiDataSourceConfigInput,
+  UserAbiPayloadInput,
 } from "../lib/tauri";
 import type { AccountChainState } from "../lib/rpc";
 
 export type WorkspaceTab =
   | "accounts"
+  | "abi"
   | "tokens"
   | "orchestration"
   | "transfer"
@@ -56,6 +65,8 @@ export interface AppShellProps {
   lastHistoryQuarantine?: HistoryStorageQuarantineResult | null;
   tokenWatchlistState?: TokenWatchlistState | null;
   tokenWatchlistError?: string | null;
+  abiRegistryState?: AbiRegistryState | null;
+  abiRegistryError?: string | null;
   onAddAccount?: () => Promise<void> | void;
   onAddWatchlistToken?: (
     input: AddWatchlistTokenInput,
@@ -81,6 +92,23 @@ export interface AppShellProps {
     account: string,
     retryFailedOnly?: boolean,
   ) => Promise<boolean | void> | boolean | void;
+  onRefreshAbiRegistry?: () => Promise<boolean | void> | boolean | void;
+  onSaveAbiDataSource?: (
+    input: UpsertAbiDataSourceConfigInput,
+  ) => Promise<boolean | void> | boolean | void;
+  onRemoveAbiDataSource?: (id: string) => Promise<boolean | void> | boolean | void;
+  onValidateAbiPayload?: (payload: string) => Promise<AbiPayloadValidationReadModel>;
+  onImportAbiPayload?: (
+    input: UserAbiPayloadInput,
+  ) => Promise<AbiMutationHandlerResult> | AbiMutationHandlerResult;
+  onPasteAbiPayload?: (
+    input: UserAbiPayloadInput,
+  ) => Promise<AbiMutationHandlerResult> | AbiMutationHandlerResult;
+  onFetchExplorerAbi?: (
+    input: FetchExplorerAbiInput,
+  ) => Promise<AbiMutationHandlerResult> | AbiMutationHandlerResult;
+  onMarkAbiStale?: (entry: AbiCacheEntryRecord) => Promise<boolean | void> | boolean | void;
+  onDeleteAbiEntry?: (entry: AbiCacheEntryRecord) => Promise<boolean | void> | boolean | void;
   onRefreshAccounts?: () => Promise<void> | void;
   onRefreshHistory?: () => Promise<void> | void;
   onQuarantineHistory?: () => Promise<void> | void;
@@ -101,6 +129,7 @@ export interface AppShellProps {
 
 const workspaceTabs: WorkspaceTab[] = [
   "accounts",
+  "abi",
   "tokens",
   "orchestration",
   "transfer",
@@ -110,6 +139,7 @@ const workspaceTabs: WorkspaceTab[] = [
 ];
 
 function tabLabel(tab: WorkspaceTab) {
+  if (tab === "abi") return "ABI Library";
   return tab[0].toUpperCase() + tab.slice(1);
 }
 
@@ -137,6 +167,8 @@ export function AppShell({
   lastHistoryQuarantine = null,
   tokenWatchlistState = null,
   tokenWatchlistError = null,
+  abiRegistryState = null,
+  abiRegistryError = null,
   onAddAccount = async () => {},
   onAddWatchlistToken = async () => {},
   onEditWatchlistToken = async () => {},
@@ -144,6 +176,23 @@ export function AppShell({
   onScanWatchlistTokenMetadata = async () => {},
   onScanErc20Balance = async () => {},
   onScanWatchlistBalances = async () => {},
+  onRefreshAbiRegistry = async () => {},
+  onSaveAbiDataSource = async () => {},
+  onRemoveAbiDataSource = async () => {},
+  onValidateAbiPayload = async () => ({
+    fetchSourceStatus: "notConfigured",
+    validationStatus: "notValidated",
+    functionCount: 0,
+    eventCount: 0,
+    errorCount: 0,
+    selectorSummary: {},
+    diagnostics: {},
+  }),
+  onImportAbiPayload = async () => {},
+  onPasteAbiPayload = async () => {},
+  onFetchExplorerAbi = async () => {},
+  onMarkAbiStale = async () => {},
+  onDeleteAbiEntry = async () => {},
   onRefreshAccounts = async () => {},
   onRefreshHistory = async () => {},
   onQuarantineHistory = async () => {},
@@ -251,6 +300,23 @@ export function AppShell({
                 rpcReady={chainReady}
                 selectedChainId={selectedChainId}
                 state={tokenWatchlistState}
+              />
+            )}
+            {activeTab === "abi" && (
+              <AbiLibraryView
+                busy={busy}
+                error={abiRegistryError}
+                onDeleteEntry={onDeleteAbiEntry}
+                onFetchExplorerAbi={onFetchExplorerAbi}
+                onImportPayload={onImportAbiPayload}
+                onMarkStale={onMarkAbiStale}
+                onPastePayload={onPasteAbiPayload}
+                onRefresh={onRefreshAbiRegistry}
+                onRemoveDataSource={onRemoveAbiDataSource}
+                onSaveDataSource={onSaveAbiDataSource}
+                onValidatePayload={onValidateAbiPayload}
+                selectedChainId={selectedChainId}
+                state={abiRegistryState}
               />
             )}
             {activeTab === "orchestration" && (

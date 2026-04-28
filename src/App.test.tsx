@@ -1,12 +1,15 @@
 import { describe, expect, it } from "vitest";
 import {
+  abiRegistryMutationFailureMessage,
   canStartAccountsRefresh,
   ensureRpcChainMatchesSelectedChain,
   isAccountsRefreshCurrent,
+  isUsableAbiRegistryMutationResult,
   isTokenOperationCurrent,
   mergeRefreshedAccounts,
   nextTokenOperationGeneration,
 } from "./App";
+import type { AbiRegistryMutationResult } from "./lib/tauri";
 
 describe("mergeRefreshedAccounts", () => {
   it("updates matching accounts without dropping accounts added during refresh", () => {
@@ -65,5 +68,72 @@ describe("ensureRpcChainMatchesSelectedChain", () => {
     await expect(
       ensureRpcChainMatchesSelectedChain("https://rpc.example", 8453n, async () => 8453n),
     ).resolves.toBe(8453n);
+  });
+});
+
+describe("isUsableAbiRegistryMutationResult", () => {
+  function mutationResult(
+    overrides: Partial<AbiRegistryMutationResult> = {},
+  ): AbiRegistryMutationResult {
+    return {
+      state: { schemaVersion: 1, dataSources: [], cacheEntries: [] },
+      validation: {
+        fetchSourceStatus: "ok",
+        validationStatus: "ok",
+        functionCount: 1,
+        eventCount: 0,
+        errorCount: 0,
+        selectorSummary: {},
+        diagnostics: {},
+      },
+      cacheEntry: {} as AbiRegistryMutationResult["cacheEntry"],
+      ...overrides,
+    };
+  }
+
+  it("requires a cache entry and successful fetch/validation statuses", () => {
+    expect(isUsableAbiRegistryMutationResult(mutationResult())).toBe(true);
+    expect(
+      isUsableAbiRegistryMutationResult(
+        mutationResult({
+          cacheEntry: null,
+          validation: {
+            ...mutationResult().validation,
+            validationStatus: "parseFailed",
+          },
+        }),
+      ),
+    ).toBe(false);
+    expect(
+      isUsableAbiRegistryMutationResult(
+        mutationResult({
+          validation: {
+            ...mutationResult().validation,
+            fetchSourceStatus: "notConfigured",
+            validationStatus: "notValidated",
+          },
+        }),
+      ),
+    ).toBe(false);
+  });
+
+  it("includes resolved backend failure diagnostics in the message", () => {
+    const message = abiRegistryMutationFailureMessage(
+      mutationResult({
+        cacheEntry: null,
+        validation: {
+          ...mutationResult().validation,
+          fetchSourceStatus: "notConfigured",
+          validationStatus: "notValidated",
+          diagnostics: {
+            providerConfigId: "etherscan-mainnet",
+            failureClass: "notConfigured",
+          },
+        },
+      }),
+    );
+
+    expect(message).toContain("notConfigured");
+    expect(message).toContain("etherscan-mainnet");
   });
 });
