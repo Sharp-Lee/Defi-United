@@ -7,7 +7,7 @@
 - 基线：从当前已合并到 `main` 的 EVM Wallet Workbench v1（Tauri 2 技术栈）开始推进；P3 已合并，P4-1 到 P4-7 已完成。
 - 主线：后续产品、测试、发布和技术债治理都以 Tauri desktop app 为准。
 - 非主线：浏览器版只作为历史参考或迁移来源，不继续投入功能补齐。
-- 已有 v1 能力：vault/mnemonic、账户派生与链上扫描、RPC 验证和 app-config、native transfer draft/submit、pending history/reconcile、replace/cancel、anvil smoke check。
+- 已有 v1 能力：vault/mnemonic、账户派生与链上扫描、RPC 验证和 app-config、native transfer draft/submit、native transfer fee reference/base fee customization、pending history/reconcile、replace/cancel、anvil smoke check。
 - 后续重点：P4-8+ 先做探索/设计，不把 ERC-20、ABI 调用、批量策略或资产扫描写成当前承诺交付。
 
 ## 2. 执行规则
@@ -32,6 +32,7 @@
   - Submission 是确认时冻结并交给 Rust 提交的最终参数，例如不可变 draft key、最终 `chainId`、from、to、value、nonce、gas/fee 参数和 tx hash。
 - ChainOutcome 表示 reconcile 或链上 receipt 得出的结果，包括 pending、confirmed、failed、replaced、cancelled、dropped。
 - replace/cancel 必须绑定现有 pending submission，沿用原 `chainId`、account/from 和 nonce；cancel 使用同 nonce 向自身发送 0 值交易。
+- 原生币转账 fee reference：draft build 从 latest block 读取 `baseFeePerGas`，支持用户覆盖 base fee 假设值、编辑 multiplier 和 priority fee，并在 max fee override 为空时按 `baseFeePerGas * multiplier + priority fee` 自动计算最终 max fee；Rust command 接口仍只接收最终 gas/fee 字段。
 
 ## 4. 里程碑划分
 
@@ -53,6 +54,27 @@
 ### P4: Recovery, Observability, and Focused Extensions（P4-1 到 P4-7 已完成；P4-8+ 探索/设计）
 
 目标是在 P3 稳定历史体验之后，补强诊断、恢复和少量明确依赖 P3 的能力。P4-1 到 P4-7 已完成诊断事件、诊断导出、历史恢复、广播补录、dropped 复核、pending 老化和 anvil smoke 回归。P4-8+ 属于探索/设计优先，不提前把 ERC-20、ABI 调用、批量策略做成当前承诺。
+
+### P4+ 已收口: Native transfer fee reference / base fee customization
+
+**目标**
+
+为 Tauri 主线原生币转账 draft 增加可审计的 EIP-1559 fee reference 控制，让用户能看见 latest base fee reference、调整用于构建交易的 base fee 假设值和 multiplier，并在必要时显式覆盖最终 max fee。
+
+**完成范围**
+
+- Transfer 面板展示并可编辑 Base fee (gwei)、Base fee multiplier、Priority fee (gwei) 和可选 Max fee override (gwei)。
+- Build Draft 从当前 RPC latest block 读取 `baseFeePerGas`；Base fee 为空时回填 latest value，latest block 不提供 base fee 且用户未输入时阻止 build。
+- Priority fee 留空时使用 `provider.getFeeData().maxPriorityFeePerGas`，缺失时沿用 `1_500_000_000` wei fallback。
+- Max fee 默认按 `baseFeePerGas * baseFeeMultiplier + maxPriorityFeePerGas` 自动计算；override 非空时才使用用户输入作为最终 `maxFeePerGas`，自动值不写回 override 输入。
+- Confirmation 展示 latest base fee reference、base fee used、multiplier、priority fee、最终 max fee、gas/total cost 和 frozen key。
+- Draft frozen key 覆盖 base fee、multiplier、priority fee、max fee override、nonce、gas、to、amount、chain/RPC/from 变化；最终提交 Rust 的字段保持既有接口。
+- 高风险判断保留 max fee、priority fee、gas limit 规则，并新增 base fee used 超过 latest base fee reference 3 倍时的二次确认。
+
+**安全边界**
+
+- React、日志、history 和文档示例仍不得包含助记词、私钥、raw signed tx 或敏感 RPC 凭据。
+- Base fee customization 只改变本地交易构建假设值，不改变链上协议 base fee。
 
 ## 5. P3 任务卡（历史记录，状态：已完成）
 

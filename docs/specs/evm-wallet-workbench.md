@@ -49,7 +49,7 @@ EVM Wallet Workbench 是一个面向本地桌面使用的 EVM 钱包工作台。
 - desktop 创建 vault 时由 Rust 内部生成助记词；React 不接收、不显示、不校验明文助记词。
 - 账户派生与链上扫描。
 - RPC chainId 验证与 app-config 持久化。
-- native transfer draft/submit。
+- native transfer draft/submit，包括 latest block `baseFeePerGas` 参考、可编辑 base fee 假设值、base fee multiplier、priority fee 和可选 max fee override。
 - pending history 持久化和 reconcile。
 - pending 交易 replace/cancel。
 - anvil smoke check。
@@ -112,7 +112,18 @@ P3 desktop 不提供明文助记词 import/export/backup UI。当前恢复边界
 - cancel 必须使用同 nonce、向自身发送 0 值交易的取消模型。
 - replace/cancel 不是新的普通转账草稿，不能分配新 nonce。
 
-### 8.6 敏感信息和助记词本地处理
+### 8.6 原生币转账 fee reference
+
+- Transfer draft 构建必须从当前 RPC 的 latest block 读取 `baseFeePerGas`，作为费用计算参考；这是交易构建假设值，不改变链上协议 base fee。
+- 如果用户未手动输入 Base fee，且 latest block 提供 `baseFeePerGas`，UI 必须用该值回填 Base fee 输入；如果 latest block 不提供 base fee 且用户未输入，必须拒绝 build 并要求手动输入。
+- 默认 `maxFeePerGas` 按 `baseFeePerGas * baseFeeMultiplier + maxPriorityFeePerGas` 计算，其中 multiplier 默认 `2`，十进制 multiplier 必须用整数/定点方式参与 wei 计算以避免浮点误差。
+- Priority fee 留空时使用 `provider.getFeeData().maxPriorityFeePerGas`；缺失时使用 `1_500_000_000` wei fallback。
+- Max fee override 是可选输入；留空代表使用自动计算值，自动计算值不得写回 override 输入。提交给 Rust 的仍然只有最终 `max_fee_per_gas` 和 `max_priority_fee_per_gas` 等既有字段。
+- Confirmation 必须展示 latest base fee reference、base fee used、base fee multiplier、priority fee、最终 max fee、gas/total cost 和 frozen key。
+- draft 冻结/失效必须覆盖 base fee、multiplier、priority fee、max fee override、nonce、gas、to、amount、chain/RPC/from 的变化。
+- 保留 max fee、priority fee、gas limit 的高风险判断；当 `baseFeePerGas` used 超过 latest base fee reference 3 倍且 latest base fee 大于 0 时，也必须标记 high fee risk 并要求二次确认。
+
+### 8.7 敏感信息和助记词本地处理
 
 - 助记词只在 Rust 侧解密、派生和签名流程中使用。
 - desktop 创建 vault 时助记词必须在 Rust command 内部生成并直接加密写入 vault，不通过 Tauri 返回给 React。
@@ -121,7 +132,7 @@ P3 desktop 不提供明文助记词 import/export/backup UI。当前恢复边界
 - vault 数据必须保存在本地应用数据目录，不能与可重建缓存混存。
 - 应用不默认导出明文助记词、私钥或签名材料。
 
-### 8.7 诊断事件与本地结构化日志
+### 8.8 诊断事件与本地结构化日志
 
 - 诊断事件只记录排查所需的非敏感元数据，例如事件类型、时间、chainId、account/address 摘要、nonce、tx hash、错误分类、阶段和可恢复提示。
 - 诊断事件不得包含助记词、私钥、seed、明文密码、签名原文、raw signed transaction、完整 RPC 认证凭据或其他签名材料。
@@ -130,7 +141,7 @@ P3 desktop 不提供明文助记词 import/export/backup UI。当前恢复边界
 - 诊断导出必须默认排除敏感材料，并在 UI 中明确展示导出内容范围。
 - P4-1 已提供本地结构化日志基线；P4-2 已提供只含非敏感信息的诊断面板和导出入口。
 
-### 8.8 恢复与补录边界
+### 8.9 恢复与补录边界
 
 - 历史文件不可读或疑似损坏时，提交新交易前必须停止并给出明确恢复路径，不能为了保持 UI 可用而绕过本地历史读取。
 - 损坏恢复应优先隔离原文件、保留可审计副本、生成用户可理解的错误摘要，再允许用户选择修复或重建索引。
