@@ -1,16 +1,27 @@
 import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { Interface } from "ethers";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { submitNativeTransfer } from "../../lib/tauri";
 import { renderScreen } from "../../test/render";
 import { TransferView } from "./TransferView";
 
 const provider = vi.hoisted(() => ({
+  call: vi.fn(),
   estimateGas: vi.fn(),
+  getBalance: vi.fn(),
   getBlock: vi.fn(),
   getFeeData: vi.fn(),
   getNetwork: vi.fn(),
   getTransactionCount: vi.fn(),
 }));
+
+const erc20Interface = new Interface([
+  "function decimals() view returns (uint8)",
+  "function symbol() view returns (string)",
+  "function name() view returns (string)",
+  "function balanceOf(address) view returns (uint256)",
+  "function transfer(address,uint256) returns (bool)",
+]);
 
 vi.mock("ethers", async (importOriginal) => {
   const actual = await importOriginal<typeof import("ethers")>();
@@ -40,6 +51,22 @@ describe("TransferView", () => {
     provider.getBlock.mockResolvedValue({ baseFeePerGas: 20_000_000_000n });
     provider.getTransactionCount.mockResolvedValue(7);
     provider.estimateGas.mockResolvedValue(21_000n);
+    provider.getBalance.mockResolvedValue(1_000_000_000_000_000_000n);
+    provider.call.mockImplementation(async ({ data }) => {
+      if (data === erc20Interface.encodeFunctionData("decimals")) {
+        return erc20Interface.encodeFunctionResult("decimals", [6]);
+      }
+      if (data === erc20Interface.encodeFunctionData("symbol")) {
+        return erc20Interface.encodeFunctionResult("symbol", ["USDC"]);
+      }
+      if (data === erc20Interface.encodeFunctionData("name")) {
+        return erc20Interface.encodeFunctionResult("name", ["USD Coin"]);
+      }
+      if (data.startsWith(erc20Interface.getFunction("balanceOf")!.selector)) {
+        return erc20Interface.encodeFunctionResult("balanceOf", [2_000_000n]);
+      }
+      throw new Error("unexpected ERC-20 call");
+    });
   });
 
   function renderTransfer(
@@ -257,5 +284,49 @@ describe("TransferView", () => {
 
     await waitFor(() => expect(onSubmitFailed).toHaveBeenCalledWith(error));
     expect(screen.getByText(/transaction history storage is unreadable/)).toBeInTheDocument();
+  });
+
+  it("builds a read-only ERC-20 draft with transaction target, calldata recipient, raw amount, and metadata source", async () => {
+    provider.estimateGas.mockResolvedValueOnce(65_000n);
+    renderTransfer();
+
+    fireEvent.click(screen.getByRole("button", { name: "ERC-20" }));
+    fireEvent.change(screen.getByLabelText("Token contract"), {
+      target: { value: "0x3333333333333333333333333333333333333333" },
+    });
+    fireEvent.change(screen.getByLabelText("Recipient"), {
+      target: { value: "0x2222222222222222222222222222222222222222" },
+    });
+    fireEvent.change(screen.getByLabelText("Amount"), { target: { value: "1.5" } });
+    fireEvent.click(screen.getByRole("button", { name: "Build Draft" }));
+
+    await waitFor(() => expect(screen.getByText("Confirm ERC-20 Transfer")).toBeInTheDocument());
+    expect(screen.getByText("Transaction to")).toBeInTheDocument();
+    expect(screen.getAllByText("0x3333333333333333333333333333333333333333").length).toBeGreaterThanOrEqual(2);
+    expect(screen.getByText("Recipient calldata parameter")).toBeInTheDocument();
+    expect(screen.getByText("0x2222222222222222222222222222222222222222")).toBeInTheDocument();
+    expect(screen.getByText("1.5 token units (1500000 raw)")).toBeInTheDocument();
+    expect(screen.getByText("6 (onChainCall)")).toBeInTheDocument();
+    expect(screen.getByText("0xa9059cbb")).toBeInTheDocument();
+    expect(screen.getByText("0 wei")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Submit will be enabled in P4-8c" })).toBeDisabled();
+  });
+
+  it("shows ERC-20 metadata failures as visible draft errors", async () => {
+    provider.call.mockRejectedValueOnce(new Error("execution reverted"));
+    renderTransfer();
+
+    fireEvent.click(screen.getByRole("button", { name: "ERC-20" }));
+    fireEvent.change(screen.getByLabelText("Token contract"), {
+      target: { value: "0x3333333333333333333333333333333333333333" },
+    });
+    fireEvent.change(screen.getByLabelText("Recipient"), {
+      target: { value: "0x2222222222222222222222222222222222222222" },
+    });
+    fireEvent.change(screen.getByLabelText("Amount"), { target: { value: "1.5" } });
+    fireEvent.click(screen.getByRole("button", { name: "Build Draft" }));
+
+    await waitFor(() => expect(screen.getByText("Transfer input needs review")).toBeInTheDocument());
+    expect(screen.getByText(/Token decimals metadata call failed/)).toBeInTheDocument();
   });
 });

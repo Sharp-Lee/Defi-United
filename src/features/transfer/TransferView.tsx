@@ -9,6 +9,8 @@ import {
 } from "ethers";
 import type { TransferDraft } from "../../core/transactions/draft";
 import { createTransferDraft } from "../../core/transactions/draft";
+import type { Erc20TransferDraft } from "../../core/transactions/erc20Draft";
+import { buildErc20TransferDraft } from "../../core/transactions/erc20Draft";
 import { getRawHistoryErrorDisplay } from "../../core/history/errors";
 import { nextNonceWithLocalPending } from "../../core/history/reconciler";
 import { HistoryErrorCard } from "../history/HistoryErrorCard";
@@ -80,17 +82,24 @@ export function TransferView({
   onSubmitFailed,
   onSubmitted,
 }: TransferViewProps) {
+  const [transferMode, setTransferMode] = useState<"native" | "erc20">("native");
   const [selectedIndex, setSelectedIndex] = useState("");
   const [to, setTo] = useState("");
   const [amountEth, setAmountEth] = useState("");
+  const [tokenContract, setTokenContract] = useState("");
+  const [erc20Recipient, setErc20Recipient] = useState("");
+  const [erc20Amount, setErc20Amount] = useState("");
+  const [confirmedDecimals, setConfirmedDecimals] = useState("");
   const [nonce, setNonce] = useState("");
-  const [gasLimit, setGasLimit] = useState("21000");
+  const [nativeGasLimit, setNativeGasLimit] = useState("21000");
+  const [erc20GasLimit, setErc20GasLimit] = useState("");
   const [baseFeeGwei, setBaseFeeGwei] = useState("");
   const [baseFeeIsManual, setBaseFeeIsManual] = useState(false);
   const [baseFeeMultiplier, setBaseFeeMultiplier] = useState("2");
   const [maxFeeOverrideGwei, setMaxFeeOverrideGwei] = useState("");
   const [priorityFeeGwei, setPriorityFeeGwei] = useState("");
   const [draft, setDraft] = useState<TransferDraft | null>(initialDraft);
+  const [erc20Draft, setErc20Draft] = useState<Erc20TransferDraft | null>(null);
   const [secondConfirm, setSecondConfirm] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<{
@@ -124,9 +133,14 @@ export function TransferView({
     ? draft.submission.gasLimit * draft.submission.maxFeePerGas
     : 0n;
   const maxTotalCostWei = draft ? draft.submission.valueWei + maxGasCostWei : 0n;
+  const erc20MaxGasCostWei = erc20Draft
+    ? erc20Draft.submission.gasLimit * erc20Draft.submission.maxFeePerGas
+    : 0n;
+  const activeGasLimit = transferMode === "native" ? nativeGasLimit : erc20GasLimit;
 
   function clearDraft() {
     setDraft(null);
+    setErc20Draft(null);
     setSecondConfirm(false);
   }
 
@@ -193,7 +207,7 @@ export function TransferView({
             Number(chainId),
             selectedAccount.address,
           );
-      const nextGasLimit = gasLimit.trim() ? BigInt(gasLimit) : estimatedGasLimit;
+      const nextGasLimit = nativeGasLimit.trim() ? BigInt(nativeGasLimit) : estimatedGasLimit;
       const nextPriorityFee = priorityFeeGwei.trim()
         ? toWeiFromGwei(priorityFeeGwei)
         : livePriorityFee;
@@ -217,7 +231,7 @@ export function TransferView({
       const nextMaxFee = maxFeeOverride ?? automaticMaxFee;
 
       setNonce(nextNonce.toString());
-      setGasLimit(nextGasLimit.toString());
+      setNativeGasLimit(nextGasLimit.toString());
       if (!baseFeeIsManual) {
         setBaseFeeGwei(formatGwei(nextBaseFee));
       }
@@ -242,6 +256,103 @@ export function TransferView({
           estimatedGasLimit,
         }),
       );
+    } catch (err) {
+      setStageError("build", err);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function buildErc20Draft() {
+    setError(null);
+    if (historyStorageIssue) {
+      setStageError("build", historyStorageIssue);
+      return;
+    }
+    setBusy(true);
+    try {
+      if (!rpcUrl.trim()) throw new Error("RPC URL is required.");
+      if (!selectedAccount) throw new Error("Select a sender account.");
+      if (!isAddress(tokenContract)) throw new Error("Token contract address is invalid.");
+      if (!isAddress(erc20Recipient)) throw new Error("Recipient address is invalid.");
+
+      const provider = new JsonRpcProvider(rpcUrl);
+      const network = await provider.getNetwork();
+      if (network.chainId !== chainId) {
+        throw new Error(`RPC returned chainId ${network.chainId}; expected ${chainId}.`);
+      }
+
+      const feeData = await provider.getFeeData();
+      const latestBlock = await provider.getBlock("latest");
+      const latestBaseFeePerGas = latestBlock?.baseFeePerGas ?? null;
+      const liveMaxFeePerGas = feeData.maxFeePerGas ?? feeData.gasPrice ?? 0n;
+      const livePriorityFee = feeData.maxPriorityFeePerGas ?? 1_500_000_000n;
+      const onChainNonce = await provider.getTransactionCount(selectedAccount.address, "pending");
+      const nextNonce = nonce.trim()
+        ? Number(nonce)
+        : nextNonceWithLocalPending(
+            onChainNonce,
+            history,
+            selectedAccount.index,
+            Number(chainId),
+            selectedAccount.address,
+          );
+      const nextPriorityFee = priorityFeeGwei.trim()
+        ? toWeiFromGwei(priorityFeeGwei)
+        : livePriorityFee;
+      let nextBaseFee: bigint;
+      if (baseFeeIsManual) {
+        nextBaseFee = toWeiFromGwei(baseFeeGwei);
+      } else {
+        if (latestBaseFeePerGas === null) {
+          throw new Error(
+            "Latest block did not provide baseFeePerGas. Enter a Base fee (gwei) manually before building the draft.",
+          );
+        }
+        nextBaseFee = latestBaseFeePerGas;
+      }
+      const multiplier = parseMultiplier(baseFeeMultiplier || "2");
+      const automaticMaxFee =
+        ceilMultiply(nextBaseFee, multiplier.numerator, multiplier.denominator) + nextPriorityFee;
+      const maxFeeOverride = maxFeeOverrideGwei.trim()
+        ? toWeiFromGwei(maxFeeOverrideGwei)
+        : null;
+      const nextMaxFee = maxFeeOverride ?? automaticMaxFee;
+      const userConfirmedDecimals = confirmedDecimals.trim()
+        ? Number(confirmedDecimals)
+        : null;
+      if (confirmedDecimals.trim() && !Number.isInteger(userConfirmedDecimals)) {
+        throw new Error("Confirmed decimals must be an integer from 0 to 255.");
+      }
+
+      const nextDraft = await buildErc20TransferDraft({
+        provider,
+        chainId,
+        from: selectedAccount.address,
+        tokenContract,
+        recipient: erc20Recipient,
+        amount: erc20Amount,
+        userConfirmedDecimals,
+        nonce: nextNonce,
+        gasLimit: erc20GasLimit.trim() ? BigInt(erc20GasLimit) : null,
+        latestBaseFeePerGas,
+        baseFeePerGas: nextBaseFee,
+        baseFeeMultiplier: multiplier.text,
+        maxFeePerGas: nextMaxFee,
+        maxFeeOverridePerGas: maxFeeOverride,
+        maxPriorityFeePerGas: nextPriorityFee,
+        liveMaxFeePerGas,
+        liveMaxPriorityFeePerGas: livePriorityFee,
+      });
+
+      setNonce(nextNonce.toString());
+      setErc20GasLimit(nextDraft.submission.gasLimit.toString());
+      if (!baseFeeIsManual) {
+        setBaseFeeGwei(formatGwei(nextBaseFee));
+      }
+      setBaseFeeMultiplier(multiplier.text);
+      setPriorityFeeGwei(formatGwei(nextPriorityFee));
+      setErc20Draft(nextDraft);
     } catch (err) {
       setStageError("build", err);
     } finally {
@@ -297,6 +408,28 @@ export function TransferView({
         <h2>Transfer</h2>
         <span className="pill">{chainName}</span>
       </header>
+      <div className="segmented" role="tablist" aria-label="Transfer type">
+        <button
+          className={transferMode === "native" ? "active" : ""}
+          onClick={() => {
+            setTransferMode("native");
+            clearDraft();
+          }}
+          type="button"
+        >
+          Native
+        </button>
+        <button
+          className={transferMode === "erc20" ? "active" : ""}
+          onClick={() => {
+            setTransferMode("erc20");
+            clearDraft();
+          }}
+          type="button"
+        >
+          ERC-20
+        </button>
+      </div>
       <label>
         From
         <select
@@ -314,27 +447,78 @@ export function TransferView({
           ))}
         </select>
       </label>
-      <label>
-        To
-        <input
-          onChange={(event) => {
-            setTo(event.target.value);
-            clearDraft();
-          }}
-          value={to}
-        />
-      </label>
-      <label>
-        Amount
-        <input
-          inputMode="decimal"
-          onChange={(event) => {
-            setAmountEth(event.target.value);
-            clearDraft();
-          }}
-          value={amountEth}
-        />
-      </label>
+      {transferMode === "native" ? (
+        <>
+          <label>
+            To
+            <input
+              onChange={(event) => {
+                setTo(event.target.value);
+                clearDraft();
+              }}
+              value={to}
+            />
+          </label>
+          <label>
+            Amount
+            <input
+              inputMode="decimal"
+              onChange={(event) => {
+                setAmountEth(event.target.value);
+                clearDraft();
+              }}
+              value={amountEth}
+            />
+          </label>
+        </>
+      ) : (
+        <>
+          <label>
+            Token contract
+            <input
+              onChange={(event) => {
+                setTokenContract(event.target.value);
+                clearDraft();
+              }}
+              value={tokenContract}
+            />
+          </label>
+          <label>
+            Recipient
+            <input
+              onChange={(event) => {
+                setErc20Recipient(event.target.value);
+                clearDraft();
+              }}
+              value={erc20Recipient}
+            />
+          </label>
+          <div className="field-row">
+            <label>
+              Amount
+              <input
+                inputMode="decimal"
+                onChange={(event) => {
+                  setErc20Amount(event.target.value);
+                  clearDraft();
+                }}
+                value={erc20Amount}
+              />
+            </label>
+            <label>
+              Confirmed decimals
+              <input
+                inputMode="numeric"
+                onChange={(event) => {
+                  setConfirmedDecimals(event.target.value);
+                  clearDraft();
+                }}
+                value={confirmedDecimals}
+              />
+            </label>
+          </div>
+        </>
+      )}
       <div className="field-row">
         <label>
           Nonce
@@ -352,10 +536,14 @@ export function TransferView({
           <input
             inputMode="numeric"
             onChange={(event) => {
-              setGasLimit(event.target.value);
+              if (transferMode === "native") {
+                setNativeGasLimit(event.target.value);
+              } else {
+                setErc20GasLimit(event.target.value);
+              }
               clearDraft();
             }}
-            value={gasLimit}
+            value={activeGasLimit}
           />
         </label>
       </div>
@@ -412,7 +600,7 @@ export function TransferView({
       <div className="button-row">
         <button
           disabled={busy || accounts.length === 0 || historyStorageIssue !== null}
-          onClick={() => void buildDraft()}
+          onClick={() => void (transferMode === "native" ? buildDraft() : buildErc20Draft())}
           title={historyStorageIssue ?? undefined}
           type="button"
         >
@@ -504,6 +692,82 @@ export function TransferView({
               type="button"
             >
               Submit
+            </button>
+          </div>
+        </section>
+      )}
+      {erc20Draft && (
+        <section aria-label="ERC-20 transfer confirmation" className="confirmation-panel">
+          <header className="section-header">
+            <h3>Confirm ERC-20 Transfer</h3>
+            <span className={erc20Draft.feeRisk === "high" ? "pill danger-pill" : "pill"}>
+              {erc20Draft.feeRisk === "high" ? "High fee risk" : "Read-only draft"}
+            </span>
+          </header>
+          {erc20Draft.feeRisk === "high" && (
+            <div className="inline-warning" role="alert">
+              Fee or gas settings are far above the live network reference. Review total cost before
+              signing in a later release.
+            </div>
+          )}
+          <div className="confirmation-grid">
+            <ConfirmationRow label="Chain" value={`${chainName} (chainId ${chainId.toString()})`} />
+            <ConfirmationRow label="From" value={erc20Draft.submission.from} />
+            <ConfirmationRow label="Transaction to" value={erc20Draft.submission.transactionTo} />
+            <ConfirmationRow label="Token contract" value={erc20Draft.submission.tokenContract} />
+            <ConfirmationRow
+              label="Recipient calldata parameter"
+              value={erc20Draft.submission.recipient}
+            />
+            <ConfirmationRow
+              label="Amount"
+              value={`${erc20Draft.submission.amount} token units (${erc20Draft.submission.amountRaw.toString()} raw)`}
+            />
+            <ConfirmationRow
+              label="Decimals"
+              value={`${erc20Draft.submission.decimals.toString()} (${erc20Draft.submission.metadataSource})`}
+            />
+            <ConfirmationRow
+              label="Token metadata"
+              value={`${erc20Draft.submission.symbol ?? "unknown"} · ${erc20Draft.submission.name ?? "unknown"}`}
+            />
+            <ConfirmationRow label="Selector" value={erc20Draft.submission.selector} />
+            <ConfirmationRow label="Method" value={erc20Draft.submission.method} />
+            <ConfirmationRow
+              label="Native value"
+              value={`${erc20Draft.submission.nativeValueWei.toString()} wei`}
+            />
+            <ConfirmationRow label="Nonce" value={erc20Draft.submission.nonce.toString()} />
+            <ConfirmationRow label="Gas limit" value={erc20Draft.submission.gasLimit.toString()} />
+            <ConfirmationRow
+              label="Estimated gas"
+              value={erc20Draft.submission.estimatedGasLimit.toString()}
+            />
+            <ConfirmationRow
+              label="Max fee"
+              value={`${formatGwei(erc20Draft.submission.maxFeePerGas)} gwei`}
+            />
+            <ConfirmationRow
+              label="Priority fee"
+              value={`${formatGwei(erc20Draft.submission.maxPriorityFeePerGas)} gwei`}
+            />
+            <ConfirmationRow
+              label="Max gas cost"
+              value={`${formatEth(erc20MaxGasCostWei)} native (${erc20MaxGasCostWei.toString()} wei)`}
+            />
+            <ConfirmationRow
+              label="Token balance"
+              value={`${erc20Draft.submission.tokenBalanceRaw.toString()} raw`}
+            />
+            <ConfirmationRow
+              label="Native balance"
+              value={`${formatEth(erc20Draft.submission.nativeBalanceWei)} native (${erc20Draft.submission.nativeBalanceWei.toString()} wei)`}
+            />
+            <ConfirmationRow label="Frozen key" value={erc20Draft.frozenKey} />
+          </div>
+          <div className="button-row">
+            <button disabled type="button">
+              Submit will be enabled in P4-8c
             </button>
           </div>
         </section>
