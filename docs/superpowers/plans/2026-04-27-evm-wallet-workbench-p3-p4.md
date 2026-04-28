@@ -674,40 +674,46 @@
 
 ### 7.1 建议里程碑顺序
 
-1. P4-8 ERC-20 转账 spec/最小实现方案（本任务仅 spec/design）。
-2. P4-9 token watchlist/ERC-20 余额扫描。
-3. P4-10 多账户选择器与账户编排基础。
-4. P4-11 批量分发/归集 spec。
-5. P4-12 batch native 分发/归集。
-6. P4-13 batch ERC-20 分发/归集。
-7. P5-1 ABI 管理 fetch/import/paste/cache。
-8. P5-2 ABI read/write 调用器。
-9. P5-3 raw calldata 发送与预览。
-10. P5-4 资产/授权扫描与 revoke 工作流。
-11. P6-1 tx hash 逆向解析。
-12. P6-2 contract address hot 交易/selector 分析。
+1. P4-8 ERC-20 转账 spec/design（本任务仅文档设计，不实现发送）。
+2. P4-8a typed transaction intents/history schema contract。
+3. P4-8b ERC-20 draft/metadata read model。
+4. P4-8c Rust submit command + UI + tests for minimum ERC-20 transfer。
+5. P4-9 token watchlist/ERC-20 余额扫描。
+6. P4-10 多账户选择器与账户编排基础。
+7. P4-11 批量分发/归集 spec。
+8. P4-12 batch native 分发/归集。
+9. P4-13 batch ERC-20 分发/归集。
+10. P5-1 ABI 管理 fetch/import/paste/cache。
+11. P5-2 ABI read/write 调用器。
+12. P5-3 raw calldata 发送与预览。
+13. P5-4 资产/授权扫描与 revoke 工作流。
+14. P6-1 tx hash 逆向解析。
+15. P6-2 contract address hot 交易/selector 分析。
 
-### 7.2 Task P4-8: ERC-20 转账 spec/design（下一步任务）
+### 7.2 Task P4-8: ERC-20 转账 spec/design（本任务仅文档设计）
 
 **目标**
 
-完成 ERC-20 转账的产品 spec、历史模型设计和实现拆分方案，作为后续最小实现任务的输入。本任务不直接实现交易发送代码，除非 controller 后续另派实现任务并明确范围。
+完成 ERC-20 转账的产品 spec、历史模型设计和实现拆分方案，作为后续最小实现任务的输入。本任务只改文档，不实现 ERC-20 发送代码，也不改变当前真实可用交易类型只有 native transfer 的事实。
 
 **改动范围**
 
 - 更新项目 spec 中 ERC-20 转账的目标、非目标、安全边界和验收原则。
-- 设计 ERC-20 Intent/Submission/ChainOutcome 扩展：token contract、decimals、symbol 展示来源、recipient、amount、nonce、gas/fee、tx hash、receipt/log 摘要和失败原因。
-- 设计 Rust/TypeScript 类型演进方案，明确当前 `HistoryRecord.intent` 仍是 `NativeTransferIntent`，后续需要交易类型枚举或兼容迁移；`SubmissionKind` 需要新增 ERC-20 普通提交，并保持 replacement/cancellation 语义清晰。
-- 设计 draft/confirm/submit 工作流：React 表达 ERC-20 转账意图和展示冻结参数，Rust command 负责构建 calldata、签名、广播和历史写入。
-- 设计 token metadata 与 decimals 获取策略：优先链上 `decimals/symbol/name` 只读 call 或 watchlist 缓存，失败时允许用户明确处理，但不得把 symbol 当作身份。
-- 设计测试计划和最小实现拆分，例如先支持单 token、单接收方、EIP-1559 fee、无 allowance 工作流。
+- 设计 typed transaction intent 方向，例如 `transaction_type` / enum union：`legacy`、`nativeTransfer`、`erc20Transfer`，并说明旧记录兼容。
+- 设计 ERC-20 Intent/Submission/ChainOutcome 扩展：token contract、recipient、amount raw、decimals、symbol/name metadata source、calldata selector、method name、native value wei、nonce、gas/fee、tx hash、receipt/log 摘要和失败原因。
+- 设计 Rust/TypeScript 类型演进方案，明确当前 `HistoryRecord.intent` 仍是 `NativeTransferIntent`，`SubmissionKind` 当前只有 legacy/nativeTransfer/replacement/cancellation；后续需要新增 ERC-20 普通提交或 additive extension，并保持 replacement/cancellation 语义清晰。
+- 设计 draft/freeze/submit 工作流：React 表达 ERC-20 转账意图和展示冻结参数，Rust command 负责 calldata 构建、签名、广播和历史写入。
+- 设计 token metadata 与 decimals 获取策略：稳定身份是 `chainId + tokenContract`，`symbol/name/decimals` 只是 metadata；decimals 影响 amount 解析，必须在 draft 中冻结。
+- 设计 ERC-20 contract call 展示规则：transaction `to` 是 token contract，recipient 是 calldata 参数；history UI 不能混淆二者。
+- 设计错误和恢复路径：chainId mismatch、metadata call failure、decimals missing/changed、token balance insufficient、native gas insufficient、estimate gas failure、receipt reverted/failed、history write failed、replacement/cancel relationship。
+- 设计测试计划和最小实现拆分：先支持单 token、单 sender、单 recipient、标准 `transfer(address,uint256)`。
 
 **非目标**
 
 - 不实现 ERC-20 发送代码。
 - 不实现批量分发/归集。
 - 不实现 token watchlist UI 或全账户余额扫描。
-- 不实现 ABI 调用器、raw calldata、资产/授权扫描或 hot 交易解析。
+- 不实现 allowance/approve、permit、fee-on-transfer 特判、ABI 调用器、raw calldata、资产/授权扫描或 hot 交易解析。
 - 不新增前端签名、广播或 raw signed tx 出口。
 
 **验收标准**
@@ -715,7 +721,9 @@
 - 文档明确 ERC-20 当前尚未可用，P4-8 只是 spec/design。
 - 后续实现代理能根据任务卡直接拆出最小实现，不需要重新猜历史模型或安全边界。
 - ERC-20 交易类型与 native transfer、replacement、cancellation 的关系清楚，旧历史记录兼容策略清楚。
-- 设计覆盖 metadata/decimals 获取失败、余额不足、gas 由发送账户支付、receipt failed/reverted、history write failed、chainId mismatch 等关键路径。
+- 设计明确 `chainId + tokenContract` 是稳定 token 身份，symbol/name/decimals 只是 metadata；decimals 必须随 draft 冻结。
+- 设计明确 ERC-20 transfer 的 transaction `to` 是 token contract，recipient 是 calldata 参数，history UI 不能混为一谈。
+- 设计覆盖 metadata/decimals 获取失败、decimals changed、token 余额不足、native gas 不足、estimate gas 失败、receipt failed/reverted、history write failed、chainId mismatch 等关键路径。
 - 敏感信息边界明确：日志、诊断、历史、导出不包含助记词、私钥、raw signed tx、完整 RPC token 或 explorer API key。
 
 **建议测试/验证命令**
@@ -731,12 +739,131 @@
 - 不能为了预览 calldata 把签名材料或 raw signed tx 暴露给 React。
 - 历史模型迁移要保持旧 native transfer 记录可读，不能破坏 P3/P4 现有历史 UX。
 
-### 7.3 后续任务卡 / Backlog
+### 7.3 P4-8 后续拆分建议
+
+#### Task P4-8a: history schema/type contract for typed transaction intents
+
+**目标**
+
+为历史记录和前后端类型增加 typed transaction intent 契约，让 native transfer、ERC-20 transfer、replacement、cancellation 能在同一三层模型下兼容展示。
+
+**改动范围**
+
+- Rust history model 和 TypeScript history 类型新增 additive `transaction_type` / enum union 设计与实现。
+- 为 ERC-20 intent/submission 预留字段：token_contract、recipient、amount_raw、decimals、symbol/name metadata source、selector、method name、native value wei。
+- 旧 history fixture/真实记录兼容：缺失类型时走 legacy/nativeTransfer 显示契约。
+- 更新 selector/detail UI 的类型分支，未知类型显示 unsupported/unknown。
+
+**非目标**
+
+- 不构建 ERC-20 draft，不读取 token metadata。
+- 不实现 ERC-20 签名、广播或 calldata 构建。
+- 不改 vault、账户派生或 RPC 配置格式。
+
+**验收**
+
+- 旧 native transfer、replacement、cancellation 历史仍可读取和展示。
+- 新类型契约能表达 ERC-20 transfer 的 token contract 与 recipient 区分。
+- replacement/cancellation 仍按 same account + chainId + nonce 聚合，且不被当成普通 ERC-20 intent。
+
+**验证命令**
+
+- `cargo test --manifest-path src-tauri/Cargo.toml`
+- `npm test -- src/core/history src/features/history`
+- `npm run typecheck`
+- `git diff --check`
+
+**风险点**
+
+- schema 迁移必须 additive，避免破坏用户已有历史。
+- UI 分支不能用 native transfer 字段猜 ERC-20 语义。
+- 测试 fixture 不能包含 raw signed tx 或敏感凭据。
+
+#### Task P4-8b: ERC-20 draft/metadata read model
+
+**目标**
+
+实现 ERC-20 最小转账的 draft/read model：按 `chainId + tokenContract` 读取/确认 metadata、解析 amount raw、检查 token/native balance、估算 gas，并冻结可提交参数。
+
+**改动范围**
+
+- 前端 ERC-20 draft 表单和确认模型，支持单 token、单 sender、单 recipient。
+- Rust/Tauri 或既有只读 command 增加 metadata/balance/gas estimate 所需的只读调用，严格校验 RPC chainId。
+- draft key 覆盖 chainId、sender、token contract、recipient、amount raw、decimals、fee、gas、nonce、selector/method、native value wei。
+- metadata source 明确为 on-chain/cache/user-confirmed/unknown；decimals missing 或 changed 使 draft 不可提交或失效。
+
+**非目标**
+
+- 不签名、不广播、不写入 pending history。
+- 不实现 token watchlist UI 或全账户余额扫描。
+- 不支持 allowance/approve、permit、fee-on-transfer、batch 或任意 ABI。
+
+**验收**
+
+- ERC-20 draft 明确展示 transaction `to = tokenContract`、recipient calldata 参数、amount raw、decimals 和 metadata source。
+- chainId mismatch、metadata call failure、decimals missing/changed、token balance insufficient、native gas insufficient、estimate gas failure 都有可见错误状态。
+- React 不接触助记词、私钥、raw signed tx 或签名材料。
+
+**验证命令**
+
+- `npm test -- src/features/transfer src/core/transactions`
+- `npm run typecheck`
+- `cargo test --manifest-path src-tauri/Cargo.toml`
+- `git diff --check`
+
+**风险点**
+
+- decimals 一旦冻结后不能被后续 metadata 读取静默改写。
+- gas estimate 失败原因可能来自 RPC、余额、合约逻辑或 paused token，错误分类不能过度确定。
+- metadata 不可信，symbol/name 不能参与 token 身份判断。
+
+#### Task P4-8c: Rust submit command + UI + tests for minimum ERC-20 transfer
+
+**目标**
+
+在 P4-8a/P4-8b 的契约上实现最小 ERC-20 发送闭环：标准 `transfer(address,uint256)` calldata、Rust 签名广播、pending history 写入、receipt reconcile 和 UI 提交入口。
+
+**改动范围**
+
+- Rust/Tauri submit command 构建 selector `0xa9059cbb` calldata，最终签名/广播仍只在 Rust 侧完成。
+- UI 提交按钮只发送 frozen draft intent，不接触 raw signed tx。
+- history 写入 ERC-20 Intent/Submission/ChainOutcome，保存 token contract、recipient、amount raw、decimals、metadata source、selector/method、tx hash、nonce、gas/fee。
+- history write failure recovery 返回 tx hash + frozen params + write error，补录不得重新签名/广播。
+- replacement/cancel 沿用 same account + chainId + nonce。最小 replace 仅允许保持同 calldata/recipient/amount 并提高费用；cancel 仍是 native 0-value self-transfer。
+
+**非目标**
+
+- 不实现 allowance/approve、permit、fee-on-transfer 特判、batch、watchlist 扫描、ABI 调用器或 raw calldata。
+- 不支持修改 ERC-20 pending 的 recipient/amount 作为 replace；后续另行设计。
+- 不把浏览器版作为主线。
+
+**验收**
+
+- anvil 或本地测试 token 的单笔 ERC-20 transfer 可进入 pending 并 reconcile 为 confirmed 或 failed。
+- transaction `to`、token contract、recipient 在 history UI 中分开展示。
+- token balance insufficient、native gas insufficient、receipt reverted/failed、history write failed 都有测试或明确验证。
+- 日志、诊断、历史、导出不包含助记词、私钥、raw signed tx、完整 RPC token、explorer API key 或签名材料。
+
+**验证命令**
+
+- `cargo test --manifest-path src-tauri/Cargo.toml`
+- `npm test -- src/features/transfer src/features/history src/core/history`
+- `npm run typecheck`
+- `scripts/run-anvil-check.sh`
+- `git diff --check`
+
+**风险点**
+
+- 合约调用的 transaction `to` 与 recipient 容易在 UI 和历史中混淆。
+- 广播成功但历史写入失败必须保留 frozen params，否则无法安全补录。
+- replace/cancel 关系必须复用 nonce thread 语义，不能新分配 nonce。
+
+### 7.4 后续任务卡 / Backlog
 
 #### Task P4-9: token watchlist/ERC-20 余额扫描
 
-- 目标：实现或先设计 token watchlist，按 `account + chainId + token contract` 扫描 ERC-20 余额，并为 P4-8 最小实现提供 token 选择来源。
-- 依赖：P4-8 spec/design。
+- 目标：实现或先设计 token watchlist，按 `account + chainId + token contract` 扫描 ERC-20 余额，并为 ERC-20 转账后续增强提供 token 选择来源；不阻塞 P4-8c 的手输 token contract 最小实现。
+- 依赖：P4-8 spec/design；若 P4-8a/P4-8b 已完成，应复用 typed history 和 metadata read model。
 - 关键边界：watchlist 是本地配置；symbol/name/decimals 只是展示 metadata；RPC 失败、合约非 ERC-20、decimals call 失败必须有可恢复状态。
 - 是否先 spec/design：是，若 P4-8 未覆盖 watchlist 数据模型，应先做轻量 spec。
 
