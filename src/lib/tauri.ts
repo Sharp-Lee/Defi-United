@@ -54,6 +54,214 @@ export interface AppConfig {
   };
 }
 
+export type UserMetadataSource = "userConfirmed";
+export type RawMetadataSource = "onChainCall";
+export type RawMetadataStatus =
+  | "ok"
+  | "missingDecimals"
+  | "malformed"
+  | "callFailed"
+  | "nonErc20"
+  | "decimalsChanged";
+export type ResolvedMetadataSource = "onChainCall" | "userConfirmed";
+export type ResolvedMetadataStatus = RawMetadataStatus | "sourceConflict";
+export type TokenScanStatus =
+  | "idle"
+  | "scanning"
+  | "ok"
+  | "partial"
+  | "failed"
+  | "chainMismatch"
+  | "nonErc20"
+  | "malformed";
+export type BalanceStatus =
+  | "ok"
+  | "zero"
+  | "balanceCallFailed"
+  | "malformedBalance"
+  | "rpcFailed"
+  | "chainMismatch"
+  | "stale";
+
+export interface MetadataOverride {
+  symbol?: string | null;
+  name?: string | null;
+  decimals?: number | null;
+  source: UserMetadataSource;
+  confirmedAt: string;
+}
+
+export interface WatchlistTokenRecord {
+  chainId: number;
+  tokenContract: string;
+  label?: string | null;
+  userNotes?: string | null;
+  pinned: boolean;
+  hidden: boolean;
+  createdAt: string;
+  updatedAt: string;
+  metadataOverride?: MetadataOverride | null;
+}
+
+export interface TokenMetadataCacheRecord {
+  chainId: number;
+  tokenContract: string;
+  rawSymbol?: string | null;
+  rawName?: string | null;
+  rawDecimals?: number | null;
+  source: RawMetadataSource;
+  status: RawMetadataStatus;
+  createdAt: string;
+  updatedAt: string;
+  lastScannedAt?: string | null;
+  lastErrorSummary?: string | null;
+  observedDecimals?: number | null;
+  previousDecimals?: number | null;
+}
+
+export interface TokenScanStateRecord {
+  chainId: number;
+  tokenContract: string;
+  status: TokenScanStatus;
+  createdAt: string;
+  lastStartedAt?: string | null;
+  lastFinishedAt?: string | null;
+  updatedAt: string;
+  lastErrorSummary?: string | null;
+  rpcIdentity?: string | null;
+  rpcProfileId?: string | null;
+}
+
+export interface ResolvedTokenMetadataSnapshot {
+  symbol?: string | null;
+  name?: string | null;
+  decimals?: number | null;
+  source: ResolvedMetadataSource;
+  status: ResolvedMetadataStatus;
+}
+
+export interface Erc20BalanceSnapshotRecord {
+  account: string;
+  chainId: number;
+  tokenContract: string;
+  balanceRaw: string;
+  balanceStatus: BalanceStatus;
+  createdAt: string;
+  metadataStatusRef?: ResolvedMetadataStatus | null;
+  lastScannedAt?: string | null;
+  updatedAt: string;
+  lastErrorSummary?: string | null;
+  rpcIdentity?: string | null;
+  rpcProfileId?: string | null;
+  resolvedMetadata?: ResolvedTokenMetadataSnapshot | null;
+}
+
+export interface ResolvedTokenMetadataRecord extends ResolvedTokenMetadataSnapshot {
+  chainId: number;
+  tokenContract: string;
+  updatedAt: string;
+}
+
+export interface TokenWatchlistState {
+  schemaVersion: number;
+  watchlistTokens: WatchlistTokenRecord[];
+  tokenMetadataCache: TokenMetadataCacheRecord[];
+  tokenScanState: TokenScanStateRecord[];
+  erc20BalanceSnapshots: Erc20BalanceSnapshotRecord[];
+  resolvedTokenMetadata: ResolvedTokenMetadataRecord[];
+}
+
+export interface MetadataOverrideInput {
+  symbol?: string | null;
+  name?: string | null;
+  decimals?: number | null;
+  source?: UserMetadataSource | null;
+  confirmedAt?: string | null;
+}
+
+export interface AddWatchlistTokenInput {
+  chainId: number;
+  tokenContract: string;
+  label?: string | null;
+  userNotes?: string | null;
+  pinned?: boolean;
+  hidden?: boolean;
+  metadataOverride?: MetadataOverrideInput | null;
+}
+
+export interface EditWatchlistTokenInput {
+  chainId: number;
+  tokenContract: string;
+  newChainId?: number;
+  newTokenContract?: string;
+  label?: string;
+  clearLabel?: boolean;
+  userNotes?: string;
+  clearUserNotes?: boolean;
+  pinned?: boolean;
+  hidden?: boolean;
+  metadataOverride?: MetadataOverrideInput;
+  clearMetadataOverride?: boolean;
+}
+
+export interface RemoveWatchlistTokenInput {
+  chainId: number;
+  tokenContract: string;
+  clearMetadataCache?: boolean;
+  clearScanState?: boolean;
+  clearSnapshots?: boolean;
+}
+
+export interface UpsertTokenMetadataCacheInput {
+  chainId: number;
+  tokenContract: string;
+  rawSymbol?: string | null;
+  rawName?: string | null;
+  rawDecimals?: number | null;
+  source?: RawMetadataSource | null;
+  status: RawMetadataStatus;
+  lastScannedAt?: string | null;
+  lastErrorSummary?: string | null;
+  observedDecimals?: number | null;
+  previousDecimals?: number | null;
+}
+
+export interface UpsertTokenScanStateInput {
+  chainId: number;
+  tokenContract: string;
+  status: TokenScanStatus;
+  lastStartedAt?: string;
+  clearLastStartedAt?: boolean;
+  lastFinishedAt?: string;
+  clearLastFinishedAt?: boolean;
+  lastErrorSummary?: string;
+  clearLastErrorSummary?: boolean;
+  rpcIdentity?: string;
+  clearRpcIdentity?: boolean;
+  rpcProfileId?: string;
+  clearRpcProfileId?: boolean;
+}
+
+export interface UpsertErc20BalanceSnapshotInput {
+  account: string;
+  chainId: number;
+  tokenContract: string;
+  balanceRaw?: string;
+  balanceStatus: BalanceStatus;
+  metadataStatusRef?: ResolvedMetadataStatus;
+  clearMetadataStatusRef?: boolean;
+  lastScannedAt?: string;
+  clearLastScannedAt?: boolean;
+  lastErrorSummary?: string;
+  clearLastErrorSummary?: boolean;
+  rpcIdentity?: string;
+  clearRpcIdentity?: boolean;
+  rpcProfileId?: string;
+  clearRpcProfileId?: boolean;
+  resolvedMetadata?: ResolvedTokenMetadataSnapshot;
+  clearResolvedMetadata?: boolean;
+}
+
 export type DiagnosticLevel = "info" | "warn" | "error";
 
 export interface DiagnosticEvent {
@@ -228,6 +436,34 @@ export function rememberValidatedRpc(endpoint: {
   rpcUrl: string;
 }) {
   return invoke<AppConfig>("remember_validated_rpc", { endpoint });
+}
+
+export function loadTokenWatchlistState() {
+  return invoke<TokenWatchlistState>("load_token_watchlist_state");
+}
+
+export function addWatchlistToken(input: AddWatchlistTokenInput) {
+  return invoke<TokenWatchlistState>("add_watchlist_token", { input });
+}
+
+export function editWatchlistToken(input: EditWatchlistTokenInput) {
+  return invoke<TokenWatchlistState>("edit_watchlist_token", { input });
+}
+
+export function removeWatchlistToken(input: RemoveWatchlistTokenInput) {
+  return invoke<TokenWatchlistState>("remove_watchlist_token", { input });
+}
+
+export function upsertTokenMetadataCache(input: UpsertTokenMetadataCacheInput) {
+  return invoke<TokenWatchlistState>("upsert_token_metadata_cache", { input });
+}
+
+export function upsertTokenScanState(input: UpsertTokenScanStateInput) {
+  return invoke<TokenWatchlistState>("upsert_token_scan_state", { input });
+}
+
+export function upsertErc20BalanceSnapshot(input: UpsertErc20BalanceSnapshotInput) {
+  return invoke<TokenWatchlistState>("upsert_erc20_balance_snapshot", { input });
 }
 
 export async function createAndScanAccount(index: number, chainId: number, rpcUrl: string) {
