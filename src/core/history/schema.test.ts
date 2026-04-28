@@ -424,6 +424,277 @@ describe("history schema normalization", () => {
     expect(records[0].outcome.state).toBe("Unknown");
   });
 
+  it("normalizes arbitrary ABI write call metadata without raw ABI, calldata, params, or RPC secrets", () => {
+    const rawCalldata = `0xa9059cbb${"0".repeat(512)}`;
+    const overlongKind = `kind-${"x".repeat(220)}`;
+    const overlongType = `0x${"ab".repeat(160)}`;
+    const overlongHash = `0x${"cd".repeat(160)}`;
+    const records = normalizeHistoryRecords([
+      {
+        schema_version: 4,
+        intent: {
+          ...legacyIntent,
+          transaction_type: "contractCall",
+          to: "0x6666666666666666666666666666666666666666",
+          value_wei: "42",
+          selector: "0xa9059cbb",
+          method_name: "transfer(address,uint256)",
+          native_value_wei: "42",
+        },
+        submission: {
+          frozen_key: "abi-draft-key",
+          tx_hash: "unknown",
+          kind: "abiWriteCall",
+          source: "abiWriteDraft",
+          chain_id: 1,
+          account_index: 1,
+          from: legacyIntent.from,
+          to: "0x6666666666666666666666666666666666666666",
+          value_wei: "42",
+          nonce: null,
+          gas_limit: null,
+          max_fee_per_gas: null,
+          max_priority_fee_per_gas: null,
+        },
+        outcome: { state: "Unknown", tx_hash: "unknown" },
+        nonce_thread: {
+          source: "abiWriteDraft",
+          key: "unknown",
+          chain_id: 1,
+          account_index: 1,
+          from: legacyIntent.from,
+          nonce: null,
+        },
+        abiCallMetadata: {
+          intentKind: "abiWriteCall",
+          draftId: "draft-abi-1",
+          createdAt: "2026-04-29T01:02:03.000Z",
+          chainId: 1,
+          accountIndex: 1,
+          from: legacyIntent.from,
+          contractAddress: "0x6666666666666666666666666666666666666666",
+          sourceKind: "provider",
+          providerConfigId: "etherscan-mainnet",
+          userSourceId: null,
+          versionId: "v1",
+          abiHash: "0xabi",
+          sourceFingerprint: "0xfingerprint",
+          functionSignature: "transfer(address,uint256)",
+          selector: "0xa9059cbb",
+          argumentSummary: [
+            {
+              kind: "address",
+              type: "address",
+              value: "0x7777777777777777777777777777777777777777",
+              truncated: false,
+              rawParam: "do not persist",
+            },
+            {
+              kind: "uint",
+              type: "uint256",
+              value: "1000000",
+              truncated: false,
+            },
+            {
+              kind: overlongKind,
+              type: overlongType,
+              value: "payload-summary",
+              hash: overlongHash,
+              truncated: false,
+            },
+            {
+              kind: "string",
+              type: "string",
+              value: "callback https://rpc.example/?api_key=SECRET_TOKEN Authorization: Bearer SECRET_TOKEN password=SECRET_TOKEN",
+              truncated: false,
+            },
+          ],
+          argumentHash: "0xargs",
+          canonicalParams: ["0x7777777777777777777777777777777777777777", "1000000"],
+          nativeValueWei: "42",
+          nonce: null,
+          gasLimit: null,
+          maxFeePerGas: null,
+          maxPriorityFeePerGas: null,
+          selectedRpc: {
+            chainId: 1,
+            providerConfigId: "mainnet-rpc",
+            endpointId: "primary",
+            endpointName: "Mainnet primary token=SECRET_TOKEN",
+            endpointSummary: "https://rpc.example/?api_key=SECRET_TOKEN",
+            rpcUrl: "https://rpc.example/?api_key=SECRET_TOKEN",
+          },
+          warnings: [
+            {
+              level: "warning",
+              code: "payable",
+              message: "Requires value via https://rpc.example/?api_key=SECRET_TOKEN",
+              source: "abi",
+            },
+          ],
+          blockingStatuses: [
+            {
+              level: "blocking",
+              code: "unsupportedTuple",
+              message: "Tuple input Authorization: Bearer SECRET_TOKEN",
+              source: "abi",
+            },
+          ],
+          calldata: {
+            selector: "0xa9059cbb",
+            byteLength: 68,
+            hash: "0xcalldatahash",
+            rawCalldata,
+          },
+          futureSubmission: {
+            status: null,
+            txHash: null,
+            submittedAt: null,
+            broadcastedAt: null,
+            errorSummary: "submit failed token=SECRET_TOKEN",
+          },
+          futureOutcome: {
+            state: "Confirmed",
+            checkedAt: null,
+            receiptStatus: null,
+            blockNumber: null,
+            gasUsed: null,
+            errorSummary: "receipt failed https://rpc.example/?token=SECRET_TOKEN",
+          },
+          broadcast: {
+            txHash: null,
+            broadcastedAt: null,
+            rpcChainId: null,
+            rpcEndpointSummary: "wss://rpc.example/socket?token=SECRET_TOKEN",
+            errorSummary: "broadcast failed Bearer SECRET_TOKEN",
+          },
+          recovery: {
+            recoveryId: null,
+            status: null,
+            createdAt: null,
+            recoveredAt: null,
+            lastError: "recover failed api_key=SECRET_TOKEN",
+            replacementTxHash: null,
+          },
+          rawAbi: "[{\"type\":\"function\",\"name\":\"transfer\"}]",
+        },
+      },
+    ]);
+
+    expect(records[0].submission.kind).toBe("abiWriteCall");
+    expect(records[0].submission.transaction_type).toBe("contractCall");
+    expect(records[0].abi_call_metadata).toMatchObject({
+      intent_kind: "abiWriteCall",
+      chain_id: 1,
+      account_index: 1,
+      contract_address: "0x6666666666666666666666666666666666666666",
+      source_kind: "provider",
+      provider_config_id: "etherscan-mainnet",
+      version_id: "v1",
+      abi_hash: "0xabi",
+      source_fingerprint: "0xfingerprint",
+      function_signature: "transfer(address,uint256)",
+      selector: "0xa9059cbb",
+      argument_hash: "0xargs",
+      native_value_wei: "42",
+      gas_limit: null,
+      max_fee_per_gas: null,
+      max_priority_fee_per_gas: null,
+      nonce: null,
+      selected_rpc: {
+        provider_config_id: "mainnet-rpc",
+        endpoint_id: "primary",
+        endpoint_name: "Mainnet primary [redacted_secret]",
+        endpoint_summary: "[redacted_endpoint]",
+      },
+      calldata: {
+        selector: "0xa9059cbb",
+        byte_length: 68,
+        hash: "0xcalldatahash",
+      },
+      future_submission: {
+        tx_hash: null,
+        broadcasted_at: null,
+        error_summary: "submit failed [redacted_secret]",
+      },
+      future_outcome: {
+        state: "Confirmed",
+        error_summary: "receipt failed [redacted_endpoint]",
+      },
+      broadcast: {
+        tx_hash: null,
+        rpc_endpoint_summary: "[redacted_endpoint]",
+        error_summary: "broadcast failed Bearer [redacted_secret]",
+      },
+      recovery: {
+        recovery_id: null,
+        last_error: "recover failed [redacted_secret]",
+        replacement_tx_hash: null,
+      },
+    });
+    expect(records[0].abi_call_metadata?.argument_summary).toEqual([
+      {
+        kind: "address",
+        type: "address",
+        value: "0x7777777777777777777777777777777777777777",
+        byte_length: null,
+        hash: null,
+        items: [],
+        fields: [],
+        truncated: false,
+      },
+      {
+        kind: "uint",
+        type: "uint256",
+        value: "1000000",
+        byte_length: null,
+        hash: null,
+        items: [],
+        fields: [],
+        truncated: false,
+      },
+      {
+        kind: "kind-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx...[truncated]",
+        type: "[redacted_payload]",
+        value: "payload-summary",
+        byte_length: null,
+        hash: "0xcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd...[truncated]",
+        items: [],
+        fields: [],
+        truncated: true,
+      },
+      {
+        kind: "string",
+        type: "string",
+        value: "callback [redacted_endpoint] [redacted_secret] [redacted_secret] [redacted_secret]",
+        byte_length: null,
+        hash: null,
+        items: [],
+        fields: [],
+        truncated: true,
+      },
+    ]);
+    expect(records[0].abi_call_metadata?.warnings[0]).toMatchObject({
+      code: "payable",
+      message: "Requires value via [redacted_endpoint]",
+    });
+    expect(records[0].abi_call_metadata?.blocking_statuses[0]).toMatchObject({
+      level: "blocking",
+      message: "Tuple input [redacted_secret] [redacted_secret]",
+    });
+
+    const durable = JSON.stringify(records[0]);
+    expect(durable).not.toContain(rawCalldata);
+    expect(durable).not.toContain("rawAbi");
+    expect(durable).not.toContain("canonicalParams");
+    expect(durable).not.toContain("SECRET_TOKEN");
+    expect(durable).not.toContain("api_key");
+    expect(durable).not.toContain("token=");
+    expect(durable).not.toContain(overlongKind);
+    expect(durable).not.toContain(overlongType);
+    expect(durable).not.toContain(overlongHash);
+  });
+
   it("normalizes additive dropped review audit history", () => {
     const records = normalizeHistoryRecords([
       {

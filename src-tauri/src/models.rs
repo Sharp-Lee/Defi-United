@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VaultBlob {
@@ -100,6 +100,7 @@ pub enum SubmissionKind {
     Legacy,
     NativeTransfer,
     Erc20Transfer,
+    AbiWriteCall,
     Replacement,
     Cancellation,
     #[serde(other)]
@@ -297,6 +298,342 @@ pub struct BatchRecipientAllocation {
     pub value_wei: String,
     #[serde(default)]
     pub amount_raw: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AbiCallSelectedRpcSummary {
+    #[serde(default, alias = "chain_id")]
+    pub chain_id: Option<u64>,
+    #[serde(default, alias = "provider_config_id")]
+    pub provider_config_id: Option<String>,
+    #[serde(default, alias = "endpoint_id")]
+    pub endpoint_id: Option<String>,
+    #[serde(
+        default,
+        alias = "endpoint_name",
+        deserialize_with = "deserialize_sanitized_rpc_option_120",
+        serialize_with = "serialize_sanitized_rpc_option_120"
+    )]
+    pub endpoint_name: Option<String>,
+    #[serde(
+        default,
+        alias = "endpoint_summary",
+        deserialize_with = "deserialize_sanitized_rpc_option_200",
+        serialize_with = "serialize_sanitized_rpc_option_200"
+    )]
+    pub endpoint_summary: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AbiCallStatusSummary {
+    #[serde(default = "unknown_string")]
+    pub level: String,
+    #[serde(default = "unknown_string")]
+    pub code: String,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_sanitized_text_option_256",
+        serialize_with = "serialize_sanitized_text_option_256"
+    )]
+    pub message: Option<String>,
+    #[serde(default)]
+    pub source: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AbiDecodedFieldHistorySummary {
+    #[serde(
+        default,
+        deserialize_with = "deserialize_sanitized_text_option_96",
+        serialize_with = "serialize_sanitized_text_option_96"
+    )]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub value: AbiDecodedValueHistorySummary,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct AbiDecodedValueHistorySummary {
+    pub kind: String,
+    pub type_label: String,
+    pub value: Option<String>,
+    pub byte_length: Option<u64>,
+    pub hash: Option<String>,
+    pub items: Vec<AbiDecodedValueHistorySummary>,
+    pub fields: Vec<AbiDecodedFieldHistorySummary>,
+    pub truncated: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AbiDecodedValueHistorySummaryWire<'a> {
+    kind: &'a str,
+    #[serde(rename = "type")]
+    type_label: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    value: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    byte_length: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    hash: Option<&'a str>,
+    items: &'a [AbiDecodedValueHistorySummary],
+    fields: &'a [AbiDecodedFieldHistorySummary],
+    truncated: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AbiDecodedValueHistorySummaryRaw {
+    #[serde(default = "unknown_string")]
+    kind: String,
+    #[serde(rename = "type")]
+    #[serde(default = "unknown_string")]
+    type_label: String,
+    #[serde(default)]
+    value: Option<String>,
+    #[serde(default, alias = "byte_length")]
+    byte_length: Option<u64>,
+    #[serde(default)]
+    hash: Option<String>,
+    #[serde(default)]
+    items: Vec<AbiDecodedValueHistorySummary>,
+    #[serde(default)]
+    fields: Vec<AbiDecodedFieldHistorySummary>,
+    #[serde(default)]
+    truncated: bool,
+}
+
+impl Serialize for AbiDecodedValueHistorySummary {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let sanitized = sanitize_abi_decoded_value_summary(self.clone(), 0);
+        AbiDecodedValueHistorySummaryWire {
+            kind: &sanitized.kind,
+            type_label: &sanitized.type_label,
+            value: sanitized.value.as_deref(),
+            byte_length: sanitized.byte_length,
+            hash: sanitized.hash.as_deref(),
+            items: &sanitized.items,
+            fields: &sanitized.fields,
+            truncated: sanitized.truncated,
+        }
+        .serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for AbiDecodedValueHistorySummary {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = AbiDecodedValueHistorySummaryRaw::deserialize(deserializer)?;
+        Ok(sanitize_abi_decoded_value_summary(
+            AbiDecodedValueHistorySummary {
+                kind: raw.kind,
+                type_label: raw.type_label,
+                value: raw.value,
+                byte_length: raw.byte_length,
+                hash: raw.hash,
+                items: raw.items,
+                fields: raw.fields,
+                truncated: raw.truncated,
+            },
+            0,
+        ))
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AbiCallCalldataSummary {
+    #[serde(default)]
+    pub selector: Option<String>,
+    #[serde(default, alias = "byte_length")]
+    pub byte_length: Option<u64>,
+    #[serde(default)]
+    pub hash: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AbiCallSubmissionPlaceholder {
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default, alias = "tx_hash")]
+    pub tx_hash: Option<String>,
+    #[serde(default, alias = "submitted_at")]
+    pub submitted_at: Option<String>,
+    #[serde(default, alias = "broadcasted_at")]
+    pub broadcasted_at: Option<String>,
+    #[serde(
+        default,
+        alias = "error_summary",
+        deserialize_with = "deserialize_sanitized_text_option_256",
+        serialize_with = "serialize_sanitized_text_option_256"
+    )]
+    pub error_summary: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum AbiCallOutcomeState {
+    #[serde(alias = "pending")]
+    Pending,
+    #[serde(alias = "confirmed")]
+    Confirmed,
+    #[serde(alias = "failed")]
+    Failed,
+    #[serde(alias = "replaced")]
+    Replaced,
+    #[serde(alias = "cancelled")]
+    Cancelled,
+    #[serde(alias = "dropped")]
+    Dropped,
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AbiCallOutcomePlaceholder {
+    #[serde(default)]
+    pub state: Option<AbiCallOutcomeState>,
+    #[serde(default, alias = "checked_at")]
+    pub checked_at: Option<String>,
+    #[serde(default, alias = "receipt_status")]
+    pub receipt_status: Option<u64>,
+    #[serde(default, alias = "block_number")]
+    pub block_number: Option<u64>,
+    #[serde(default, alias = "gas_used")]
+    pub gas_used: Option<String>,
+    #[serde(
+        default,
+        alias = "error_summary",
+        deserialize_with = "deserialize_sanitized_text_option_256",
+        serialize_with = "serialize_sanitized_text_option_256"
+    )]
+    pub error_summary: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AbiCallBroadcastPlaceholder {
+    #[serde(default, alias = "tx_hash")]
+    pub tx_hash: Option<String>,
+    #[serde(default, alias = "broadcasted_at")]
+    pub broadcasted_at: Option<String>,
+    #[serde(default, alias = "rpc_chain_id")]
+    pub rpc_chain_id: Option<u64>,
+    #[serde(
+        default,
+        alias = "rpc_endpoint_summary",
+        deserialize_with = "deserialize_sanitized_rpc_option_200",
+        serialize_with = "serialize_sanitized_rpc_option_200"
+    )]
+    pub rpc_endpoint_summary: Option<String>,
+    #[serde(
+        default,
+        alias = "error_summary",
+        deserialize_with = "deserialize_sanitized_text_option_256",
+        serialize_with = "serialize_sanitized_text_option_256"
+    )]
+    pub error_summary: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AbiCallRecoveryPlaceholder {
+    #[serde(default, alias = "recovery_id")]
+    pub recovery_id: Option<String>,
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default, alias = "created_at")]
+    pub created_at: Option<String>,
+    #[serde(default, alias = "recovered_at")]
+    pub recovered_at: Option<String>,
+    #[serde(
+        default,
+        alias = "last_error",
+        deserialize_with = "deserialize_sanitized_text_option_256",
+        serialize_with = "serialize_sanitized_text_option_256"
+    )]
+    pub last_error: Option<String>,
+    #[serde(default, alias = "replacement_tx_hash")]
+    pub replacement_tx_hash: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AbiCallHistoryMetadata {
+    #[serde(default = "unknown_string", alias = "intent_kind")]
+    pub intent_kind: String,
+    #[serde(default, alias = "draft_id")]
+    pub draft_id: Option<String>,
+    #[serde(default, alias = "created_at")]
+    pub created_at: Option<String>,
+    #[serde(default, alias = "chain_id")]
+    pub chain_id: Option<u64>,
+    #[serde(default, alias = "account_index")]
+    pub account_index: Option<u32>,
+    #[serde(default)]
+    pub from: Option<String>,
+    #[serde(default, alias = "contract_address")]
+    pub contract_address: Option<String>,
+    #[serde(default = "unknown_string", alias = "source_kind")]
+    pub source_kind: String,
+    #[serde(default, alias = "provider_config_id")]
+    pub provider_config_id: Option<String>,
+    #[serde(default, alias = "user_source_id")]
+    pub user_source_id: Option<String>,
+    #[serde(default, alias = "version_id")]
+    pub version_id: Option<String>,
+    #[serde(default, alias = "abi_hash")]
+    pub abi_hash: Option<String>,
+    #[serde(default, alias = "source_fingerprint")]
+    pub source_fingerprint: Option<String>,
+    #[serde(default, alias = "function_signature")]
+    pub function_signature: Option<String>,
+    #[serde(default)]
+    pub selector: Option<String>,
+    #[serde(
+        default,
+        alias = "argument_summary",
+        deserialize_with = "deserialize_bounded_abi_value_summaries",
+        serialize_with = "serialize_bounded_abi_value_summaries"
+    )]
+    pub argument_summary: Vec<AbiDecodedValueHistorySummary>,
+    #[serde(default, alias = "argument_hash")]
+    pub argument_hash: Option<String>,
+    #[serde(default, alias = "native_value_wei")]
+    pub native_value_wei: Option<String>,
+    #[serde(default, alias = "gas_limit")]
+    pub gas_limit: Option<String>,
+    #[serde(default, alias = "max_fee_per_gas")]
+    pub max_fee_per_gas: Option<String>,
+    #[serde(default, alias = "max_priority_fee_per_gas")]
+    pub max_priority_fee_per_gas: Option<String>,
+    #[serde(default)]
+    pub nonce: Option<u64>,
+    #[serde(default, alias = "selected_rpc")]
+    pub selected_rpc: Option<AbiCallSelectedRpcSummary>,
+    #[serde(default)]
+    pub warnings: Vec<AbiCallStatusSummary>,
+    #[serde(default, alias = "blocking_statuses")]
+    pub blocking_statuses: Vec<AbiCallStatusSummary>,
+    #[serde(default)]
+    pub calldata: Option<AbiCallCalldataSummary>,
+    #[serde(default, alias = "future_submission")]
+    pub future_submission: Option<AbiCallSubmissionPlaceholder>,
+    #[serde(default, alias = "future_outcome")]
+    pub future_outcome: Option<AbiCallOutcomePlaceholder>,
+    #[serde(default)]
+    pub broadcast: Option<AbiCallBroadcastPlaceholder>,
+    #[serde(default)]
+    pub recovery: Option<AbiCallRecoveryPlaceholder>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -504,8 +841,300 @@ pub struct Erc20BatchSubmitResult {
     pub summary: Erc20BatchSubmitSummary,
 }
 
+const ABI_HISTORY_VALUE_MAX_CHARS: usize = 256;
+const ABI_HISTORY_LABEL_MAX_CHARS: usize = 96;
+const ABI_HISTORY_RPC_NAME_MAX_CHARS: usize = 120;
+const ABI_HISTORY_RPC_SUMMARY_MAX_CHARS: usize = 200;
+const ABI_HISTORY_HASH_MAX_CHARS: usize = 128;
+const ABI_HISTORY_MAX_ITEMS: usize = 16;
+const ABI_HISTORY_MAX_FIELDS: usize = 16;
+const ABI_HISTORY_MAX_ARGUMENTS: usize = 32;
+const ABI_HISTORY_MAX_DEPTH: usize = 4;
+
 fn unknown_string() -> String {
     "unknown".to_string()
+}
+
+fn truncate_chars(value: &str, max_chars: usize) -> (String, bool) {
+    let mut chars = value.chars();
+    let truncated = value.chars().count() > max_chars;
+    if !truncated {
+        return (value.to_string(), false);
+    }
+    let mut bounded = chars.by_ref().take(max_chars).collect::<String>();
+    bounded.push_str("...[truncated]");
+    (bounded, true)
+}
+
+fn sanitize_abi_history_text(value: &str, max_chars: usize) -> (String, bool) {
+    let sanitized =
+        redact_abi_sensitive_key_labels(crate::diagnostics::sanitize_diagnostic_message(value));
+    let redacted = sanitized != value;
+    let (bounded, truncated) = truncate_chars(&sanitized, max_chars);
+    (bounded, redacted || truncated)
+}
+
+fn redact_abi_sensitive_key_labels(mut value: String) -> String {
+    for key in [
+        "api_key",
+        "apikey",
+        "token",
+        "auth",
+        "authorization",
+        "password",
+        "secret",
+        "private_key",
+        "access_token",
+    ] {
+        for separator in ["=", ": "] {
+            let needle = format!("{key}{separator}[redacted]");
+            value = value.replace(&needle, "[redacted_secret]");
+            let uppercase_needle = format!("{}{separator}[redacted]", key.to_ascii_uppercase());
+            value = value.replace(&uppercase_needle, "[redacted_secret]");
+            let titlecase_needle = format!(
+                "{}{}{separator}[redacted]",
+                &key[..1].to_ascii_uppercase(),
+                &key[1..]
+            );
+            value = value.replace(&titlecase_needle, "[redacted_secret]");
+        }
+    }
+    value
+}
+
+fn sanitize_abi_history_text_option(
+    value: Option<String>,
+    max_chars: usize,
+) -> (Option<String>, bool) {
+    let Some(value) = value else {
+        return (None, false);
+    };
+    let (sanitized, changed) = sanitize_abi_history_text(&value, max_chars);
+    (Some(sanitized), changed)
+}
+
+fn sanitize_abi_rpc_summary(value: &str, max_chars: usize) -> String {
+    let (mut sanitized, _) = sanitize_abi_history_text(value, max_chars);
+    sanitized = sanitized.replace("[redacted_url]", "[redacted_endpoint]");
+    let lower = sanitized.to_ascii_lowercase();
+    if lower.contains("api_key")
+        || lower.contains("apikey")
+        || lower.contains("token=")
+        || lower.contains("token:")
+        || lower.contains("authorization")
+        || lower.contains("private_key")
+        || lower.contains("password")
+        || lower.contains("secret")
+    {
+        return "[redacted_endpoint]".to_string();
+    }
+    sanitized
+}
+
+fn deserialize_sanitized_text_option_96<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<String>::deserialize(deserializer)?;
+    Ok(sanitize_abi_history_text_option(value, ABI_HISTORY_LABEL_MAX_CHARS).0)
+}
+
+fn serialize_sanitized_text_option_96<S>(
+    value: &Option<String>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    let sanitized = value
+        .as_deref()
+        .map(|value| sanitize_abi_history_text(value, ABI_HISTORY_LABEL_MAX_CHARS).0);
+    sanitized.serialize(serializer)
+}
+
+fn deserialize_sanitized_text_option_256<'de, D>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<String>::deserialize(deserializer)?;
+    Ok(sanitize_abi_history_text_option(value, ABI_HISTORY_VALUE_MAX_CHARS).0)
+}
+
+fn serialize_sanitized_text_option_256<S>(
+    value: &Option<String>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    let sanitized = value
+        .as_deref()
+        .map(|value| sanitize_abi_history_text(value, ABI_HISTORY_VALUE_MAX_CHARS).0);
+    sanitized.serialize(serializer)
+}
+
+fn deserialize_sanitized_rpc_option<'de, D>(
+    deserializer: D,
+    max_chars: usize,
+) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<String>::deserialize(deserializer)?;
+    Ok(value.map(|value| sanitize_abi_rpc_summary(&value, max_chars)))
+}
+
+fn serialize_sanitized_rpc_option<S>(
+    value: &Option<String>,
+    serializer: S,
+    max_chars: usize,
+) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    let sanitized = value
+        .as_deref()
+        .map(|value| sanitize_abi_rpc_summary(value, max_chars));
+    sanitized.serialize(serializer)
+}
+
+fn deserialize_sanitized_rpc_option_120<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_sanitized_rpc_option(deserializer, ABI_HISTORY_RPC_NAME_MAX_CHARS)
+}
+
+fn serialize_sanitized_rpc_option_120<S>(
+    value: &Option<String>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    serialize_sanitized_rpc_option(value, serializer, ABI_HISTORY_RPC_NAME_MAX_CHARS)
+}
+
+fn deserialize_sanitized_rpc_option_200<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_sanitized_rpc_option(deserializer, ABI_HISTORY_RPC_SUMMARY_MAX_CHARS)
+}
+
+fn serialize_sanitized_rpc_option_200<S>(
+    value: &Option<String>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    serialize_sanitized_rpc_option(value, serializer, ABI_HISTORY_RPC_SUMMARY_MAX_CHARS)
+}
+
+fn sanitize_abi_decoded_field_summary(
+    mut field: AbiDecodedFieldHistorySummary,
+    depth: usize,
+) -> (AbiDecodedFieldHistorySummary, bool) {
+    let (name, name_changed) =
+        sanitize_abi_history_text_option(field.name, ABI_HISTORY_LABEL_MAX_CHARS);
+    field.name = name;
+    let value = sanitize_abi_decoded_value_summary(field.value, depth);
+    let value_changed = value.truncated;
+    field.value = value;
+    (field, name_changed || value_changed)
+}
+
+fn sanitize_abi_decoded_value_summary(
+    mut value: AbiDecodedValueHistorySummary,
+    depth: usize,
+) -> AbiDecodedValueHistorySummary {
+    let (kind, kind_changed) = sanitize_abi_history_text(&value.kind, ABI_HISTORY_LABEL_MAX_CHARS);
+    let (type_label, type_changed) =
+        sanitize_abi_history_text(&value.type_label, ABI_HISTORY_LABEL_MAX_CHARS);
+    let (summary_value, value_changed) =
+        sanitize_abi_history_text_option(value.value, ABI_HISTORY_VALUE_MAX_CHARS);
+    let (hash, hash_changed) =
+        sanitize_abi_history_text_option(value.hash, ABI_HISTORY_HASH_MAX_CHARS);
+    value.kind = kind;
+    value.type_label = type_label;
+    value.value = summary_value;
+    value.hash = hash;
+    value.truncated =
+        value.truncated || kind_changed || type_changed || value_changed || hash_changed;
+
+    if depth >= ABI_HISTORY_MAX_DEPTH {
+        if !value.items.is_empty() || !value.fields.is_empty() {
+            value.truncated = true;
+        }
+        value.items.clear();
+        value.fields.clear();
+        return value;
+    }
+
+    if value.items.len() > ABI_HISTORY_MAX_ITEMS {
+        value.truncated = true;
+    }
+    value.items = value
+        .items
+        .into_iter()
+        .take(ABI_HISTORY_MAX_ITEMS)
+        .map(|item| sanitize_abi_decoded_value_summary(item, depth + 1))
+        .collect();
+
+    if value.fields.len() > ABI_HISTORY_MAX_FIELDS {
+        value.truncated = true;
+    }
+    let mut field_changed = false;
+    value.fields = value
+        .fields
+        .into_iter()
+        .take(ABI_HISTORY_MAX_FIELDS)
+        .map(|field| {
+            let (field, changed) = sanitize_abi_decoded_field_summary(field, depth + 1);
+            if changed {
+                field_changed = true;
+            }
+            field
+        })
+        .collect();
+    if field_changed {
+        value.truncated = true;
+    }
+
+    value
+}
+
+fn deserialize_bounded_abi_value_summaries<'de, D>(
+    deserializer: D,
+) -> Result<Vec<AbiDecodedValueHistorySummary>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let values = Vec::<AbiDecodedValueHistorySummary>::deserialize(deserializer)?;
+    Ok(values
+        .into_iter()
+        .take(ABI_HISTORY_MAX_ARGUMENTS)
+        .map(|value| sanitize_abi_decoded_value_summary(value, 0))
+        .collect())
+}
+
+fn serialize_bounded_abi_value_summaries<S>(
+    values: &Vec<AbiDecodedValueHistorySummary>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    let sanitized = values
+        .iter()
+        .take(ABI_HISTORY_MAX_ARGUMENTS)
+        .cloned()
+        .map(|value| sanitize_abi_decoded_value_summary(value, 0))
+        .collect::<Vec<_>>();
+    sanitized.serialize(serializer)
 }
 
 fn legacy_string() -> String {
@@ -723,6 +1352,8 @@ pub struct HistoryRecord {
     pub nonce_thread: NonceThread,
     #[serde(default)]
     pub batch_metadata: Option<BatchHistoryMetadata>,
+    #[serde(default)]
+    pub abi_call_metadata: Option<AbiCallHistoryMetadata>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -787,6 +1418,8 @@ pub struct HistoryRecoveryIntent {
     pub replaces_tx_hash: Option<String>,
     #[serde(default)]
     pub batch_metadata: Option<BatchHistoryMetadata>,
+    #[serde(default)]
+    pub abi_call_metadata: Option<AbiCallHistoryMetadata>,
     pub broadcasted_at: String,
     pub write_error: String,
     #[serde(default)]

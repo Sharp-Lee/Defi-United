@@ -595,6 +595,21 @@ fn validate_erc20_replacement_fee_increase(
     Ok(())
 }
 
+fn validate_pending_mutation_supported(
+    record: &crate::models::HistoryRecord,
+) -> Result<(), String> {
+    if record.abi_call_metadata.is_some()
+        || record.submission.kind == SubmissionKind::AbiWriteCall
+        || record.submission.typed_transaction.transaction_type == TransactionType::ContractCall
+    {
+        return Err(
+            "replace/cancel for contractCall or ABI write call history records is not implemented"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
 pub fn build_replace_intent_from_pending_request(
     request: PendingMutationRequest,
 ) -> Result<NativeTransferIntent, String> {
@@ -606,6 +621,7 @@ fn build_replace_intent_from_record(
     request: PendingMutationRequest,
     record: crate::models::HistoryRecord,
 ) -> Result<NativeTransferIntent, String> {
+    validate_pending_mutation_supported(&record)?;
     let (chain_id, account_index, from, nonce) = frozen_submission_identity(&record.submission)?;
     if record.submission.typed_transaction.transaction_type == TransactionType::Erc20Transfer {
         validate_erc20_replacement_fee_increase(&request, &record.submission)?;
@@ -695,6 +711,7 @@ fn build_cancel_intent_from_record(
     request: PendingMutationRequest,
     record: crate::models::HistoryRecord,
 ) -> Result<NativeTransferIntent, String> {
+    validate_pending_mutation_supported(&record)?;
     let (chain_id, account_index, from, nonce) = frozen_submission_identity(&record.submission)?;
     Ok(NativeTransferIntent {
         typed_transaction: TypedTransactionFields::native_transfer("0"),

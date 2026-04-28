@@ -18,6 +18,7 @@ export type SubmissionKind =
   | "legacy"
   | "nativeTransfer"
   | "erc20Transfer"
+  | "abiWriteCall"
   | "replacement"
   | "cancellation"
   | "unsupported";
@@ -194,6 +195,110 @@ export interface BatchRecipientAllocation {
   amount_raw: string | null;
 }
 
+export interface AbiCallSelectedRpcSummary {
+  chain_id: number | null;
+  provider_config_id: string | null;
+  endpoint_id: string | null;
+  endpoint_name: string | null;
+  endpoint_summary: string | null;
+}
+
+export interface AbiCallStatusSummary {
+  level: "info" | "warning" | "blocking" | "unknown";
+  code: string;
+  message: string | null;
+  source: string | null;
+}
+
+export interface AbiDecodedFieldHistorySummary {
+  name: string | null;
+  value: AbiDecodedValueHistorySummary;
+}
+
+export interface AbiDecodedValueHistorySummary {
+  kind: string;
+  type: string;
+  value: string | null;
+  byte_length: number | null;
+  hash: string | null;
+  items: AbiDecodedValueHistorySummary[];
+  fields: AbiDecodedFieldHistorySummary[];
+  truncated: boolean;
+}
+
+export interface AbiCallCalldataSummary {
+  selector: string | null;
+  byte_length: number | null;
+  hash: string | null;
+}
+
+export interface AbiCallSubmissionPlaceholder {
+  status: string | null;
+  tx_hash: string | null;
+  submitted_at: string | null;
+  broadcasted_at: string | null;
+  error_summary: string | null;
+}
+
+export interface AbiCallOutcomePlaceholder {
+  state: ChainOutcomeState | null;
+  checked_at: string | null;
+  receipt_status: number | null;
+  block_number: number | null;
+  gas_used: string | null;
+  error_summary: string | null;
+}
+
+export interface AbiCallBroadcastPlaceholder {
+  tx_hash: string | null;
+  broadcasted_at: string | null;
+  rpc_chain_id: number | null;
+  rpc_endpoint_summary: string | null;
+  error_summary: string | null;
+}
+
+export interface AbiCallRecoveryPlaceholder {
+  recovery_id: string | null;
+  status: string | null;
+  created_at: string | null;
+  recovered_at: string | null;
+  last_error: string | null;
+  replacement_tx_hash: string | null;
+}
+
+export interface AbiCallHistoryMetadata {
+  intent_kind: "abiWriteCall" | "unknown";
+  draft_id: string | null;
+  created_at: string | null;
+  chain_id: number | null;
+  account_index: number | null;
+  from: string | null;
+  contract_address: string | null;
+  source_kind: string;
+  provider_config_id: string | null;
+  user_source_id: string | null;
+  version_id: string | null;
+  abi_hash: string | null;
+  source_fingerprint: string | null;
+  function_signature: string | null;
+  selector: string | null;
+  argument_summary: AbiDecodedValueHistorySummary[];
+  argument_hash: string | null;
+  native_value_wei: string | null;
+  gas_limit: string | null;
+  max_fee_per_gas: string | null;
+  max_priority_fee_per_gas: string | null;
+  nonce: number | null;
+  selected_rpc: AbiCallSelectedRpcSummary | null;
+  warnings: AbiCallStatusSummary[];
+  blocking_statuses: AbiCallStatusSummary[];
+  calldata: AbiCallCalldataSummary | null;
+  future_submission: AbiCallSubmissionPlaceholder | null;
+  future_outcome: AbiCallOutcomePlaceholder | null;
+  broadcast: AbiCallBroadcastPlaceholder | null;
+  recovery: AbiCallRecoveryPlaceholder | null;
+}
+
 export interface HistoryRecord {
   schema_version: number;
   intent: HistoryTransactionIntent;
@@ -202,6 +307,7 @@ export interface HistoryRecord {
   outcome: ChainOutcome;
   nonce_thread: NonceThread;
   batch_metadata?: BatchHistoryMetadata | null;
+  abi_call_metadata?: AbiCallHistoryMetadata | null;
 }
 
 const LEGACY = "legacy";
@@ -217,6 +323,7 @@ const SUBMISSION_KINDS = new Set<SubmissionKind>([
   "legacy",
   "nativeTransfer",
   "erc20Transfer",
+  "abiWriteCall",
   "replacement",
   "cancellation",
   "unsupported",
@@ -245,6 +352,48 @@ function numberOrNull(value: unknown) {
 
 function booleanOrNull(value: unknown) {
   return typeof value === "boolean" ? value : null;
+}
+
+function boundedStringOrNull(value: unknown, maxLength = 256) {
+  if (typeof value !== "string") return null;
+  return value.length <= maxLength ? value : `${value.slice(0, maxLength)}...[truncated]`;
+}
+
+function sanitizeDurableRpcSummary(value: unknown, maxLength = 200) {
+  const bounded = boundedStringOrNull(value, maxLength);
+  if (bounded === null) return null;
+  const compact = bounded.replace(/\s+/g, " ").trim();
+  const redacted = compact
+    .replace(/\b(?:https?|wss?):\/\/[^\s"'<>;,]+/gi, "[redacted_endpoint]")
+    .replace(/\bBearer\s+[^\s"'<>;,]+/gi, "Bearer [redacted_secret]")
+    .replace(
+      /\b[^\s"'<>;,]*(?:api[_-]?key|apikey|token|auth|authorization|password|secret|private[_-]?key|access[_-]?token)[^\s"'<>;,]*\s*[:=]\s*[^\s"'<>;,]+/gi,
+      "[redacted_secret]",
+    );
+  return redacted.length <= maxLength ? redacted : `${redacted.slice(0, maxLength)}...[truncated]`;
+}
+
+function sanitizeAbiSummaryToken(value: unknown, fallback = UNKNOWN, maxLength = 96) {
+  if (typeof value !== "string") return { value: fallback, changed: false };
+  const compact = value.replace(/\s+/g, " ").trim();
+  if (/^0x[0-9a-f]+$/i.test(compact) && compact.length > maxLength) {
+    return { value: "[redacted_payload]", changed: true };
+  }
+  const redacted = sanitizeDurableRpcSummary(compact, maxLength) ?? fallback;
+  const sanitized =
+    redacted.length <= maxLength ? redacted : `${redacted.slice(0, maxLength)}...[truncated]`;
+  return { value: sanitized, changed: sanitized !== value };
+}
+
+function sanitizeAbiSummaryHash(value: unknown) {
+  if (typeof value !== "string") return { value: null, changed: false };
+  const compact = value.replace(/\s+/g, " ").trim();
+  if (/^0x[0-9a-f]+$/i.test(compact)) {
+    const sanitized = compact.length <= 128 ? compact : `${compact.slice(0, 66)}...[truncated]`;
+    return { value: sanitized, changed: sanitized !== value };
+  }
+  const redacted = sanitizeDurableRpcSummary(compact, 128);
+  return { value: redacted, changed: redacted !== value };
 }
 
 function objectOrEmpty(value: unknown): Record<string, unknown> {
@@ -285,6 +434,7 @@ function normalizeTypedTransactionFields(
 }
 
 function transactionTypeFallbackForSubmission(kind: SubmissionKind): TransactionType {
+  if (kind === "abiWriteCall") return "contractCall";
   return kind === "erc20Transfer" ? "erc20Transfer" : "nativeTransfer";
 }
 
@@ -482,6 +632,188 @@ export function normalizeBatchMetadata(rawMetadata: unknown): BatchHistoryMetada
   };
 }
 
+function normalizeAbiIntentKind(value: unknown): AbiCallHistoryMetadata["intent_kind"] {
+  return value === "abiWriteCall" ? value : "unknown";
+}
+
+function normalizeAbiStatusLevel(value: unknown): AbiCallStatusSummary["level"] {
+  return value === "info" || value === "warning" || value === "blocking" ? value : "unknown";
+}
+
+function normalizeAbiStatusSummary(rawStatus: unknown): AbiCallStatusSummary {
+  const status = objectOrEmpty(rawStatus);
+  return {
+    level: normalizeAbiStatusLevel(status.level),
+    code: stringOrDefault(status.code),
+    message: sanitizeDurableRpcSummary(status.message, 256),
+    source: stringOrNull(status.source),
+  };
+}
+
+function normalizeAbiStatusSummaries(rawStatuses: unknown): AbiCallStatusSummary[] {
+  return Array.isArray(rawStatuses) ? rawStatuses.slice(0, 32).map(normalizeAbiStatusSummary) : [];
+}
+
+function normalizeAbiDecodedFieldSummary(
+  rawField: unknown,
+  depth: number,
+): AbiDecodedFieldHistorySummary {
+  const field = objectOrEmpty(rawField);
+  return {
+    name: boundedStringOrNull(field.name, 96),
+    value: normalizeAbiDecodedValueSummary(field.value, depth + 1),
+  };
+}
+
+function normalizeAbiDecodedValueSummary(
+  rawValue: unknown,
+  depth = 0,
+): AbiDecodedValueHistorySummary {
+  const value = objectOrEmpty(rawValue);
+  const rawItems = Array.isArray(value.items) && depth < 4 ? value.items : [];
+  const rawFields = Array.isArray(value.fields) && depth < 4 ? value.fields : [];
+  const items = rawItems.slice(0, 16).map((item) => normalizeAbiDecodedValueSummary(item, depth + 1));
+  const fields = rawFields.slice(0, 16).map((field) => normalizeAbiDecodedFieldSummary(field, depth + 1));
+  const wasTrimmed = rawItems.length > items.length || rawFields.length > fields.length || depth >= 4;
+  const kind = sanitizeAbiSummaryToken(value.kind);
+  const type = sanitizeAbiSummaryToken(value.type);
+  const hash = sanitizeAbiSummaryHash(value.hash);
+  const summaryValue = sanitizeDurableRpcSummary(value.value, 256);
+  return {
+    kind: kind.value,
+    type: type.value,
+    value: summaryValue,
+    byte_length: numberOrNull(value.byte_length ?? value.byteLength),
+    hash: hash.value,
+    items,
+    fields,
+    truncated: Boolean(
+      (booleanOrNull(value.truncated) ?? false) ||
+        wasTrimmed ||
+        kind.changed ||
+        type.changed ||
+        hash.changed ||
+        summaryValue !== boundedStringOrNull(value.value, 256),
+    ),
+  };
+}
+
+function normalizeAbiDecodedValueSummaries(rawValues: unknown): AbiDecodedValueHistorySummary[] {
+  return Array.isArray(rawValues)
+    ? rawValues.slice(0, 32).map((value) => normalizeAbiDecodedValueSummary(value))
+    : [];
+}
+
+function normalizeAbiSelectedRpcSummary(rawRpc: unknown): AbiCallSelectedRpcSummary | null {
+  if (rawRpc == null) return null;
+  const rpc = objectOrEmpty(rawRpc);
+  return {
+    chain_id: numberOrNull(rpc.chain_id ?? rpc.chainId),
+    provider_config_id: stringOrNull(rpc.provider_config_id ?? rpc.providerConfigId),
+    endpoint_id: stringOrNull(rpc.endpoint_id ?? rpc.endpointId),
+    endpoint_name: sanitizeDurableRpcSummary(rpc.endpoint_name ?? rpc.endpointName, 120),
+    endpoint_summary: sanitizeDurableRpcSummary(rpc.endpoint_summary ?? rpc.endpointSummary, 200),
+  };
+}
+
+function normalizeAbiCalldataSummary(rawCalldata: unknown): AbiCallCalldataSummary | null {
+  if (rawCalldata == null) return null;
+  const calldata = objectOrEmpty(rawCalldata);
+  return {
+    selector: stringOrNull(calldata.selector),
+    byte_length: numberOrNull(calldata.byte_length ?? calldata.byteLength),
+    hash: stringOrNull(calldata.hash),
+  };
+}
+
+function normalizeAbiSubmissionPlaceholder(rawPlaceholder: unknown): AbiCallSubmissionPlaceholder | null {
+  if (rawPlaceholder == null) return null;
+  const placeholder = objectOrEmpty(rawPlaceholder);
+  return {
+    status: stringOrNull(placeholder.status),
+    tx_hash: stringOrNull(placeholder.tx_hash ?? placeholder.txHash),
+    submitted_at: stringOrNull(placeholder.submitted_at ?? placeholder.submittedAt),
+    broadcasted_at: stringOrNull(placeholder.broadcasted_at ?? placeholder.broadcastedAt),
+    error_summary: sanitizeDurableRpcSummary(placeholder.error_summary ?? placeholder.errorSummary, 256),
+  };
+}
+
+function normalizeAbiOutcomePlaceholder(rawPlaceholder: unknown): AbiCallOutcomePlaceholder | null {
+  if (rawPlaceholder == null) return null;
+  const placeholder = objectOrEmpty(rawPlaceholder);
+  const state = normalizeOutcomeState(placeholder.state);
+  return {
+    state: state === "Unknown" ? null : state,
+    checked_at: stringOrNull(placeholder.checked_at ?? placeholder.checkedAt),
+    receipt_status: numberOrNull(placeholder.receipt_status ?? placeholder.receiptStatus),
+    block_number: numberOrNull(placeholder.block_number ?? placeholder.blockNumber),
+    gas_used: stringOrNull(placeholder.gas_used ?? placeholder.gasUsed),
+    error_summary: sanitizeDurableRpcSummary(placeholder.error_summary ?? placeholder.errorSummary, 256),
+  };
+}
+
+function normalizeAbiBroadcastPlaceholder(rawPlaceholder: unknown): AbiCallBroadcastPlaceholder | null {
+  if (rawPlaceholder == null) return null;
+  const placeholder = objectOrEmpty(rawPlaceholder);
+  return {
+    tx_hash: stringOrNull(placeholder.tx_hash ?? placeholder.txHash),
+    broadcasted_at: stringOrNull(placeholder.broadcasted_at ?? placeholder.broadcastedAt),
+    rpc_chain_id: numberOrNull(placeholder.rpc_chain_id ?? placeholder.rpcChainId),
+    rpc_endpoint_summary: sanitizeDurableRpcSummary(placeholder.rpc_endpoint_summary ?? placeholder.rpcEndpointSummary, 200),
+    error_summary: sanitizeDurableRpcSummary(placeholder.error_summary ?? placeholder.errorSummary, 256),
+  };
+}
+
+function normalizeAbiRecoveryPlaceholder(rawPlaceholder: unknown): AbiCallRecoveryPlaceholder | null {
+  if (rawPlaceholder == null) return null;
+  const placeholder = objectOrEmpty(rawPlaceholder);
+  return {
+    recovery_id: stringOrNull(placeholder.recovery_id ?? placeholder.recoveryId),
+    status: stringOrNull(placeholder.status),
+    created_at: stringOrNull(placeholder.created_at ?? placeholder.createdAt),
+    recovered_at: stringOrNull(placeholder.recovered_at ?? placeholder.recoveredAt),
+    last_error: sanitizeDurableRpcSummary(placeholder.last_error ?? placeholder.lastError, 256),
+    replacement_tx_hash: stringOrNull(placeholder.replacement_tx_hash ?? placeholder.replacementTxHash),
+  };
+}
+
+export function normalizeAbiCallMetadata(rawMetadata: unknown): AbiCallHistoryMetadata | null {
+  if (rawMetadata == null) return null;
+  const metadata = objectOrEmpty(rawMetadata);
+  return {
+    intent_kind: normalizeAbiIntentKind(metadata.intent_kind ?? metadata.intentKind),
+    draft_id: stringOrNull(metadata.draft_id ?? metadata.draftId),
+    created_at: stringOrNull(metadata.created_at ?? metadata.createdAt),
+    chain_id: numberOrNull(metadata.chain_id ?? metadata.chainId),
+    account_index: numberOrNull(metadata.account_index ?? metadata.accountIndex),
+    from: stringOrNull(metadata.from),
+    contract_address: stringOrNull(metadata.contract_address ?? metadata.contractAddress),
+    source_kind: stringOrDefault(metadata.source_kind ?? metadata.sourceKind),
+    provider_config_id: stringOrNull(metadata.provider_config_id ?? metadata.providerConfigId),
+    user_source_id: stringOrNull(metadata.user_source_id ?? metadata.userSourceId),
+    version_id: stringOrNull(metadata.version_id ?? metadata.versionId),
+    abi_hash: stringOrNull(metadata.abi_hash ?? metadata.abiHash),
+    source_fingerprint: stringOrNull(metadata.source_fingerprint ?? metadata.sourceFingerprint),
+    function_signature: stringOrNull(metadata.function_signature ?? metadata.functionSignature),
+    selector: stringOrNull(metadata.selector),
+    argument_summary: normalizeAbiDecodedValueSummaries(metadata.argument_summary ?? metadata.argumentSummary),
+    argument_hash: stringOrNull(metadata.argument_hash ?? metadata.argumentHash),
+    native_value_wei: stringOrNull(metadata.native_value_wei ?? metadata.nativeValueWei),
+    gas_limit: stringOrNull(metadata.gas_limit ?? metadata.gasLimit),
+    max_fee_per_gas: stringOrNull(metadata.max_fee_per_gas ?? metadata.maxFeePerGas),
+    max_priority_fee_per_gas: stringOrNull(metadata.max_priority_fee_per_gas ?? metadata.maxPriorityFeePerGas),
+    nonce: numberOrNull(metadata.nonce),
+    selected_rpc: normalizeAbiSelectedRpcSummary(metadata.selected_rpc ?? metadata.selectedRpc),
+    warnings: normalizeAbiStatusSummaries(metadata.warnings),
+    blocking_statuses: normalizeAbiStatusSummaries(metadata.blocking_statuses ?? metadata.blockingStatuses),
+    calldata: normalizeAbiCalldataSummary(metadata.calldata),
+    future_submission: normalizeAbiSubmissionPlaceholder(metadata.future_submission ?? metadata.futureSubmission),
+    future_outcome: normalizeAbiOutcomePlaceholder(metadata.future_outcome ?? metadata.futureOutcome),
+    broadcast: normalizeAbiBroadcastPlaceholder(metadata.broadcast),
+    recovery: normalizeAbiRecoveryPlaceholder(metadata.recovery),
+  };
+}
+
 export function normalizeHistoryRecord(rawRecord: unknown): HistoryRecord {
   const record = objectOrEmpty(rawRecord);
   const intentSnapshot = objectOrEmpty(record.intent_snapshot);
@@ -496,6 +828,7 @@ export function normalizeHistoryRecord(rawRecord: unknown): HistoryRecord {
     outcome: normalizeOutcome(record.outcome),
     nonce_thread: normalizeNonceThread(record.nonce_thread),
     batch_metadata: normalizeBatchMetadata(record.batch_metadata ?? record.batchMetadata),
+    abi_call_metadata: normalizeAbiCallMetadata(record.abi_call_metadata ?? record.abiCallMetadata),
   };
 }
 

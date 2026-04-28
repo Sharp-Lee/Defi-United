@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 use std::fs;
 use std::io::{Read, Write};
 use std::net::TcpListener;
@@ -405,6 +407,7 @@ fn history_record(nonce: u64, state: ChainOutcomeState, tx_hash: &str) -> Histor
             replaced_by_tx_hash: None,
         },
         batch_metadata: None,
+        abi_call_metadata: None,
         intent,
     }
 }
@@ -500,6 +503,432 @@ fn history_record_accepts_additive_batch_metadata_without_breaking_legacy_json()
     assert_eq!(metadata.child_id, "batch-1:child-0001");
     assert_eq!(metadata.batch_kind, "collect");
     assert_eq!(metadata.asset_kind, "native");
+}
+
+#[test]
+fn history_record_roundtrips_abi_write_call_metadata_without_raw_payloads() {
+    let raw_calldata = format!("0xa9059cbb{}", "0".repeat(512));
+    let huge_value = format!("secret-param-{}", "x".repeat(5_000));
+    let many_items = (0..20)
+        .map(|index| {
+            serde_json::json!({
+                "kind": "uint",
+                "type": "uint256",
+                "value": format!("item-{index}"),
+                "truncated": false
+            })
+        })
+        .collect::<Vec<_>>();
+    let many_fields = (0..20)
+        .map(|index| {
+            serde_json::json!({
+                "name": format!("field-{index}"),
+                "value": {
+                    "kind": "string",
+                    "type": "string",
+                    "value": huge_value.clone(),
+                    "hash": "0xfieldhash",
+                    "byteLength": 5000,
+                    "truncated": false
+                }
+            })
+        })
+        .collect::<Vec<_>>();
+    let with_abi = serde_json::json!({
+        "schema_version": 4,
+        "intent": {
+            "transaction_type": "contractCall",
+            "rpc_url": "history-schema-placeholder",
+            "account_index": 1,
+            "chain_id": 1,
+            "from": "0x1111111111111111111111111111111111111111",
+            "to": "0x6666666666666666666666666666666666666666",
+            "value_wei": "42",
+            "nonce": 7,
+            "gas_limit": "120000",
+            "max_fee_per_gas": "40000000000",
+            "max_priority_fee_per_gas": "1500000000",
+            "selector": "0xa9059cbb",
+            "method_name": "transfer(address,uint256)",
+            "native_value_wei": "42"
+        },
+        "intent_snapshot": {
+            "source": "abiWriteDraft",
+            "captured_at": "2026-04-29T01:02:03.000Z"
+        },
+        "submission": {
+            "transaction_type": "contractCall",
+            "frozen_key": "abi-draft-key",
+            "tx_hash": "unknown",
+            "kind": "abiWriteCall",
+            "source": "abiWriteDraft",
+            "chain_id": 1,
+            "account_index": 1,
+            "from": "0x1111111111111111111111111111111111111111",
+            "to": "0x6666666666666666666666666666666666666666",
+            "value_wei": "42",
+            "nonce": 7,
+            "gas_limit": "120000",
+            "max_fee_per_gas": "40000000000",
+            "max_priority_fee_per_gas": "1500000000",
+            "selector": "0xa9059cbb",
+            "method_name": "transfer(address,uint256)",
+            "native_value_wei": "42",
+            "broadcasted_at": null
+        },
+        "outcome": {
+            "state": "Pending",
+            "tx_hash": "unknown"
+        },
+        "nonce_thread": {
+            "source": "abiWriteDraft",
+            "key": "1:1:0x1111111111111111111111111111111111111111:7",
+            "chain_id": 1,
+            "account_index": 1,
+            "from": "0x1111111111111111111111111111111111111111",
+            "nonce": 7
+        },
+        "abi_call_metadata": {
+            "intentKind": "abiWriteCall",
+            "draftId": "draft-abi-1",
+            "createdAt": "2026-04-29T01:02:03.000Z",
+            "chainId": 1,
+            "accountIndex": 1,
+            "from": "0x1111111111111111111111111111111111111111",
+            "contractAddress": "0x6666666666666666666666666666666666666666",
+            "sourceKind": "provider",
+            "providerConfigId": "etherscan-mainnet",
+            "userSourceId": null,
+            "versionId": "v1",
+            "abiHash": "0xabi",
+            "sourceFingerprint": "0xfingerprint",
+            "functionSignature": "transfer(address,uint256)",
+            "selector": "0xa9059cbb",
+            "argumentSummary": [
+                {
+                    "kind": "address",
+                    "type": "address",
+                    "value": "0x7777777777777777777777777777777777777777",
+                    "truncated": false
+                },
+                {
+                    "kind": "uint",
+                    "type": "uint256",
+                    "value": "1000000",
+                    "truncated": false
+                },
+                {
+                    "kind": "bytes",
+                    "type": "bytes",
+                    "value": huge_value.clone(),
+                    "byteLength": 5000,
+                    "hash": "0xhugehash",
+                    "items": many_items,
+                    "fields": many_fields,
+                    "truncated": false
+                }
+            ],
+            "argumentHash": "0xargs",
+            "canonicalParams": ["0x7777777777777777777777777777777777777777", "1000000"],
+            "nativeValueWei": "42",
+            "gasLimit": null,
+            "maxFeePerGas": null,
+            "maxPriorityFeePerGas": null,
+            "nonce": null,
+            "selectedRpc": {
+                "chainId": 1,
+                "providerConfigId": "mainnet-rpc",
+                "endpointId": "primary",
+                "endpointName": "Mainnet primary token=SECRET_TOKEN",
+                "endpointSummary": "https://rpc.example/?api_key=SECRET_TOKEN",
+                "rpcUrl": "https://rpc.example/?api_key=SECRET_TOKEN"
+            },
+            "warnings": [
+                {
+                    "level": "warning",
+                    "code": "payable",
+                    "message": "Requires value via https://rpc.example/?api_key=SECRET_TOKEN",
+                    "source": "abi"
+                }
+            ],
+            "blockingStatuses": [
+                {
+                    "level": "blocking",
+                    "code": "unsupportedTuple",
+                    "message": "Tuple input Authorization: Bearer SECRET_TOKEN",
+                    "source": "abi"
+                }
+            ],
+            "calldata": {
+                "selector": "0xa9059cbb",
+                "byteLength": 68,
+                "hash": "0xcalldatahash",
+                "rawCalldata": raw_calldata
+            },
+            "futureSubmission": {
+                "status": null,
+                "txHash": null,
+                "submittedAt": null,
+                "broadcastedAt": null,
+                "errorSummary": "submit failed token=SECRET_TOKEN"
+            },
+            "futureOutcome": {
+                "state": "Confirmed",
+                "checkedAt": null,
+                "receiptStatus": null,
+                "blockNumber": null,
+                "gasUsed": null,
+                "errorSummary": "receipt failed https://rpc.example/?token=SECRET_TOKEN"
+            },
+            "broadcast": {
+                "txHash": null,
+                "broadcastedAt": null,
+                "rpcChainId": null,
+                "rpcEndpointSummary": "wss://rpc.example/socket?token=SECRET_TOKEN",
+                "errorSummary": "broadcast failed Bearer SECRET_TOKEN"
+            },
+            "recovery": {
+                "recoveryId": null,
+                "status": null,
+                "createdAt": null,
+                "recoveredAt": null,
+                "lastError": "recover failed api_key=SECRET_TOKEN",
+                "replacementTxHash": null
+            },
+            "rawAbi": "[{\"type\":\"function\",\"name\":\"transfer\"}]"
+        }
+    });
+
+    let record: HistoryRecord = serde_json::from_value(with_abi).expect("abi call record");
+    assert_eq!(
+        record.submission.kind,
+        wallet_workbench_lib::models::SubmissionKind::AbiWriteCall
+    );
+    assert_eq!(
+        record.submission.typed_transaction.transaction_type,
+        wallet_workbench_lib::models::TransactionType::ContractCall
+    );
+    let metadata = record
+        .abi_call_metadata
+        .as_ref()
+        .expect("abi call metadata");
+    assert_eq!(metadata.intent_kind, "abiWriteCall");
+    assert_eq!(metadata.source_kind, "provider");
+    assert_eq!(
+        metadata.provider_config_id.as_deref(),
+        Some("etherscan-mainnet")
+    );
+    assert_eq!(metadata.version_id.as_deref(), Some("v1"));
+    assert_eq!(
+        metadata.function_signature.as_deref(),
+        Some("transfer(address,uint256)")
+    );
+    assert_eq!(metadata.argument_hash.as_deref(), Some("0xargs"));
+    assert_eq!(metadata.argument_summary.len(), 3);
+    assert_eq!(metadata.argument_summary[0].type_label, "address");
+    let huge_summary = &metadata.argument_summary[2];
+    assert_eq!(huge_summary.byte_length, Some(5000));
+    assert_eq!(huge_summary.hash.as_deref(), Some("0xhugehash"));
+    assert_eq!(huge_summary.items.len(), 16);
+    assert_eq!(huge_summary.fields.len(), 16);
+    assert!(huge_summary.truncated);
+    assert!(!huge_summary
+        .value
+        .as_deref()
+        .unwrap_or_default()
+        .contains(&huge_value));
+    assert!(!huge_summary.fields[0]
+        .value
+        .value
+        .as_deref()
+        .unwrap_or_default()
+        .contains(&huge_value));
+    assert_eq!(
+        metadata
+            .selected_rpc
+            .as_ref()
+            .and_then(|rpc| rpc.endpoint_summary.as_deref()),
+        Some("[redacted_endpoint]")
+    );
+    assert_eq!(
+        metadata
+            .selected_rpc
+            .as_ref()
+            .and_then(|rpc| rpc.endpoint_name.as_deref()),
+        Some("[redacted_endpoint]")
+    );
+    assert_eq!(
+        metadata
+            .calldata
+            .as_ref()
+            .and_then(|calldata| calldata.hash.as_deref()),
+        Some("0xcalldatahash")
+    );
+    assert_eq!(
+        metadata
+            .warnings
+            .first()
+            .and_then(|warning| warning.message.as_deref()),
+        Some("Requires value via [redacted_url]")
+    );
+    assert_eq!(
+        metadata
+            .blocking_statuses
+            .first()
+            .and_then(|status| status.message.as_deref()),
+        Some("Tuple input [redacted_secret] [redacted]")
+    );
+    assert!(metadata
+        .future_submission
+        .as_ref()
+        .is_some_and(|placeholder| placeholder.tx_hash.is_none()));
+    let future_submission = metadata
+        .future_submission
+        .as_ref()
+        .expect("future submission placeholder");
+    assert_eq!(
+        future_submission.error_summary.as_deref(),
+        Some("submit failed [redacted_secret]")
+    );
+    let future_outcome = metadata
+        .future_outcome
+        .as_ref()
+        .expect("future outcome placeholder");
+    assert_eq!(
+        future_outcome.state,
+        Some(wallet_workbench_lib::models::AbiCallOutcomeState::Confirmed)
+    );
+    assert_eq!(
+        future_outcome.error_summary.as_deref(),
+        Some("receipt failed [redacted_url]")
+    );
+    assert!(metadata
+        .broadcast
+        .as_ref()
+        .is_some_and(|placeholder| placeholder.tx_hash.is_none()));
+    assert_eq!(
+        metadata
+            .broadcast
+            .as_ref()
+            .and_then(|placeholder| placeholder.rpc_endpoint_summary.as_deref()),
+        Some("[redacted_endpoint]")
+    );
+    assert_eq!(
+        metadata
+            .broadcast
+            .as_ref()
+            .and_then(|placeholder| placeholder.error_summary.as_deref()),
+        Some("broadcast failed [redacted] [redacted]")
+    );
+    assert_eq!(
+        metadata
+            .recovery
+            .as_ref()
+            .and_then(|placeholder| placeholder.last_error.as_deref()),
+        Some("recover failed [redacted_secret]")
+    );
+    assert!(metadata
+        .recovery
+        .as_ref()
+        .is_some_and(|placeholder| placeholder.recovery_id.is_none()));
+
+    let serialized = serde_json::to_string(&record).expect("serialize abi call record");
+    assert!(serialized.contains("abiWriteCall"));
+    assert!(serialized.contains("abi_call_metadata"));
+    assert!(serialized.contains("\"state\":\"Confirmed\""));
+    assert!(!serialized.contains("\"state\":\"confirmed\""));
+    assert!(!serialized.contains(&raw_calldata));
+    assert!(!serialized.contains(&huge_value));
+    assert!(!serialized.contains("rawCalldata"));
+    assert!(!serialized.contains("rawAbi"));
+    assert!(!serialized.contains("canonicalParams"));
+    assert!(!serialized.contains("SECRET_TOKEN"));
+    assert!(!serialized.contains("api_key"));
+    assert!(!serialized.contains("token="));
+}
+
+#[test]
+fn history_recovery_intent_preserves_abi_write_placeholders_additively() {
+    let intent: wallet_workbench_lib::models::HistoryRecoveryIntent =
+        serde_json::from_value(serde_json::json!({
+            "schemaVersion": 1,
+            "id": "abi-recovery-1",
+            "status": "active",
+            "createdAt": "2026-04-29T01:02:03.000Z",
+            "txHash": "unknown",
+            "kind": "abiWriteCall",
+            "chainId": 1,
+            "accountIndex": 1,
+            "from": "0x1111111111111111111111111111111111111111",
+            "nonce": 7,
+            "to": "0x6666666666666666666666666666666666666666",
+            "valueWei": "42",
+            "selector": "0xa9059cbb",
+            "methodName": "transfer(address,uint256)",
+            "nativeValueWei": "42",
+            "frozenKey": "abi-draft-key",
+            "gasLimit": "120000",
+            "maxFeePerGas": "40000000000",
+            "maxPriorityFeePerGas": "1500000000",
+            "abiCallMetadata": {
+                "intentKind": "abiWriteCall",
+                "draftId": "draft-abi-1",
+                "createdAt": "2026-04-29T01:02:03.000Z",
+                "chainId": 1,
+                "accountIndex": 1,
+                "contractAddress": "0x6666666666666666666666666666666666666666",
+                "sourceKind": "provider",
+                "versionId": "v1",
+                "abiHash": "0xabi",
+                "sourceFingerprint": "0xfingerprint",
+                "functionSignature": "transfer(address,uint256)",
+                "selector": "0xa9059cbb",
+                "argumentHash": "0xargs",
+                "nativeValueWei": "42",
+                "calldata": { "selector": "0xa9059cbb", "byteLength": 68, "hash": "0xcalldatahash" },
+                "futureSubmission": { "txHash": null },
+                "broadcast": { "txHash": null },
+                "recovery": { "recoveryId": null }
+            },
+            "broadcastedAt": "2026-04-29T01:02:04.000Z",
+            "writeError": "schema placeholder only"
+        }))
+        .expect("recovery intent with abi metadata");
+
+    assert_eq!(
+        intent.kind,
+        wallet_workbench_lib::models::SubmissionKind::AbiWriteCall
+    );
+    let metadata = intent.abi_call_metadata.expect("abi call metadata");
+    assert_eq!(metadata.intent_kind, "abiWriteCall");
+    assert_eq!(
+        metadata
+            .calldata
+            .as_ref()
+            .and_then(|calldata| calldata.byte_length),
+        Some(68)
+    );
+    assert!(metadata
+        .broadcast
+        .as_ref()
+        .is_some_and(|placeholder| placeholder.tx_hash.is_none()));
+
+    let future: wallet_workbench_lib::models::HistoryRecoveryIntent =
+        serde_json::from_value(serde_json::json!({
+            "schemaVersion": 1,
+            "id": "future-kind",
+            "status": "active",
+            "createdAt": "2026-04-29T01:02:03.000Z",
+            "txHash": "unknown",
+            "kind": "futureSubmitKind",
+            "broadcastedAt": "2026-04-29T01:02:04.000Z",
+            "writeError": "future kind"
+        }))
+        .expect("future recovery kind");
+    assert_eq!(
+        future.kind,
+        wallet_workbench_lib::models::SubmissionKind::Unsupported
+    );
 }
 
 fn start_preflight_rpc_server() -> String {
@@ -2316,6 +2745,40 @@ async fn recovery_does_not_write_when_chain_has_no_transaction() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn recovery_refuses_abi_write_intent_before_rpc_validation() {
+    let _guard = test_lock().lock().expect("test lock");
+    let _app_dir_guard = TestAppDirGuard::new("broadcast-history-recover-abi-early-block");
+    let path = wallet_workbench_lib::storage::history_recovery_intents_path()
+        .expect("recovery intents path");
+    fs::write(
+        path,
+        serde_json::to_string_pretty(&serde_json::json!([
+            {
+                "schemaVersion": 1,
+                "id": "abi-recovery",
+                "status": "active",
+                "createdAt": "1700000000",
+                "txHash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "kind": "abiWriteCall",
+                "broadcastedAt": "1700000001",
+                "writeError": "schema placeholder"
+            }
+        ]))
+        .expect("serialize recovery intent"),
+    )
+    .expect("write recovery intent");
+
+    let error = recover_broadcasted_history_record("abi-recovery".into(), "not a url".into(), 1)
+        .await
+        .expect_err("ABI recovery must be rejected before RPC/provider work");
+
+    assert_eq!(
+        error,
+        "history recovery for ABI write call records is not implemented"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn recovery_rejects_intents_missing_minimum_frozen_fields() {
     let _guard = test_lock().lock().expect("test lock");
     let _app_dir_guard = TestAppDirGuard::new("broadcast-history-recover-missing-fields");
@@ -2883,6 +3346,68 @@ fn pending_mutation_request_must_match_local_pending_history() {
             )
             .is_err()
         );
+    });
+}
+
+#[test]
+fn pending_mutation_refuses_abi_write_contract_call_records() {
+    with_test_app_dir("pending-mutation-abi-write-blocked", |_| {
+        let mut record = history_record(9, ChainOutcomeState::Pending, "0xabi");
+        record.intent.typed_transaction =
+            wallet_workbench_lib::models::TypedTransactionFields::contract_call(
+                "0x12345678",
+                "doThing(uint256)",
+                "0",
+            );
+        record.submission.typed_transaction =
+            wallet_workbench_lib::models::TypedTransactionFields::contract_call(
+                "0x12345678",
+                "doThing(uint256)",
+                "0",
+            );
+        record.submission.kind = wallet_workbench_lib::models::SubmissionKind::AbiWriteCall;
+        record.abi_call_metadata = Some(
+            serde_json::from_value(serde_json::json!({
+                "intentKind": "abiWriteCall",
+                "sourceKind": "provider",
+                "functionSignature": "doThing(uint256)",
+                "selector": "0x12345678"
+            }))
+            .expect("abi metadata"),
+        );
+        fs::write(
+            history_path().expect("history path"),
+            serde_json::to_string_pretty(&vec![record]).expect("serialize history"),
+        )
+        .expect("write history");
+
+        let request = wallet_workbench_lib::commands::transactions::PendingMutationRequest {
+            tx_hash: "0xabi".into(),
+            rpc_url: "http://127.0.0.1:8545".into(),
+            account_index: 1,
+            chain_id: 1,
+            from: "0x1111111111111111111111111111111111111111".into(),
+            nonce: 9,
+            gas_limit: "21000".into(),
+            max_fee_per_gas: "50000000000".into(),
+            max_priority_fee_per_gas: "2000000000".into(),
+            to: Some("0x3333333333333333333333333333333333333333".into()),
+            value_wei: Some("200".into()),
+        };
+
+        let replace_error =
+            wallet_workbench_lib::commands::transactions::build_replace_intent_from_pending_request(
+                request.clone(),
+            )
+            .expect_err("replace must reject ABI contract calls");
+        let cancel_error =
+            wallet_workbench_lib::commands::transactions::build_cancel_intent_from_pending_request(
+                request,
+            )
+            .expect_err("cancel must reject ABI contract calls");
+
+        assert!(replace_error.contains("contractCall"));
+        assert!(cancel_error.contains("contractCall"));
     });
 }
 

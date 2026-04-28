@@ -1,8 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
 import {
   normalizeHistoryRecord,
+  normalizeAbiCallMetadata,
   normalizeBatchMetadata,
   parseTransactionHistoryPayload,
+  type AbiCallHistoryMetadata,
   type BatchHistoryMetadata,
   type HistoryRecord as NormalizedHistoryRecord,
   type NativeTransferIntent as NormalizedNativeTransferIntent,
@@ -20,6 +22,7 @@ import {
 import { readAccountState } from "./rpc";
 
 export type {
+  AbiCallHistoryMetadata,
   BatchHistoryMetadata,
   ChainOutcomeState,
   HistoryRecord,
@@ -728,6 +731,7 @@ export interface HistoryRecoveryIntent {
     | "legacy"
     | "nativeTransfer"
     | "erc20Transfer"
+    | "abiWriteCall"
     | "replacement"
     | "cancellation"
     | "unsupported";
@@ -753,6 +757,7 @@ export interface HistoryRecoveryIntent {
   maxPriorityFeePerGas: string | null;
   replacesTxHash: string | null;
   batchMetadata?: BatchHistoryMetadata | null;
+  abiCallMetadata?: AbiCallHistoryMetadata | null;
   broadcastedAt: string;
   writeError: string;
   lastRecoveryError: string | null;
@@ -761,9 +766,15 @@ export interface HistoryRecoveryIntent {
 }
 
 function normalizeHistoryRecoveryIntent(rawIntent: unknown): HistoryRecoveryIntent {
-  const intent = rawIntent as HistoryRecoveryIntent & { batch_metadata?: unknown; batchMetadata?: unknown };
+  const intent = rawIntent as HistoryRecoveryIntent & {
+    abi_call_metadata?: unknown;
+    abiCallMetadata?: unknown;
+    batch_metadata?: unknown;
+    batchMetadata?: unknown;
+  };
   return {
     ...intent,
+    abiCallMetadata: normalizeAbiCallMetadata(intent.abiCallMetadata ?? intent.abi_call_metadata),
     batchMetadata: normalizeBatchMetadata(intent.batchMetadata ?? intent.batch_metadata),
   };
 }

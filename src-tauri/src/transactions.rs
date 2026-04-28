@@ -645,6 +645,7 @@ fn history_recovery_intent_from_broadcast_failure_with_frozen_key(
         max_priority_fee_per_gas: Some(intent.max_priority_fee_per_gas.clone()),
         replaces_tx_hash,
         batch_metadata,
+        abi_call_metadata: None,
         broadcasted_at,
         write_error: sanitize_recovery_error(&write_error),
         last_recovery_error: None,
@@ -1167,6 +1168,7 @@ fn persist_pending_history_with_kind_at_and_batch(
         },
         nonce_thread,
         batch_metadata,
+        abi_call_metadata: None,
     };
 
     let mut records = load_history_records()?;
@@ -1729,7 +1731,8 @@ fn local_same_nonce_review_result(
             )),
             SubmissionKind::Replacement
             | SubmissionKind::NativeTransfer
-            | SubmissionKind::Erc20Transfer => Some((
+            | SubmissionKind::Erc20Transfer
+            | SubmissionKind::AbiWriteCall => Some((
                 ChainOutcomeState::Replaced,
                 candidate_hash,
                 "localReplacementSameNonce".to_string(),
@@ -2461,6 +2464,9 @@ fn history_record_from_recovery_intent(
     checked_at: String,
     decision: String,
 ) -> Result<HistoryRecord, String> {
+    if intent.kind == SubmissionKind::AbiWriteCall || intent.abi_call_metadata.is_some() {
+        return Err("history recovery for ABI write call records is not implemented".to_string());
+    }
     let chain_id = require_recovery_u64(intent.chain_id, "chainId")?;
     let account_index = require_recovery_u32(intent.account_index, "account/from")?;
     let from = require_recovery_string(&intent.from, "account/from")?;
@@ -2486,7 +2492,8 @@ fn history_record_from_recovery_intent(
         || intent.token_contract.is_some()
         || intent.amount_raw.is_some();
     let is_contract_call = !is_erc20
-        && (intent.selector.is_some()
+        && (intent.kind == SubmissionKind::AbiWriteCall
+            || intent.selector.is_some()
             || intent.method_name.is_some()
             || intent.batch_metadata.is_some());
     let typed_transaction = if is_erc20 {
@@ -2632,6 +2639,7 @@ fn history_record_from_recovery_intent(
             replaced_by_tx_hash: None,
         },
         batch_metadata: intent.batch_metadata.clone(),
+        abi_call_metadata: intent.abi_call_metadata.clone(),
     })
 }
 
@@ -2733,6 +2741,9 @@ pub async fn recover_broadcasted_history_record(
         .into_iter()
         .find(|intent| intent.id == recovery_id)
         .ok_or_else(|| format!("history recovery intent not found: {recovery_id}"))?;
+    if intent.kind == SubmissionKind::AbiWriteCall || intent.abi_call_metadata.is_some() {
+        return Err("history recovery for ABI write call records is not implemented".to_string());
+    }
     let frozen_chain_id = require_recovery_u64(intent.chain_id, "chainId")?;
     let account_index = require_recovery_u32(intent.account_index, "account/from")?;
     require_recovery_string(&intent.from, "account/from")?;
