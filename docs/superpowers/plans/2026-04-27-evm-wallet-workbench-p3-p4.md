@@ -784,7 +784,7 @@
 - UI 分支不能用 native transfer 字段猜 ERC-20 语义。
 - 测试 fixture 不能包含 raw signed tx 或敏感凭据。
 
-#### Task P4-8b: ERC-20 draft/metadata read model
+#### Task P4-8b: ERC-20 draft/metadata read model（状态：已完成）
 
 **目标**
 
@@ -808,6 +808,13 @@
 - ERC-20 draft 明确展示 transaction `to = tokenContract`、recipient calldata 参数、amount raw、decimals 和 metadata source。
 - chainId mismatch、metadata call failure、decimals missing/changed、token balance insufficient、native gas insufficient、estimate gas failure 都有可见错误状态。
 - React 不接触助记词、私钥、raw signed tx 或签名材料。
+
+**完成记录**
+
+- 已新增前端 ERC-20 read-only draft 表单，支持单 token、单 sender、单 recipient，并保持 Native 为默认转账模式。
+- 已通过前端 `JsonRpcProvider` 读取 ERC-20 metadata/balance、native gas balance、nonce、fee reference 和 gas estimate，且在读取前校验 RPC `chainId`。
+- Draft 冻结 transaction `to = tokenContract`、recipient calldata 参数、amount raw、decimals、metadata source、fee、gas、nonce、selector/method 和 native value wei。
+- ERC-20 提交入口仍禁用并标注 P4-8c 启用；未实现签名、广播或 pending history 写入。
 
 **验证命令**
 
