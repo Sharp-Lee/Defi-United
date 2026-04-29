@@ -3,6 +3,7 @@ pub mod abi_registry;
 pub mod accounts;
 pub mod config;
 pub mod diagnostics;
+pub mod raw_calldata;
 pub mod token_scanner;
 pub mod token_watchlist;
 pub mod transactions;
