@@ -24,9 +24,9 @@ use wallet_workbench_lib::transactions::{
     load_history_records, load_history_recovery_intents, mark_prior_history_state,
     mark_prior_history_state_with_replacement, next_nonce_with_pending_history, nonce_thread_key,
     persist_pending_history, persist_pending_history_with_kind, quarantine_history_storage,
-    reconcile_pending_history, recover_broadcasted_history_record, review_dropped_history_record,
-    submit_abi_write_call, ChainOutcomeState, HistoryCorruptionType, HistoryRecord,
-    HistoryStorageStatus, NativeTransferIntent,
+    reconcile_pending_history, record_history_recovery_intent, recover_broadcasted_history_record,
+    review_dropped_history_record, submit_abi_write_call, ChainOutcomeState, HistoryCorruptionType,
+    HistoryRecord, HistoryStorageStatus, NativeTransferIntent,
 };
 
 const APP_DIR_ENV: &str = "EVM_WALLET_WORKBENCH_APP_DIR";
@@ -1667,6 +1667,59 @@ fn history_record_redacts_short_full_raw_calldata_summary_fields() {
 }
 
 #[test]
+fn history_record_redacts_raw_calldata_frozen_keys() {
+    let short_raw_calldata =
+        "0xa9059cbb0000000000000000000000001111111111111111111111111111111111111111";
+    let with_raw = serde_json::json!({
+        "intent": {
+            "transaction_type": "rawCalldata",
+            "rpc_url": "history-schema-placeholder",
+            "account_index": 1,
+            "chain_id": 1,
+            "from": "0x1111111111111111111111111111111111111111",
+            "to": "0x6666666666666666666666666666666666666666",
+            "value_wei": "42",
+            "nonce": 7,
+            "gas_limit": "120000",
+            "max_fee_per_gas": "40000000000",
+            "max_priority_fee_per_gas": "1500000000",
+            "selector": "0xa9059cbb",
+            "native_value_wei": "42"
+        },
+        "submission": {
+            "transaction_type": "rawCalldata",
+            "frozen_key": short_raw_calldata,
+            "tx_hash": "0xraw",
+            "kind": "rawCalldata",
+            "selector": "0xa9059cbb"
+        },
+        "outcome": {
+            "state": "Pending",
+            "tx_hash": "0xraw"
+        },
+        "raw_calldata_metadata": {
+            "intentKind": "rawCalldata",
+            "calldataHashVersion": "keccak256-v1",
+            "selector": "0xa9059cbb",
+            "frozenKey": short_raw_calldata
+        }
+    });
+
+    let record: HistoryRecord = serde_json::from_value(with_raw).expect("raw calldata record");
+    assert_eq!(record.submission.frozen_key, "[redacted_payload]");
+    assert_eq!(
+        record
+            .raw_calldata_metadata
+            .as_ref()
+            .and_then(|metadata| metadata.frozen_key.as_deref()),
+        Some("[redacted_payload]")
+    );
+
+    let serialized = serde_json::to_string(&record).expect("serialize raw calldata record");
+    assert!(!serialized.contains(short_raw_calldata));
+}
+
+#[test]
 fn history_recovery_intent_preserves_raw_calldata_metadata_additively() {
     let intent: wallet_workbench_lib::models::HistoryRecoveryIntent =
         serde_json::from_value(serde_json::json!({
@@ -1778,6 +1831,55 @@ fn history_recovery_intent_redacts_raw_calldata_selector_payloads() {
     assert!(!serialized.contains(short_raw_calldata));
     assert!(!serialized.contains(&oversized_raw_calldata));
     assert!(!serialized.contains("abababababababababababababababababababab"));
+}
+
+#[test]
+fn history_recovery_intent_output_redacts_raw_calldata_frozen_keys() {
+    with_test_app_dir("raw-calldata-recovery-frozen-key-redaction", |_| {
+        let short_raw_calldata =
+            "0xa9059cbb0000000000000000000000001111111111111111111111111111111111111111";
+        let intent: wallet_workbench_lib::models::HistoryRecoveryIntent =
+            serde_json::from_value(serde_json::json!({
+                "schemaVersion": 1,
+                "id": "raw-recovery-frozen-key",
+                "status": "active",
+                "createdAt": "2026-04-29T01:02:03.000Z",
+                "txHash": "0xraw",
+                "kind": "rawCalldata",
+                "selector": "0xa9059cbb",
+                "frozenKey": short_raw_calldata,
+                "rawCalldataMetadata": {
+                    "intentKind": "rawCalldata",
+                    "calldataHashVersion": "keccak256-v1",
+                    "selector": "0xa9059cbb",
+                    "frozenKey": short_raw_calldata
+                },
+                "broadcastedAt": "2026-04-29T01:02:04.000Z",
+                "writeError": "schema placeholder"
+            }))
+            .expect("raw recovery intent");
+
+        record_history_recovery_intent(intent).expect("record recovery intent");
+        let path = wallet_workbench_lib::storage::history_recovery_intents_path()
+            .expect("recovery intents path");
+        let raw = fs::read_to_string(path).expect("read recovery intents");
+        assert!(!raw.contains(short_raw_calldata));
+
+        let intents = load_history_recovery_intents().expect("load recovery intents");
+        assert_eq!(
+            intents
+                .first()
+                .and_then(|intent| intent.frozen_key.as_deref()),
+            Some("[redacted_payload]")
+        );
+        assert_eq!(
+            intents
+                .first()
+                .and_then(|intent| intent.raw_calldata_metadata.as_ref())
+                .and_then(|metadata| metadata.frozen_key.as_deref()),
+            Some("[redacted_payload]")
+        );
+    });
 }
 
 fn start_preflight_rpc_server() -> String {

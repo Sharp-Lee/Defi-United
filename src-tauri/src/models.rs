@@ -792,7 +792,12 @@ pub struct RawCalldataHistoryMetadata {
     pub blocking_statuses: Vec<AbiCallStatusSummary>,
     #[serde(default)]
     pub inference: Option<RawCalldataInferenceSummary>,
-    #[serde(default, alias = "frozen_key")]
+    #[serde(
+        default,
+        alias = "frozen_key",
+        deserialize_with = "deserialize_sanitized_raw_frozen_key_option",
+        serialize_with = "serialize_sanitized_raw_frozen_key_option"
+    )]
     pub frozen_key: Option<String>,
     #[serde(default, alias = "future_submission")]
     pub future_submission: Option<AbiCallSubmissionPlaceholder>,
@@ -1012,6 +1017,7 @@ pub struct Erc20BatchSubmitResult {
 const ABI_HISTORY_VALUE_MAX_CHARS: usize = 256;
 const ABI_HISTORY_LABEL_MAX_CHARS: usize = 96;
 const RAW_CALLDATA_PREVIEW_PART_MAX_CHARS: usize = 80;
+const RAW_FROZEN_KEY_MAX_CHARS: usize = 160;
 const ABI_HISTORY_RPC_NAME_MAX_CHARS: usize = 120;
 const ABI_HISTORY_RPC_SUMMARY_MAX_CHARS: usize = 200;
 const ABI_HISTORY_HASH_MAX_CHARS: usize = 128;
@@ -1192,6 +1198,31 @@ fn sanitize_raw_calldata_selector(value: &str) -> String {
         return "[redacted_payload]".to_string();
     }
     sanitize_abi_history_text(compact, 32).0
+}
+
+fn sanitize_raw_frozen_key(value: &str) -> String {
+    sanitize_raw_calldata_text(value, RAW_FROZEN_KEY_MAX_CHARS)
+}
+
+fn deserialize_sanitized_raw_frozen_key_option<'de, D>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<String>::deserialize(deserializer)?;
+    Ok(value.map(|value| sanitize_raw_frozen_key(&value)))
+}
+
+fn serialize_sanitized_raw_frozen_key_option<S>(
+    value: &Option<String>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    let sanitized = value.as_deref().map(sanitize_raw_frozen_key);
+    sanitized.serialize(serializer)
 }
 
 fn deserialize_sanitized_raw_calldata_text_option<'de, D>(
@@ -1712,30 +1743,20 @@ impl Default for NonceThread {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone)]
 pub struct HistoryRecord {
-    #[serde(default = "history_schema_version")]
     pub schema_version: u32,
     pub intent: NativeTransferIntent,
-    #[serde(default)]
     pub intent_snapshot: IntentSnapshotMetadata,
     pub submission: SubmissionRecord,
     pub outcome: ChainOutcome,
-    #[serde(default)]
     pub nonce_thread: NonceThread,
-    #[serde(default)]
     pub batch_metadata: Option<BatchHistoryMetadata>,
-    #[serde(default)]
     pub abi_call_metadata: Option<AbiCallHistoryMetadata>,
-    #[serde(
-        default,
-        alias = "rawCalldataMetadata",
-        skip_serializing_if = "Option::is_none"
-    )]
     pub raw_calldata_metadata: Option<RawCalldataHistoryMetadata>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct HistoryRecordUnchecked {
     #[serde(default = "history_schema_version")]
     schema_version: u32,
@@ -1750,7 +1771,11 @@ struct HistoryRecordUnchecked {
     batch_metadata: Option<BatchHistoryMetadata>,
     #[serde(default)]
     abi_call_metadata: Option<AbiCallHistoryMetadata>,
-    #[serde(default, alias = "rawCalldataMetadata")]
+    #[serde(
+        default,
+        alias = "rawCalldataMetadata",
+        skip_serializing_if = "Option::is_none"
+    )]
     raw_calldata_metadata: Option<RawCalldataHistoryMetadata>,
 }
 
@@ -1792,6 +1817,10 @@ impl HistoryRecord {
             self.submission
                 .typed_transaction
                 .normalize_as_raw_calldata();
+            self.submission.frozen_key = sanitize_raw_frozen_key(&self.submission.frozen_key);
+            if let Some(metadata) = self.raw_calldata_metadata.as_mut() {
+                metadata.frozen_key = metadata.frozen_key.as_deref().map(sanitize_raw_frozen_key);
+            }
             self.submission.kind = SubmissionKind::RawCalldata;
             self.batch_metadata = None;
             self.abi_call_metadata = None;
@@ -1803,6 +1832,27 @@ impl HistoryRecord {
             || self.submission.typed_transaction.transaction_type == TransactionType::RawCalldata
             || self.submission.kind == SubmissionKind::RawCalldata
             || self.raw_calldata_metadata.is_some()
+    }
+}
+
+impl Serialize for HistoryRecord {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let value = self.clone().raw_calldata_metadata_normalized();
+        HistoryRecordUnchecked {
+            schema_version: value.schema_version,
+            intent: value.intent,
+            intent_snapshot: value.intent_snapshot,
+            submission: value.submission,
+            outcome: value.outcome,
+            nonce_thread: value.nonce_thread,
+            batch_metadata: value.batch_metadata,
+            abi_call_metadata: value.abi_call_metadata,
+            raw_calldata_metadata: value.raw_calldata_metadata,
+        }
+        .serialize(serializer)
     }
 }
 
@@ -1892,6 +1942,26 @@ pub struct HistoryRecoveryIntent {
     pub recovered_at: Option<String>,
     #[serde(default)]
     pub dismissed_at: Option<String>,
+}
+
+impl HistoryRecoveryIntent {
+    pub fn raw_calldata_frozen_keys_normalized(mut self) -> Self {
+        self.normalize_raw_calldata_frozen_keys();
+        self
+    }
+
+    pub fn normalize_raw_calldata_frozen_keys(&mut self) {
+        if self.has_raw_calldata_shape() {
+            self.frozen_key = self.frozen_key.as_deref().map(sanitize_raw_frozen_key);
+            if let Some(metadata) = self.raw_calldata_metadata.as_mut() {
+                metadata.frozen_key = metadata.frozen_key.as_deref().map(sanitize_raw_frozen_key);
+            }
+        }
+    }
+
+    fn has_raw_calldata_shape(&self) -> bool {
+        self.kind == SubmissionKind::RawCalldata || self.raw_calldata_metadata.is_some()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

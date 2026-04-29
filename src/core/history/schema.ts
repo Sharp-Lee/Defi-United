@@ -403,6 +403,7 @@ export interface HistoryRecord {
 
 const LEGACY = "legacy";
 const UNKNOWN = "unknown";
+const RAW_FROZEN_KEY_MAX_LENGTH = 160;
 const TRANSACTION_TYPES = new Set<TransactionType>([
   "legacy",
   "nativeTransfer",
@@ -503,6 +504,18 @@ function sanitizeRawCalldataSummaryText(value: unknown, maxLength = 160) {
     return "[redacted_payload]";
   }
   return sanitizeDurableRpcSummary(compact, maxLength);
+}
+
+function sanitizeRawFrozenKey(value: unknown) {
+  if (typeof value !== "string") return null;
+  const compact = value.replace(/\s+/g, " ").trim();
+  if (
+    (/^0x[0-9a-f]+$/i.test(compact) && compact.length > 10) ||
+    /(?:^|[\s"'<>;,])0x[0-9a-f]{9,}(?=$|[\s"'<>;,])/i.test(compact)
+  ) {
+    return "[redacted_payload]";
+  }
+  return sanitizeDurableRpcSummary(compact, RAW_FROZEN_KEY_MAX_LENGTH);
 }
 
 function normalizeRawCalldataHash(value: unknown, hashVersion: RawCalldataHistoryMetadata["calldata_hash_version"]) {
@@ -1050,7 +1063,7 @@ export function normalizeRawCalldataMetadata(rawMetadata: unknown): RawCalldataH
       metadata.blocking_statuses ?? metadata.blockingStatuses,
     ),
     inference: normalizeRawCalldataInference(metadata.inference),
-    frozen_key: stringOrNull(metadata.frozen_key ?? metadata.frozenKey),
+    frozen_key: sanitizeRawFrozenKey(metadata.frozen_key ?? metadata.frozenKey),
     future_submission: normalizeAbiSubmissionPlaceholder(
       metadata.future_submission ?? metadata.futureSubmission,
     ),
@@ -1075,7 +1088,11 @@ export function normalizeHistoryRecord(rawRecord: unknown): HistoryRecord {
     rawCalldataMetadata != null;
   const normalizedIntent = isRawCalldata ? canonicalRawCalldataTypedFields(intent) : intent;
   const normalizedSubmission = isRawCalldata
-    ? { ...canonicalRawCalldataTypedFields(submission), kind: "rawCalldata" as const }
+    ? {
+        ...canonicalRawCalldataTypedFields(submission),
+        frozen_key: sanitizeRawFrozenKey(submission.frozen_key) ?? UNKNOWN,
+        kind: "rawCalldata" as const,
+      }
     : submission;
   return {
     schema_version: numberOrNull(record.schema_version) ?? 1,

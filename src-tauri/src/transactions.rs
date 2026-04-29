@@ -561,7 +561,12 @@ fn recovery_lock() -> &'static Mutex<()> {
 }
 
 fn write_history_recovery_intents(intents: &[HistoryRecoveryIntent]) -> Result<(), String> {
-    let raw = serde_json::to_string_pretty(intents).map_err(|e| e.to_string())?;
+    let normalized = intents
+        .iter()
+        .cloned()
+        .map(HistoryRecoveryIntent::raw_calldata_frozen_keys_normalized)
+        .collect::<Vec<_>>();
+    let raw = serde_json::to_string_pretty(&normalized).map_err(|e| e.to_string())?;
     write_file_atomic(&history_recovery_intents_path()?, &raw)
 }
 
@@ -584,6 +589,7 @@ pub fn load_history_recovery_intents() -> Result<Vec<HistoryRecoveryIntent>, Str
 fn sanitize_loaded_history_recovery_intent(
     mut intent: HistoryRecoveryIntent,
 ) -> HistoryRecoveryIntent {
+    intent.normalize_raw_calldata_frozen_keys();
     intent.write_error = sanitize_recovery_error(&intent.write_error);
     intent.last_recovery_error = intent
         .last_recovery_error

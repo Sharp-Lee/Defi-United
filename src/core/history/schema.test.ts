@@ -721,6 +721,58 @@ describe("history schema normalization", () => {
     expect(JSON.stringify(records[0])).not.toContain(shortRawCalldata);
   });
 
+  it("redacts raw-shaped frozen keys that contain full calldata or secrets", () => {
+    const shortRawCalldata =
+      "0xa9059cbb0000000000000000000000001111111111111111111111111111111111111111";
+    const records = normalizeHistoryRecords([
+      {
+        intent: {
+          ...legacyIntent,
+          transaction_type: "rawCalldata",
+          selector: "0xa9059cbb",
+        },
+        submission: {
+          frozen_key: shortRawCalldata,
+          tx_hash: "0xraw",
+          kind: "rawCalldata",
+          transaction_type: "rawCalldata",
+          selector: "0xa9059cbb",
+        },
+        outcome: { state: "Pending", tx_hash: "0xraw" },
+        rawCalldataMetadata: {
+          intentKind: "rawCalldata",
+          calldataHashVersion: "keccak256-v1",
+          selector: "0xa9059cbb",
+          frozenKey: shortRawCalldata,
+        },
+      },
+      {
+        intent: {
+          ...legacyIntent,
+          transaction_type: "rawCalldata",
+          selector: "0xa9059cbb",
+        },
+        submission: {
+          frozen_key: `draft api_key=SECRET_TOKEN ${"x".repeat(240)}`,
+          tx_hash: "0xraw-secret",
+          kind: "rawCalldata",
+          transaction_type: "rawCalldata",
+          selector: "0xa9059cbb",
+        },
+        outcome: { state: "Pending", tx_hash: "0xraw-secret" },
+      },
+    ]);
+
+    expect(records[0].submission.frozen_key).toBe("[redacted_payload]");
+    expect(records[0].raw_calldata_metadata?.frozen_key).toBe("[redacted_payload]");
+    expect(records[1].submission.frozen_key).toContain("[redacted_secret]");
+    expect(records[1].submission.frozen_key.length).toBeLessThanOrEqual(174);
+
+    const durable = JSON.stringify(records);
+    expect(durable).not.toContain(shortRawCalldata);
+    expect(durable).not.toContain("SECRET_TOKEN");
+  });
+
   it("normalizes arbitrary ABI write call metadata without raw ABI, calldata, params, or RPC secrets", () => {
     const rawCalldata = `0xa9059cbb${"0".repeat(512)}`;
     const overlongKind = `kind-${"x".repeat(220)}`;
