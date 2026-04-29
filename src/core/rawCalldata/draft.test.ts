@@ -414,6 +414,7 @@ describe("buildRawCalldataDraft", () => {
       { ...baseInput, fromAccountIndex: null },
       { ...baseInput, fromAccountIndex: -1 },
       { ...baseInput, fromAccountIndex: 1.5 },
+      { ...baseInput, fromAccountIndex: 0xffffffff + 1 },
       { ...baseInput, fromAccountIndex: Number.MAX_SAFE_INTEGER + 1 },
     ];
 
@@ -427,6 +428,10 @@ describe("buildRawCalldataDraft", () => {
   });
 
   it("keeps valid sender account indexes numeric in submittable drafts", () => {
+    const zeroIndexDraft = buildRawCalldataDraft({ ...baseInput, fromAccountIndex: 0 });
+    expect(zeroIndexDraft.canSubmit).toBe(true);
+    expect(zeroIndexDraft.submission?.fromAccountIndex).toBe(0);
+
     const draft = buildRawCalldataDraft({ ...baseInput, fromAccountIndex: 2 });
 
     expect(draft.canSubmit).toBe(true);

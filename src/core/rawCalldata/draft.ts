@@ -306,7 +306,7 @@ export function buildRawCalldataDraft(input: BuildRawCalldataDraftInput): RawCal
   }
   if (fromAccountIndex === null) {
     blockingStatuses.push(
-      blocking("accountIndex", "Sender account index must be a non-negative safe integer.", "account"),
+      blocking("accountIndex", "Sender account index must be a u32 safe integer.", "account"),
     );
   }
   if (!input.to) {
@@ -715,7 +715,7 @@ function hasFrozenRpcField(value: string | null | undefined) {
 }
 
 function normalizeAccountIndex(value: number | null | undefined) {
-  return Number.isSafeInteger(value) && value >= 0 ? value : null;
+  return Number.isSafeInteger(value) && value >= 0 && value <= 0xffffffff ? value : null;
 }
 
 function emptyBlockedPreview(): RawCalldataPreview {
