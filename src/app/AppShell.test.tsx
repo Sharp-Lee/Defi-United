@@ -1,4 +1,4 @@
-import { screen } from "@testing-library/react";
+import { fireEvent, screen } from "@testing-library/react";
 import { within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { AppShell } from "./AppShell";
@@ -228,5 +228,132 @@ describe("AppShell", () => {
     );
     expect(screen.getByRole("heading", { name: "Assets & Approvals" })).toBeInTheDocument();
     expect(screen.getByText(/coverage is unknown\/not configured/)).toBeInTheDocument();
+  });
+
+  it("passes a sanitized current RPC identity into asset revoke drafts", () => {
+    const owner = "0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+    const token = "0x1111111111111111111111111111111111111111";
+    const spender = "0x2222222222222222222222222222222222222222";
+    renderScreen(
+      <AppShell
+        accounts={[
+          {
+            address: owner,
+            index: 1,
+            label: "Account 1",
+            nativeBalanceWei: 1n,
+            nonce: 0,
+          },
+        ]}
+        activeTab="assets"
+        onTabChange={() => {}}
+        onUnlock={async () => {}}
+        rpcUrl="https://rpc.example.invalid/mainnet?apikey=secret-token"
+        selectedChainId={1n}
+        session={{ status: "ready" }}
+        settingsStatusKind="ok"
+        tokenWatchlistState={{
+          schemaVersion: 1,
+          watchlistTokens: [],
+          tokenMetadataCache: [],
+          tokenScanState: [],
+          erc20BalanceSnapshots: [],
+          approvalWatchlist: [],
+          assetScanJobs: [],
+          assetSnapshots: [],
+          allowanceSnapshots: [
+            {
+              chainId: 1,
+              owner,
+              tokenContract: token,
+              spender,
+              allowanceRaw: "100",
+              status: "active",
+              source: { kind: "rpcPointRead" },
+              createdAt: "1",
+              updatedAt: "2",
+            },
+          ],
+          nftApprovalSnapshots: [],
+          resolvedTokenMetadata: [],
+        }}
+      />,
+    );
+
+    fireEvent.click(
+      within(screen.getByLabelText("ERC-20 allowance snapshots")).getByRole("button", {
+        name: "Build Revoke Draft",
+      }),
+    );
+
+    const confirmation = screen.getByLabelText("Revoke draft confirmation");
+    expect(confirmation).toHaveTextContent("https://rpc.example.invalid");
+    expect(confirmation).toHaveTextContent(/rpc-endpoint-/);
+    expect(confirmation).not.toHaveTextContent("secret-token");
+    expect(confirmation).not.toHaveTextContent("selected-rpc-chain-1");
+  });
+
+  it("does not pass an unvalidated RPC identity into asset revoke drafts", () => {
+    const owner = "0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+    const token = "0x1111111111111111111111111111111111111111";
+    const spender = "0x2222222222222222222222222222222222222222";
+    renderScreen(
+      <AppShell
+        accounts={[
+          {
+            address: owner,
+            index: 1,
+            label: "Account 1",
+            nativeBalanceWei: 1n,
+            nonce: 0,
+          },
+        ]}
+        activeTab="assets"
+        onTabChange={() => {}}
+        onUnlock={async () => {}}
+        rpcUrl="https://rpc.example.invalid/mainnet?apikey=secret-token"
+        selectedChainId={1n}
+        session={{ status: "ready" }}
+        settingsStatusKind="error"
+        tokenWatchlistState={{
+          schemaVersion: 1,
+          watchlistTokens: [],
+          tokenMetadataCache: [],
+          tokenScanState: [],
+          erc20BalanceSnapshots: [],
+          approvalWatchlist: [],
+          assetScanJobs: [],
+          assetSnapshots: [],
+          allowanceSnapshots: [
+            {
+              chainId: 1,
+              owner,
+              tokenContract: token,
+              spender,
+              allowanceRaw: "100",
+              status: "active",
+              source: { kind: "rpcPointRead" },
+              createdAt: "1",
+              updatedAt: "2",
+            },
+          ],
+          nftApprovalSnapshots: [],
+          resolvedTokenMetadata: [],
+        }}
+      />,
+    );
+
+    fireEvent.click(
+      within(screen.getByLabelText("ERC-20 allowance snapshots")).getByRole("button", {
+        name: "Build Revoke Draft",
+      }),
+    );
+
+    const confirmation = screen.getByLabelText("Revoke draft confirmation");
+    expect(confirmation).toHaveTextContent("Blocked until required fields and acknowledgements are complete");
+    expect(confirmation).toHaveTextContent("Select and validate an RPC before building a revoke draft.");
+    expect(confirmation).toHaveTextContent("selected-rpc-chain-1");
+    expect(confirmation).not.toHaveTextContent("https://rpc.example.invalid");
+    expect(confirmation).not.toHaveTextContent("secret-token");
   });
 });

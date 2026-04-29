@@ -5,7 +5,11 @@ import { AssetApprovalsView } from "../features/assets/AssetApprovalsView";
 import { DiagnosticsView } from "../features/diagnostics/DiagnosticsView";
 import { HistoryView } from "../features/history/HistoryView";
 import { AccountOrchestrationView } from "../features/orchestration/AccountOrchestrationView";
-import { RawCalldataView } from "../features/rawCalldata/RawCalldataView";
+import {
+  RawCalldataView,
+  rawCalldataRpcEndpointFingerprint,
+  summarizeRawCalldataRpcEndpoint,
+} from "../features/rawCalldata/RawCalldataView";
 import { SettingsView } from "../features/settings/SettingsView";
 import { TokensView } from "../features/tokens/TokensView";
 import { TransferView } from "../features/transfer/TransferView";
@@ -308,6 +312,16 @@ export function AppShell({
 }: AppShellProps) {
   const selectedChain = chains.find((chain) => chain.chainId === selectedChainId) ?? chains[0];
   const chainReady = settingsStatusKind === "ok" && rpcUrl.trim().length > 0;
+  const selectedRpcForAssets = chainReady
+    ? {
+        chainId: Number(selectedChainId),
+        providerConfigId: `chain-${selectedChainId.toString()}`,
+        endpointId: "active",
+        endpointName: "Selected RPC",
+        endpointSummary: summarizeRawCalldataRpcEndpoint(rpcUrl),
+        endpointFingerprint: rawCalldataRpcEndpointFingerprint(rpcUrl),
+      }
+    : null;
   const globalErrorDisplay = appError
     ? getRawHistoryErrorDisplay({
         message: appError,
@@ -408,6 +422,7 @@ export function AppShell({
                 onScanErc721TokenApproval={onScanErc721TokenApproval}
                 onScanNftOperatorApproval={onScanNftOperatorApproval}
                 rpcReady={chainReady}
+                selectedRpc={selectedRpcForAssets}
                 selectedChainId={selectedChainId}
                 state={tokenWatchlistState}
               />
