@@ -1,14 +1,14 @@
 # EVM Wallet Workbench P3/P4 后续执行计划
 
-> 面向 subagent-driven-development：本文件同时保留 P3、P4-1 到 P4-13、P5-1 和 P5-2 的完成记录，以及 P5-3/P5-4/P6 backlog。只有标记为未完成、探索或后续计划的条目表示待执行任务，不代表能力已经完成；后续任务仍由 controller 按任务串行派发和收口。
+> 面向 subagent-driven-development：本文件同时保留 P3、P4-1 到 P4-13、P5-1 到 P5-3 的完成记录，以及 P5-4/P6 backlog。只有标记为未完成、探索或后续计划的条目表示待执行任务，不代表能力已经完成；后续任务仍由 controller 按任务串行派发和收口。
 
 ## 1. 基线与方向
 
-- 基线：从当前已合并到 `main` 的 EVM Wallet Workbench v1（Tauri 2 技术栈）开始推进；P3、P4-1 到 P4-13、P5-1 和 P5-2 已完成。
+- 基线：从当前已合并到 `main` 的 EVM Wallet Workbench v1（Tauri 2 技术栈）开始推进；P3、P4-1 到 P4-13、P5-1、P5-2 和 P5-3 已完成。
 - 主线：后续产品、测试、发布和技术债治理都以 Tauri desktop app 为准。
 - 非主线：浏览器版只作为历史参考或迁移来源，不继续投入功能补齐。
-- 已有 v1 能力：vault/mnemonic、账户派生与链上扫描、RPC 验证和 app-config、native transfer draft/submit、ERC-20 transfer、token watchlist/ERC-20 balances、account orchestration、native batch、ERC-20 batch、ABI management、ABI read/write caller、native transfer fee reference/base fee customization、pending history/reconcile、replace/cancel、anvil smoke check。
-- 后续重点：P5-3+ 按 spec/design -> 最小实现 -> 扩展能力的顺序推进，不把 raw calldata、资产/授权扫描、revoke、tx hash 逆向解析或 hot contract 分析写成当前已完成能力。
+- 已有 v1 能力：vault/mnemonic、账户派生与链上扫描、RPC 验证和 app-config、native transfer draft/submit、ERC-20 transfer、token watchlist/ERC-20 balances、account orchestration、native batch、ERC-20 batch、ABI management、ABI read/write caller、raw calldata sender/preview、native transfer fee reference/base fee customization、pending history/reconcile、replace/cancel、anvil smoke check。
+- 后续重点：P5-4+ 按 spec/design -> 最小实现 -> 扩展能力的顺序推进，不把资产/授权扫描、revoke、tx hash 逆向解析或 hot contract 分析列入当前能力。
 
 ## 2. 执行规则
 
@@ -637,7 +637,7 @@
 - 将 smoke check 关键阶段接入非敏感诊断事件或读取已有事件摘要。
 - 增加失败时的最小复现信息和本地路径提示，但不输出敏感材料。
 - 执行 P4 回归清单，覆盖 P4-2 到 P4-6 的关键路径。
-- 更新必要的 spec/plan 状态说明：P4-8 到 P4-13 已完成，P5-3/P5-4/P6 仍为计划/后续能力。
+- 更新必要的 spec/plan 状态说明：P4-8 到 P4-13 已完成，P5-3 已完成，P5-4/P6 仍为计划/后续能力。
 
 **非目标**
 
@@ -652,7 +652,7 @@
 - 成功路径仍覆盖本地 native transfer 到 pending/reconcile 的闭环。
 - P4-2 到 P4-6 的安全不变量回归通过。
 - 诊断输出和导出不包含敏感材料。
-- 文档状态准确：P4-1 到 P4-13 按实际完成情况标记，P5-3/P5-4/P6 仍为计划/后续能力。
+- 文档状态准确：P4-1 到 P4-13 按实际完成情况标记，P5-3 已完成，P5-4/P6 仍为计划/后续能力。
 
 **建议测试/验证命令**
 
@@ -685,8 +685,8 @@
 9. P4-13 batch ERC-20 分发/归集（已完成）。
 10. P5-1 ABI 管理 fetch/import/paste/cache（已完成）。
 11. P5-2 ABI read/write 调用器（已完成）。
-12. P5-3 raw calldata 发送与预览（下一步，先 P5-3a doc-only，再拆实现/测试）。
-13. P5-4 资产/授权扫描与 revoke 工作流（后续）。
+12. P5-3 raw calldata 发送与预览（已完成）。
+13. P5-4 资产/授权扫描与 revoke 工作流（后续，先 P5-4a doc-only，再拆实现/测试）。
 14. P6-1 tx hash 逆向解析（后续）。
 15. P6-2 contract address hot 交易/selector 分析（后续）。
 
@@ -1106,7 +1106,7 @@ P5-1 已提供 ABI source/cache/read model，不实现 raw calldata、revoke、h
 
 - 只改文档，不改 `src` 或 `src-tauri`。
 - 不实现 ABI read/write 调用器、raw calldata、revoke、hot tx 解析、代理自动解析完整方案或任意交易广播。
-- P5-1 本身不实现调用器或解析器；P5-2 已作为后续 completed consumer 使用 ABI read model，但 P5-3 raw calldata 和 P6 解析仍不得写成当前已完成。
+- P5-1 本身不实现调用器或解析器；P5-2 和 P5-3 已作为后续 completed consumers 使用 ABI read model，但 P6 解析仍不得写成当前已完成。
 
 **验收/测试建议**
 
@@ -1401,11 +1401,11 @@ P5-2 已在 Tauri desktop 主线中可用，基于 P5-1 的 selected ABI source/
 - Diagnostics/export/history 不包含 raw large ABI、API key、RPC URL secret、private key、mnemonic、signed tx secret material；calldata 按 selector/length/hash/summary 边界处理。
 - 建议验证：`cargo test --manifest-path src-tauri/Cargo.toml`、`npm test -- src/core src/features`、`npm run typecheck`、`git diff --check`。
 
-#### Task P5-3: raw calldata 发送与预览（下一步拆分）
+#### Task P5-3: raw calldata 发送与预览（已完成）
 
-P5-3 为 Tauri desktop 高级用户提供 raw calldata sender/preview。Raw calldata 本身不可完全语义化；selector/ABI 推断只可作为辅助解释，不能作为安全保证。最终签名、广播、history 写入、恢复仍必须走 Rust/Tauri command，React 不接触助记词、私钥、raw signed tx 或签名材料。P5-3 不包含 ABI 参数编辑器、任意 ABI source fetch、revoke/approve helper、selector 风险评分库或 hot tx parsing。
+P5-3 已为 Tauri desktop 高级用户提供 raw calldata sender/preview。Raw calldata 本身不可完全语义化；selector/ABI 推断只可作为辅助解释，不能作为安全保证。最终签名、广播、history 写入、恢复仍必须走 Rust/Tauri command，React 不接触助记词、私钥、raw signed tx 或签名材料。P5-3 不包含 ABI 参数编辑器、任意 ABI source fetch、revoke/approve helper、selector 风险评分库或 hot tx parsing。
 
-##### Task P5-3a: raw calldata spec/design（状态：本任务，doc-only）
+##### Task P5-3a: raw calldata spec/design（状态：已完成）
 
 **目标**
 
@@ -1421,7 +1421,7 @@ P5-3 为 Tauri desktop 高级用户提供 raw calldata sender/preview。Raw call
 
 - 只改 `docs/specs/evm-wallet-workbench.md` 和本计划文件，不改 runtime code。
 - 不实现 raw calldata UI、schema、submit command、签名、广播或测试。
-- 不把 raw calldata、asset/allowance scanning、revoke、tx hash parsing 或 hot contract analysis 写成当前已完成能力。
+- 执行时不把 asset/allowance scanning、revoke、tx hash parsing 或 hot contract analysis 列入当前能力；P5-3 完成后 raw calldata 可作为当前能力记录。
 
 **验收/测试建议**
 
@@ -1432,7 +1432,7 @@ P5-3 为 Tauri desktop 高级用户提供 raw calldata sender/preview。Raw call
 - Spec 明确 submit 必须由 Rust/Tauri command 重新校验 actual chainId/RPC/from/nonce/fee/gas/to/value/calldata normalization、128 KiB limit、hash version/hash、frozen key、warnings 和 frozen inference state 后再签名广播。
 - 验证命令：`git diff --check`，并用 `rg` 检查 stale phrases。
 
-##### Task P5-3b: raw calldata frontend draft/preview model and tests
+##### Task P5-3b: raw calldata frontend draft/preview model and tests（状态：已完成）
 
 **目标**
 
@@ -1457,7 +1457,7 @@ P5-3 为 Tauri desktop 高级用户提供 raw calldata sender/preview。Raw call
 - Unknown/conflict selector、manual gas、high fee、nonzero value 等 high-risk warnings 未 acknowledge 时不可进入可提交确认状态。
 - 建议验证：`npm test -- src/features src/core`、`npm run typecheck`、`git diff --check`。
 
-##### Task P5-3c: raw calldata history schema/read model and diagnostics redaction tests
+##### Task P5-3c: raw calldata history schema/read model and diagnostics redaction tests（状态：已完成）
 
 **目标**
 
@@ -1482,7 +1482,7 @@ P5-3 为 Tauri desktop 高级用户提供 raw calldata sender/preview。Raw call
 - Diagnostics/export tests 验证 private key、mnemonic、raw signed tx、RPC secret、API key、full calldata、大错误 payload 均被排除或 bounded。
 - 建议验证：`cargo test --manifest-path src-tauri/Cargo.toml`、`npm test -- src/core/history src/features/history`、`npm run typecheck`、`git diff --check`。
 
-##### Task P5-3d: Rust submit command + recovery + tests
+##### Task P5-3d: Rust submit command + recovery + tests（状态：已完成）
 
 **目标**
 
@@ -1507,7 +1507,7 @@ P5-3 为 Tauri desktop 高级用户提供 raw calldata sender/preview。Raw call
 - History write failure error 返回 tx hash、chainId、from、to、nonce、value、fee/gas、selector/length/hash version/hash、bounded prefix/suffix preview、truncation metadata、frozen key 和 write error。
 - 建议验证：`cargo test --manifest-path src-tauri/Cargo.toml`、`npm run typecheck`、`git diff --check`。
 
-##### Task P5-3e: desktop UI wiring + integration/security regressions
+##### Task P5-3e: desktop UI wiring + integration/security regressions（状态：已完成）
 
 **目标**
 
@@ -1534,10 +1534,193 @@ P5-3 为 Tauri desktop 高级用户提供 raw calldata sender/preview。Raw call
 
 #### Task P5-4: 资产/授权扫描与 revoke 工作流
 
-- 目标：扫描 token/NFT/allowance 等资产和授权，并为 revoke 提供受控交易工作流。
-- 依赖：P4-9、P5-1、P5-2。
-- 关键边界：资产/授权扫描先只读；revoke 是 write transaction，必须进入确认页、历史三层模型和 Rust 签名广播；第三方 indexer 数据只能作为辅助，不是交易真相来源。
-- 是否先 spec/design：是。
+P5-4 在 Tauri desktop 主线中提供只读资产/授权扫描视图，并为明确 active approval 提供受控 revoke 工作流。普通 RPC 只能回答 supported point queries，不能保证全量发现 token、NFT、tokenId 或 spender/operator；explorer/indexer 只能作为 candidate discovery/source metadata，最终交易前必须由 RPC point read 和 submit-time revalidation 确认。Revoke 是 write transaction，必须进入确认页、历史三层模型和 Rust/Tauri 签名广播。
+
+##### Task P5-4a: asset/allowance/revoke spec/design（状态：本任务，doc-only）
+
+**目标**
+
+补齐项目级 P5-4 spec，并把 P5-4 拆成可串行执行的后续任务。明确只读资产/授权扫描、数据源边界、storage/read model、scan flow、revoke workflow、UI/UX、safety/privacy、failure/recovery 和验收方向。
+
+**依赖**
+
+- P4-9 token watchlist/ERC-20 balance scan。
+- P4-10 account orchestration、P4-12/P4-13 native/ERC-20 batch 的账户/余额/历史边界。
+- P5-1 ABI/data source/read model、P5-2 managed ABI caller、P5-3 raw calldata 的确认页、history/recovery 和 redaction 约束。
+
+**边界/非目标**
+
+- 只改 `docs/specs/evm-wallet-workbench.md`、本计划文件和 README 的能力状态描述，不改 runtime code。
+- 不实现 storage、commands、UI、revoke submit、测试、签名或广播。
+- 不把 P5-4/P6 写成当前已完成能力；README 只能把 P5-3 raw calldata 等已合入能力更新为当前可用。
+
+**验收/测试建议**
+
+- Spec 覆盖 ERC-20 balances/allowances、ERC-721/ERC-1155 operator approvals、ERC-721 token-specific approvals、native balance 边界。
+- Spec 明确 RPC point read truth、explorer/indexer candidate source/staleness/failure 和无 indexer 时不承诺全量发现。
+- Spec 明确 approval watchlist/config、scan jobs、asset snapshots、allowance snapshots、NFT approval snapshots、source metadata/status 和 identity 字段。
+- Spec 明确 revoke submit-time revalidation、Intent -> Submission -> ChainOutcome、Rust/Tauri 签名广播和 React 不签名/不广播。
+- 验证命令：`git diff --check`，并用 `rg` 检查 P5-3 状态措辞与 P5-4/P6 future boundary。
+
+##### Task P5-4b: asset/approval storage schema + read model + redaction tests
+
+**目标**
+
+实现 P5-4 的本地 schema/read model 基础，表达 approval watchlist/config、scan jobs、asset snapshots、allowance snapshots、NFT approval snapshots 和 source metadata/status，并补 diagnostics/export/history redaction 回归。
+
+**依赖**
+
+- P5-4a spec/design。
+- 现有 storage、history schema、diagnostics export 和 token watchlist/balance snapshots。
+- P4-10 account/local account identity 与 chainId 隔离约定。
+
+**边界/非目标**
+
+- 不实现 RPC scan command 或 revoke submit command。
+- 不新增 explorer/indexer provider 实现；source metadata 可先支持 manual/watchlist/history-derived/RPC placeholder。
+- 不使用 symbol/name/logo/verified badge 作为 identity；identity 至少包含 chainId、owner/local account、contract、spender/operator、tokenId（如适用）。
+- 不保存助记词、private key、raw signed tx、RPC secret、API key、query token 或完整认证 URL。
+
+**验收/测试建议**
+
+- Rust/TS schema 能表达 watchlist/config、job、snapshot 和 per-item status，且 backward compatibility 不破坏既有 native/ERC-20/batch/ABI/raw calldata history。
+- Selectors/read model 能按 account/chain/contract/spender/operator/status/source/stale 读取，并保留 stale old snapshot。
+- Redaction tests 覆盖 source metadata、provider errors、diagnostics/export/history 中的 RPC secret/API key/query token/raw signed tx/private key/mnemonic 排除。
+- 建议验证：`cargo test --manifest-path src-tauri/Cargo.toml`、`npm test -- src/core src/features`、`npm run typecheck`、`git diff --check`。
+
+##### Task P5-4c: read-only scan commands for ERC-20 allowances and NFT approvals
+
+**目标**
+
+实现只读 scan commands：在每次扫描前校验 RPC chainId，对每个 owner + contract + spender/operator/tokenId 独立读取 ERC-20 allowance、ERC-721/ERC-1155 operator approval 和 ERC-721 token-specific approval，并写入 snapshots/read model。
+
+**依赖**
+
+- P5-4a spec/design。
+- P5-4b storage schema/read model。
+- P4-9 token watchlist/ERC-20 balance scanner command patterns。
+- 现有 RPC chainId validation、command error redaction 和 rate-limit/error 分类。
+
+**边界/非目标**
+
+- 不实现 revoke transaction、approve helper、permit、batch revoke 或 explorer/indexer full discovery。
+- 不承诺全量资产/NFT/allowance discovery；只读取用户/watchlist/history/indexer-provided candidates。
+- RPC/item 失败不得写成 zero allowance、false approval 或 no asset；必须保留旧 snapshot 为 stale。
+
+**验收/测试建议**
+
+- Rust tests 覆盖 chain mismatch blocking、per-item success/failure isolation、allowance raw read、`isApprovedForAll` read、`getApproved(tokenId)` read、metadata/decimals failure、stale retention、rate-limit/source unavailable summary 和 redaction。
+- Commands 返回 job summary、per-item status、last successful snapshot refs 和 bounded error summaries。
+- 无 candidates 或无 indexer 时 UI/read model 可显示 unknown coverage/not configured，而不是空结果安全感。
+- 建议验证：`cargo test --manifest-path src-tauri/Cargo.toml`、`npm run typecheck`、`git diff --check`。
+
+##### Task P5-4d: desktop asset/approval scanner UI and filters
+
+**目标**
+
+实现 Tauri desktop 的资产/授权扫描视图，展示 ERC-20 balances/allowances、已知 NFT holdings/approvals、scan job 状态和 source coverage，并提供按账户/链/contract/spender/operator/status/source/stale 的筛选。
+
+**依赖**
+
+- P5-4a spec/design。
+- P5-4b storage/read model selectors。
+- P5-4c read-only scan commands。
+- 现有 AppShell、account orchestration、token watchlist 和 diagnostics UI patterns。
+
+**边界/非目标**
+
+- 本任务不提交 revoke；revoke 入口可 disabled/stub 或只进入后续 draft flow。
+- 不把 indexer/explorer candidate 显示成 RPC-confirmed truth。
+- 不新增 browser mainline，不实现 portfolio pricing、NFT media gallery、full collection discovery 或 risk scoring。
+
+**验收/测试建议**
+
+- Frontend tests 覆盖 account/chain/contract/spender/operator/status/source/stale filters、unknown coverage empty states、stale/failure badges、metadata unknown、symbol/name 不作为 identity 和 revoke gating display。
+- UI 只对明确 active approval 显示可继续 revoke 的状态；zero/false/stale/unknown/failed 默认不可 revoke。
+- Diagnostics/export/snapshots 不包含 secrets 或 unbounded provider errors。
+- 建议验证：`npm test -- src/features src/core`、`npm run typecheck`、`git diff --check`。
+
+##### Task P5-4e: revoke draft/frozen key/confirmation UI
+
+**目标**
+
+实现 revoke draft 与确认页：针对 ERC-20 `approve(spender, 0)`、ERC-721/1155 `setApprovalForAll(operator, false)`、ERC-721 `approve(address(0), tokenId)` 生成可冻结意图，展示 approval identity、method/selector、snapshot status/source/staleness、fee/gas/nonce 和 warning acknowledgements。
+
+**依赖**
+
+- P5-4a spec/design。
+- P5-4b storage/read model。
+- P5-4d scanner UI/gating。
+- P5-2/P5-3 confirmation patterns、fee/nonce model、warning acknowledgement patterns。
+
+**边界/非目标**
+
+- 不签名、不广播、不写 chain submission；submit 可保持 disabled/stub，直到 P5-4f。
+- 不开放 stale/unknown/failed snapshot 的 revoke；需要用户重新扫描。
+- 不实现 batch revoke；未来若做，必须逐笔确认/冻结。
+- React 不接触 private key、mnemonic、raw signed tx 或签名材料。
+
+**验收/测试建议**
+
+- Frontend tests 覆盖 ERC-20/operator/token-specific revoke draft、frozen key invalidation、active-only gating、stale/unknown disabled、warning acknowledgements、contract/spender/operator/tokenId display 和 selector/method display。
+- Frozen key 覆盖 chain/RPC/from、snapshot identity/status/ref、approval kind、contract、spender/operator、tokenId、method/selector、calldata args、fee/gas/nonce、warnings 和 frozen version/time。
+- UI 明确 transaction `to = token/approval contract`，spender/operator/tokenId 是 calldata 参数。
+- 建议验证：`npm test -- src/features src/core`、`npm run typecheck`、`git diff --check`。
+
+##### Task P5-4f: revoke submit Rust command + history/recovery
+
+**目标**
+
+实现 revoke submit Rust/Tauri command：提交前重新校验 chainId/RPC/from、approval snapshot identity/status、token/approval contract、spender/operator、tokenId、calldata selector/method/args、fee/gas/nonce、warning acknowledgements 和 frozen key，重新读取当前 approval point query，确认仍 active 后签名广播并写入 typed revoke history/recovery metadata。
+
+**依赖**
+
+- P5-4a spec/design。
+- P5-4b storage/read model。
+- P5-4c read-only scan commands 或可复用 point read helpers。
+- P5-4e revoke draft/frozen confirmation UI。
+- 现有 signer/RPC send raw tx、history persistence、history write failure recovery 和 diagnostics redaction helpers。
+
+**边界/非目标**
+
+- 不实现前端签名或广播出口。
+- 不把 revoke 记录伪装成 ERC-20 transfer、managed ABI write 或 raw calldata；history intent kind 必须明确。
+- 不实现 permit revoke、approval increase/decrease、batch revoke、swap/bridge safety scoring 或 arbitrary ABI helper。
+- 如果 submit-time point read 发现 already zero/false、spender/operator changed、tokenId mismatch、contract mismatch 或 chain mismatch，必须拒绝广播并要求重新扫描/重建 draft。
+
+**验收/测试建议**
+
+- Rust tests 覆盖 ERC-20 successful revoke、ERC-721/1155 operator revoke、ERC-721 token-specific revoke、chain mismatch、from mismatch、snapshot stale、snapshot identity mismatch、already zero/false blocking、selector/method mismatch、fee/nonce mismatch、missing warning acknowledgement、broadcast failure、history write failure after broadcast 和 recovery without rebroadcast。
+- History write failure error 返回 tx hash、chainId、from、contract、spender/operator、tokenId、method/selector、fee/gas/nonce、snapshot identity/status、frozen key 和 write error。
+- Diagnostics/export 不包含 private key、mnemonic、raw signed tx、RPC secret、API key 或 unbounded provider errors。
+- 建议验证：`cargo test --manifest-path src-tauri/Cargo.toml`、`npm run typecheck`、`git diff --check`。
+
+##### Task P5-4g: integration/security regressions
+
+**目标**
+
+串联 P5-4 storage、read-only scan、scanner UI、revoke confirmation、Rust submit、history/recovery 和 diagnostics/export，补跨层安全回归。回归重点是确认这些改动不破坏当前 native/ERC-20/batch/ABI/raw calldata 能力。
+
+**依赖**
+
+- P5-4b storage/read model。
+- P5-4c read-only scan commands。
+- P5-4d scanner UI。
+- P5-4e revoke draft/confirmation UI。
+- P5-4f revoke submit/history/recovery。
+
+**边界/非目标**
+
+- 不扩大为 full portfolio、NFT collection discovery、indexer product、batch revoke、tx hash reverse parsing 或 hot contract analysis。
+- 不把 explorer/indexer results 当成交易 truth。
+- 不重新启用 browser 版作为主线。
+
+**验收/测试建议**
+
+- Integration tests 覆盖 ERC-20 allowance scan -> active approval -> revoke -> pending/confirmed history、ERC-721/1155 operator approval revoke、ERC-721 token-specific revoke、stale snapshot gating、partial scan failure、unknown coverage display、history recovery after broadcast 和 diagnostics/export redaction。
+- Security regressions 覆盖 chainId mismatch、wrong RPC、wrong from、changed spender/operator/tokenId、already revoked、unlimited allowance warning、unknown metadata warning、external spender/operator warning、contract not verified warning 和 symbol/name 不作为 identity。
+- 已有 native/ERC-20 transfer、native/ERC-20 batch、ABI caller、raw calldata tests 仍通过。
+- 建议验证：`npm test`、`npm run typecheck`、`cargo test --manifest-path src-tauri/Cargo.toml`、`scripts/run-anvil-check.sh`、`git diff --check`。
 
 #### Task P6-1: tx hash 逆向解析
 
@@ -1561,4 +1744,4 @@ P5-3 为 Tauri desktop 高级用户提供 raw calldata sender/preview。Raw call
 - 不新增前端签名或广播出口：最终提交仍必须走 Rust command。
 - 不把助记词、私钥、签名材料写入 UI、日志、历史、错误消息或 app-config。
 - 不把浏览器版重新设为后续主线。
-- 不把 P5-3/P5-4/P6 计划能力写成当前已完成，也不把已完成的 P4/P5-1/P5-2 历史任务重新写成待交付。
+- 不把 P5-4/P6 计划能力写成当前已完成，也不把已完成的 P4/P5-1/P5-2/P5-3 历史任务重新写成待交付。
