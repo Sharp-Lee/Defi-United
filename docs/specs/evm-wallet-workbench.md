@@ -571,16 +571,21 @@ v1 + P3/P4/P5 已将基础历史列表升级为可筛选、可分组、可审计
 
 - Draft 输入至少包含：expected `chainId`、selected RPC profile/RPC identity、from local account、`to` address、native `value_wei` 和/或 human amount、raw calldata hex、gas limit、base fee reference/used、base fee multiplier、priority fee、max fee/fee cap、nonce。
 - `to` 必须是校验后的 EVM 地址。`value` 必须按 wei 保存为最终提交单位；human amount 只是展示/输入层，冻结时必须有 canonical `value_wei`。
-- Raw calldata 必须是 `0x` 前缀 hex，字节长度可以为 0。空 calldata + nonzero value 仍是 native-value contract/EOA transaction，不应被伪装成 native transfer；历史类型仍应是 raw calldata intent，除非用户明确走 native transfer workflow。
+- Raw calldata normalization 必须固定：只接受 `0x` 前缀、偶数长度、hex 字符串；拒绝缺失前缀、奇数字符、非 hex 字符和超过实现上限的 payload。Canonical display 一律使用 lowercase `0x...`。
+- P5-3 初版最大接受 normalized decoded calldata byte length 为 128 KiB。该上限同时用于 UI、history、diagnostics/export 和测试 fixture；超过上限必须在 draft 阶段拒绝，不能截断后提交。
+- 空 calldata `0x` 允许作为 raw calldata intent，但必须显示 `emptyCalldata` warning。空 calldata + nonzero value 仍是 native-value contract/EOA transaction，不应被伪装成 native transfer；历史类型仍应是 raw calldata intent，除非用户明确走 native transfer workflow。
 - Gas/fee/nonce 可以复用现有 native/ERC-20/P5-2 的 fee reference、base fee customization、priority fee、max fee override 和 nonce 规则；estimate failure 不得静默填危险默认值。
 
 **Preview 与 selector inference**
 
-- Preview 必须展示 selector（calldata 前 4 bytes；长度小于 4 bytes 时为 `none/short`）、calldata byte length、calldata hash、bounded calldata preview、`to`、native value、gas/fee/nonce 和 selected RPC identity。
-- Calldata hash 建议使用稳定 hash（例如 keccak256 或实现选定的 canonical hash）覆盖完整 calldata；history/diagnostics/export 默认保存 hash、length、selector 和 bounded preview，不保存完整无上限 calldata。
+- Calldata hash 必须使用 `calldata_hash_version = keccak256-v1`：对 normalized decoded calldata bytes 计算 keccak256。空 calldata `0x` 对 0 bytes 计算 hash。Draft、history、recovery 和 diagnostics/export 中凡保存 hash 都必须同时保存 hash version。
+- Preview 必须展示 selector（calldata 前 4 bytes；长度小于 4 bytes 时为 `none/short`）、calldata byte length、`calldata_hash_version`、calldata hash、bounded calldata preview、`to`、native value、gas/fee/nonce 和 selected RPC identity。
+- Bounded calldata preview 格式必须可测试：保存 canonical lowercase hex 的 prefix/suffix 摘要，默认 `preview_prefix_bytes = 32`、`preview_suffix_bytes = 32`。当 calldata length 超过 64 bytes 时，展示 `0x<prefix>...<suffix>` 并带显式 `truncated = true`、`omitted_bytes`；小于等于 64 bytes 时可完整展示但仍标记 `truncated = false`。history/diagnostics/export/logs 不得保存完整 calldata 字段，只保存 selector、byte length、hash version、hash、prefix/suffix preview 和 truncation metadata。
+- Human preview rows/summaries 初版最多展示 12 行结构化摘要；每行 display text 最多 160 字符，超过部分必须截断并标记 `truncated = true`。测试 snapshot 只能包含这些 bounded summaries。
 - 若 P5-1/P5-2 cache 中存在同 `chainId + to` 的 selected ABI source，并且 selector 唯一匹配，可展示函数 signature、source identity、version/fingerprint/hash 和 inference status `matched`。
 - 若无 ABI、无 selector、cache stale、source conflict、selector conflict、多个 ABI source 匹配不同 signature 或 selector 重载无法唯一判断，必须显示 `unknown`/`conflict`/`stale`，并把 semantic decode 标记为不可信或不可用。
 - Selector match 只表示当前本地 ABI/cache 文本可解释该 selector，不表示目标合约 runtime 一定匹配、不表示参数语义正确、不表示调用安全。
+- 当 selector inference 影响 warning 或 acknowledgement 时，inference state 必须进入 frozen key 和 history：`inference_status = unknown | matched | conflict | stale | unavailable`、matched ABI source identity、version/fingerprint/hash、selector match count、conflict summary、stale/source status 和 acknowledgement state。若 inference 只是纯 UI 辅助且不影响 warning，则 submit 不依赖它；P5-3 初版采用前一种更保守路径，即影响 warning 的 inference 必须冻结。
 
 **Safety / diagnostics / export**
 
@@ -591,21 +596,22 @@ v1 + P3/P4/P5 已将基础历史列表升级为可筛选、可分组、可审计
 
 **Draft / frozen key**
 
-- Frozen key 必须覆盖：expected `chainId`、RPC identity、from account/address、本地 account identity、`to`、`value_wei`、calldata hash、calldata length、selector、gas limit、base fee reference/used、base fee multiplier、priority fee、max fee/fee cap、nonce、warning acknowledgements、draft creation time 或 version。
+- Frozen key 必须覆盖：expected `chainId`、RPC identity、from account/address、本地 account identity、`to`、`value_wei`、calldata hash version、calldata hash、calldata length、selector、prefix/suffix preview metadata、gas limit、base fee reference/used、base fee multiplier、priority fee、max fee/fee cap、nonce、warning acknowledgements、影响 warning 的 selector inference state、draft creation time 或 version。
 - Frozen key 不保存完整无上限 calldata；submit command 可以在内存/入参中接收 actual calldata 并重算 hash/length/selector，与 frozen key 对比。
 - 用户改变 chain、RPC profile、from、to、value、calldata、gas、fee、nonce、warning acknowledgement 或 selector inference resolution 后，旧 draft 必须失效并要求重建。
 
 **Submit / Rust/Tauri command**
 
-- Submit 必须调用 Rust/Tauri command。Command 在签名前重新校验 actual RPC `chainId`、selected RPC identity、from/signer/account availability、nonce、fee/gas、`to`、`value_wei`、actual calldata hash/length/selector、frozen key 和 warning acknowledgements。
+- Submit 必须调用 Rust/Tauri command。Command 在签名前重新校验 actual RPC `chainId`、selected RPC identity、from/signer/account availability、nonce、fee/gas、`to`、`value_wei`、actual calldata normalization、128 KiB byte length limit、hash version/hash、length、selector、frozen key 和 warning acknowledgements。
 - Command 重新计算 calldata hash/length/selector，确认与 frozen draft 一致；不允许 React 只传 selector/summary 让 Rust 自行猜 calldata。
+- 若用户 acknowledge 的 warning 依赖 selector inference，Command 必须重新读取或复验对应 ABI source identity/version/fingerprint/hash、selector match count/conflict summary 和 inference status；复验结果与 frozen state 不一致时必须拒绝提交并要求重建 draft。
 - Command 只在所有校验通过后签名广播，并按既有 signing/broadcast/history pattern 写入 typed raw calldata intent/submission/outcome。广播和 history 写入失败必须进入可恢复错误模型。
 - P5-3 submit 不应复用 P5-2 managed ABI write command 的语义字段来伪装参数来源；它可以复用底层 signer/RPC/history helpers，但 intent kind 必须是 raw calldata。
 
 **History typed metadata**
 
-- History 必须新增显式 raw calldata intent/submission metadata，不能伪装成 native/ERC-20/ABI/batch。建议 intent 字段包括 `transaction_type = rawCalldata`、chainId、from account/address、to、value_wei、calldata selector、calldata length、calldata hash、bounded preview、selector inference status、optional matched ABI source identity、warning acknowledgements 和用户摘要。
-- Submission 字段包括 tx hash、nonce、gas/fee、RPC identity、broadcast time、frozen key、actual calldata selector/length/hash、history write/recovery metadata。
+- History 必须新增显式 raw calldata intent/submission metadata，不能伪装成 native/ERC-20/ABI/batch。建议 intent 字段包括 `transaction_type = rawCalldata`、chainId、from account/address、to、value_wei、calldata selector、calldata length、`calldata_hash_version = keccak256-v1`、calldata hash、bounded prefix/suffix preview、truncation metadata、selector inference status、optional matched ABI source identity/version/fingerprint、selector match count/conflict summary、warning acknowledgements 和用户摘要。
+- Submission 字段包括 tx hash、nonce、gas/fee、RPC identity、broadcast time、frozen key、actual calldata selector/length/hash version/hash、history write/recovery metadata。
 - ChainOutcome 沿用 pending/confirmed/failed/replaced/cancelled/dropped 语义。receipt/revert 摘要必须脱敏，不能把 raw calldata 或 raw signed tx 写入 history/export。
 
 **Failure / recovery**
@@ -615,13 +621,13 @@ v1 + P3/P4/P5 已将基础历史列表升级为可筛选、可分组、可审计
 - `estimate failure`：显示 RPC/contract/revert/insufficient funds/unknown 分类摘要；允许用户重试或显式手动 gas，但手动 gas 仍必须进入 high-risk acknowledgement 和 frozen key。
 - `high-risk warnings`：unknown/conflict selector、nonzero value、large calldata、high fee/gas、manual gas、stale ABI inference 等 warning 必须可见；需要 acknowledge 的 warning 未冻结时不得提交。
 - `broadcast failure`：不创建 confirmed/pending 假象；保留脱敏错误摘要和 frozen params 供用户重试或重建 draft。
-- `history write failure after broadcast`：必须返回 tx hash、chainId、from、to、nonce、value_wei、fee/gas、calldata selector/length/hash、bounded preview、warning acknowledgements、frozen key 和写入错误。恢复入口只能用 tx hash + frozen params 补录，不能重新签名或重新广播。
+- `history write failure after broadcast`：必须返回 tx hash、chainId、from、to、nonce、value_wei、fee/gas、calldata selector/length/hash version/hash、bounded prefix/suffix preview、truncation metadata、selector inference state、warning acknowledgements、frozen key 和写入错误。恢复入口只能用 tx hash + frozen params 补录，不能重新签名或重新广播。
 - `recovery without rebroadcast`：补录路径必须重查链上 tx/receipt 或按已知 tx hash 恢复本地 record，不得因为本地 history 缺失而再次发送同一 calldata。
 
 **测试与验收方向**
 
-- Rust 测试建议覆盖 calldata hex validation、hash/length/selector recompute、chain mismatch、from mismatch、nonce/fee/gas mismatch、unknown selector acknowledgement、history write failure recovery metadata 和 diagnostics/export redaction。
-- Frontend 测试建议覆盖 preview selector/length/hash、unknown/conflict/stale ABI inference、bounded preview、draft invalidation、manual gas/high fee warnings、full calldata 不进入 snapshot。
+- Rust 测试建议覆盖 calldata hex validation、128 KiB limit、keccak256-v1 hash/length/selector recompute、chain mismatch、from mismatch、nonce/fee/gas mismatch、unknown selector acknowledgement、inference-state revalidation、history write failure recovery metadata 和 diagnostics/export redaction。
+- Frontend 测试建议覆盖 preview selector/length/hash version/hash、unknown/conflict/stale ABI inference、prefix/suffix bounded preview、12 行/160 字符 summary cap、draft invalidation、manual gas/high fee warnings、full calldata 不进入 snapshot。
 - 端到端验收应包含 matched ABI selector、unknown selector、selector conflict、empty calldata、nonzero value、malformed calldata、estimate failure、broadcast failure、history write failure after broadcast 和 recovery without rebroadcast。
 
 ## 10. P3/P4 已完成范围与后续 P4+ 方向
@@ -650,7 +656,7 @@ P4-1 到 P4-7 已完成以下诊断、恢复和回归能力：
 
 P4-1 到 P4-13 已包含诊断/恢复、ERC-20 transfer、token watchlist/balance scanning、account orchestration、native batch 和 ERC-20 batch。P4 不包含全量账户链上扫描来推导未知历史，也不包含 raw calldata、asset/allowance scanning、revoke 或 hot tx parsing。
 
-### 10.3 P4-1 到 P4-7 诊断、恢复与回归已完成
+### 10.3 P4-1 到 P4-13 诊断、恢复与交易能力基线已完成
 
 P4-1 到 P4-13 已在主线完成，作为后续 P5/P6 探索任务的诊断、恢复和交易能力基线。当前完成范围包括原生币转账、ERC-20 转账、token watchlist/balance scanning、多账户编排、native/ERC-20 batch、历史恢复、诊断导出、dropped 复核、pending 老化和 anvil smoke 回归，不等同于通用链测试平台、raw calldata 钱包、资产授权扫描工具或 hot contract 分析工具。
 

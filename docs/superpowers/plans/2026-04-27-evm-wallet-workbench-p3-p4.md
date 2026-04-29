@@ -1,6 +1,6 @@
 # EVM Wallet Workbench P3/P4 后续执行计划
 
-> 面向 subagent-driven-development：本文件同时保留 P3 与 P4-1 到 P4-7 的完成记录，以及 P4+/P5/P6 交易能力 backlog。只有标记为未完成、探索或后续计划的条目表示待执行任务，不代表能力已经完成；后续任务仍由 controller 按任务串行派发和收口。
+> 面向 subagent-driven-development：本文件同时保留 P3、P4-1 到 P4-13、P5-1 和 P5-2 的完成记录，以及 P5-3/P5-4/P6 backlog。只有标记为未完成、探索或后续计划的条目表示待执行任务，不代表能力已经完成；后续任务仍由 controller 按任务串行派发和收口。
 
 ## 1. 基线与方向
 
@@ -1426,10 +1426,10 @@ P5-3 为 Tauri desktop 高级用户提供 raw calldata sender/preview。Raw call
 **验收/测试建议**
 
 - Spec 覆盖 inputs：chainId/RPC profile、from local account、to、value wei/human amount、raw calldata hex、gas limit、base fee/multiplier/priority fee/max fee、nonce。
-- Spec 覆盖 preview：selector、calldata byte length、calldata hash、bounded preview、P5-1/P5-2 cache 可选推断、unknown/conflict/stale 状态。
+- Spec 覆盖 preview：selector、calldata byte length、`calldata_hash_version = keccak256-v1`、calldata hash、128 KiB decoded byte limit、prefix/suffix bounded preview、P5-1/P5-2 cache 可选推断、unknown/conflict/stale 状态。
 - Spec 明确 unknown/conflict selector 可继续但需 high-risk acknowledgement；full calldata 不得无边界进入 logs/history/diagnostics/export/snapshots。
-- Spec 明确 frozen key 覆盖 chain/RPC/from/to/value/calldata hash-length-selector/fee-gas-nonce/warning acknowledgements。
-- Spec 明确 submit 必须由 Rust/Tauri command 重新校验 actual chainId/RPC/from/nonce/fee/gas/to/value/calldata hash/frozen key/warnings 后再签名广播。
+- Spec 明确 frozen key 覆盖 chain/RPC/from/to/value/calldata hash version/hash-length-selector/fee-gas-nonce/warning acknowledgements 和影响 warning 的 selector inference state。
+- Spec 明确 submit 必须由 Rust/Tauri command 重新校验 actual chainId/RPC/from/nonce/fee/gas/to/value/calldata normalization、128 KiB limit、hash version/hash、frozen key、warnings 和 frozen inference state 后再签名广播。
 - 验证命令：`git diff --check`，并用 `rg` 检查 stale phrases。
 
 ##### Task P5-3b: raw calldata frontend draft/preview model and tests
@@ -1452,7 +1452,7 @@ P5-3 为 Tauri desktop 高级用户提供 raw calldata sender/preview。Raw call
 
 **验收/测试建议**
 
-- Frontend tests 覆盖 malformed hex、empty calldata、short selector、normal selector、large calldata bounded preview、hash/length recompute、unknown/matched/conflict/stale inference。
+- Frontend tests 覆盖 malformed hex、empty calldata、short selector、normal selector、128 KiB limit、large calldata prefix/suffix bounded preview、keccak256-v1 hash/length recompute、unknown/matched/conflict/stale inference。
 - Draft invalidation 覆盖 chain/RPC/from/to/value/calldata/gas/fee/nonce/warning acknowledgement 变化。
 - Unknown/conflict selector、manual gas、high fee、nonzero value 等 high-risk warnings 未 acknowledge 时不可进入可提交确认状态。
 - 建议验证：`npm test -- src/features src/core`、`npm run typecheck`、`git diff --check`。
@@ -1477,7 +1477,7 @@ P5-3 为 Tauri desktop 高级用户提供 raw calldata sender/preview。Raw call
 
 **验收/测试建议**
 
-- Rust/TS schema 能表达 `transaction_type = rawCalldata`、from/to/value、selector、length、hash、bounded preview、warning acknowledgements、optional matched ABI source identity、frozen key、nullable tx hash/outcome/recovery metadata。
+- Rust/TS schema 能表达 `transaction_type = rawCalldata`、from/to/value、selector、length、`calldata_hash_version = keccak256-v1`、hash、prefix/suffix bounded preview、truncation metadata、warning acknowledgements、optional matched ABI source identity/version/fingerprint、selector match count/conflict summary、frozen key、nullable tx hash/outcome/recovery metadata。
 - Migration/backward compatibility 不破坏 native/ERC-20/batch/ABI/replacement/cancellation records。
 - Diagnostics/export tests 验证 private key、mnemonic、raw signed tx、RPC secret、API key、full calldata、大错误 payload 均被排除或 bounded。
 - 建议验证：`cargo test --manifest-path src-tauri/Cargo.toml`、`npm test -- src/core/history src/features/history`、`npm run typecheck`、`git diff --check`。
@@ -1486,7 +1486,7 @@ P5-3 为 Tauri desktop 高级用户提供 raw calldata sender/preview。Raw call
 
 **目标**
 
-实现 raw calldata submit Rust/Tauri command：接收 frozen draft + actual calldata，重新校验 chain/RPC/from/to/value/calldata hash/length/selector/fee/gas/nonce/warnings 后签名广播，并按 raw calldata typed intent 写入 history。
+实现 raw calldata submit Rust/Tauri command：接收 frozen draft + actual calldata，重新校验 chain/RPC/from/to/value/calldata normalization、128 KiB limit、hash version/hash、length、selector、fee/gas/nonce/warnings 后签名广播，并按 raw calldata typed intent 写入 history。
 
 **依赖**
 
@@ -1502,9 +1502,9 @@ P5-3 为 Tauri desktop 高级用户提供 raw calldata sender/preview。Raw call
 
 **验收/测试建议**
 
-- Command 重新校验 actual RPC `chainId`、RPC identity、signer/from、account availability、nonce、fee/gas、to、value、calldata hash/length/selector、frozen key 和 warning acknowledgements。
+- Command 重新校验 actual RPC `chainId`、RPC identity、signer/from、account availability、nonce、fee/gas、to、value、calldata normalization、128 KiB limit、hash version/hash/length/selector、frozen key、warning acknowledgements 和 frozen inference state。
 - Tests 覆盖 successful broadcast、malformed calldata、hash mismatch、chain mismatch、from mismatch、nonce/fee/gas mismatch、missing high-risk acknowledgement、RPC send failure、history write failure after broadcast 和 recovery without rebroadcast。
-- History write failure error 返回 tx hash、chainId、from、to、nonce、value、fee/gas、selector/length/hash、bounded preview、frozen key 和 write error。
+- History write failure error 返回 tx hash、chainId、from、to、nonce、value、fee/gas、selector/length/hash version/hash、bounded prefix/suffix preview、truncation metadata、frozen key 和 write error。
 - 建议验证：`cargo test --manifest-path src-tauri/Cargo.toml`、`npm run typecheck`、`git diff --check`。
 
 ##### Task P5-3e: desktop UI wiring + integration/security regressions
