@@ -992,6 +992,34 @@ export interface ScanWatchlistBalancesInput {
   rpcProfileId?: string | null;
 }
 
+export interface ScanErc20AllowanceInput {
+  rpcUrl: string;
+  chainId: number;
+  owner: string;
+  tokenContract: string;
+  spender: string;
+  rpcProfileId?: string | null;
+}
+
+export interface ScanNftOperatorApprovalInput {
+  rpcUrl: string;
+  chainId: number;
+  owner: string;
+  tokenContract: string;
+  operator: string;
+  rpcProfileId?: string | null;
+}
+
+export interface ScanErc721TokenApprovalInput {
+  rpcUrl: string;
+  chainId: number;
+  owner: string;
+  tokenContract: string;
+  tokenId: string;
+  operator?: string | null;
+  rpcProfileId?: string | null;
+}
+
 export type DiagnosticLevel = "info" | "warn" | "error";
 
 export interface DiagnosticEvent {
@@ -1312,6 +1340,18 @@ export function scanErc20Balance(input: ScanErc20BalanceInput) {
 
 export function scanWatchlistBalances(input: ScanWatchlistBalancesInput) {
   return invoke<TokenWatchlistState>("scan_watchlist_balances", { input });
+}
+
+export function scanErc20Allowance(input: ScanErc20AllowanceInput) {
+  return invoke<TokenWatchlistState>("scan_erc20_allowance", { input });
+}
+
+export function scanNftOperatorApproval(input: ScanNftOperatorApprovalInput) {
+  return invoke<TokenWatchlistState>("scan_nft_operator_approval", { input });
+}
+
+export function scanErc721TokenApproval(input: ScanErc721TokenApprovalInput) {
+  return invoke<TokenWatchlistState>("scan_erc721_token_approval", { input });
 }
 
 export async function createAndScanAccount(index: number, chainId: number, rpcUrl: string) {

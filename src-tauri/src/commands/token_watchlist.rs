@@ -1667,7 +1667,7 @@ pub fn upsert_nft_approval_snapshot(
                 .to_string(),
         );
     }
-    let operator = normalize_evm_address(&input.operator, "operator")?;
+    let operator = normalize_nft_approval_operator(&input.operator, input.kind, input.status)?;
     let token_id = normalize_optional_token_id(input.token_id)?;
     if input.kind == ApprovalWatchKind::Erc721TokenApproval && token_id.is_none() {
         return Err("tokenId is required for erc721TokenApproval".to_string());
@@ -1982,6 +1982,24 @@ fn normalize_evm_address(value: &str, label: &str) -> Result<String, String> {
     Ok(to_checksum(&address, None))
 }
 
+fn normalize_nft_approval_operator(
+    value: &str,
+    kind: ApprovalWatchKind,
+    status: NftApprovalSnapshotStatus,
+) -> Result<String, String> {
+    let address = Address::from_str(value.trim())
+        .map_err(|_| "operator must be a valid EVM address".to_string())?;
+    if address == Address::zero() {
+        if kind == ApprovalWatchKind::Erc721TokenApproval
+            && !matches!(status, NftApprovalSnapshotStatus::Active)
+        {
+            return Ok(to_checksum(&address, None));
+        }
+        return Err("operator cannot be the zero address".to_string());
+    }
+    Ok(to_checksum(&address, None))
+}
+
 fn normalize_balance_raw(value: String) -> Result<String, String> {
     let trimmed = value.trim();
     if trimmed.is_empty() || !trimmed.chars().all(|ch| ch.is_ascii_digit()) {
@@ -2191,7 +2209,10 @@ fn preserve_success_approval_on_failure(
         return incoming_approved.or_else(|| existing.and_then(|record| record.approved));
     }
     existing
-        .filter(|record| nft_approval_status_has_confirmed_value(record.status))
+        .filter(|record| {
+            nft_approval_status_has_confirmed_value(record.status)
+                || nft_approval_status_is_failure(record.status)
+        })
         .and_then(|record| record.approved)
         .or(incoming_approved)
 }

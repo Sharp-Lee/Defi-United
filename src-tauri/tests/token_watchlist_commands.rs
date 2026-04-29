@@ -7,10 +7,12 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use ethers::abi::{encode, Token};
-use ethers::types::U256;
+use ethers::types::{Address, U256};
 use wallet_workbench_lib::commands::token_scanner::{
-    scan_erc20_balance, scan_watchlist_balances, scan_watchlist_token_metadata,
-    ScanErc20BalanceInput, ScanWatchlistBalancesInput, ScanWatchlistTokenMetadataInput,
+    scan_erc20_allowance, scan_erc20_balance, scan_erc721_token_approval,
+    scan_nft_operator_approval, scan_watchlist_balances, scan_watchlist_token_metadata,
+    ScanErc20AllowanceInput, ScanErc20BalanceInput, ScanErc721TokenApprovalInput,
+    ScanNftOperatorApprovalInput, ScanWatchlistBalancesInput, ScanWatchlistTokenMetadataInput,
 };
 use wallet_workbench_lib::commands::token_watchlist::{
     add_watchlist_token, edit_watchlist_token, load_token_watchlist_state, remove_watchlist_token,
@@ -34,6 +36,7 @@ const DAI: &str = "0x6b175474e89094c44da98b954eedeac495271d0f";
 const ACCOUNT: &str = "0x70997970c51812dc3a010c7d01b50e0d17dc79c8";
 const SPENDER: &str = "0x1111111111111111111111111111111111111111";
 const OPERATOR: &str = "0x2222222222222222222222222222222222222222";
+const APPROVED: &str = "0x3333333333333333333333333333333333333333";
 
 fn test_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -232,6 +235,41 @@ fn u256_result_hex(value: U256) -> String {
     let mut bytes = [0u8; 32];
     value.to_big_endian(&mut bytes);
     format!("\"0x{}\"", bytes_to_hex(&bytes))
+}
+
+fn bool_result_hex(value: bool) -> String {
+    u256_result_hex(U256::from(value as u8))
+}
+
+fn address_result_hex(value: &str) -> String {
+    let address: Address = value.parse().expect("address");
+    format!(
+        "\"0x{}\"",
+        bytes_to_hex(&encode(&[Token::Address(address)]))
+    )
+}
+
+fn address_word_hex(value: &str) -> String {
+    let address: Address = value.parse().expect("address");
+    format!(
+        "000000000000000000000000{}",
+        bytes_to_hex(address.as_bytes())
+    )
+}
+
+fn u256_word_hex(value: U256) -> String {
+    let mut bytes = [0u8; 32];
+    value.to_big_endian(&mut bytes);
+    bytes_to_hex(&bytes)
+}
+
+fn assert_eth_call_data(request: &str, selector: &str, words: &[String]) {
+    let expected = format!("0x{selector}{}", words.join(""));
+    let request = request.to_ascii_lowercase();
+    assert!(
+        request.contains(&expected),
+        "expected eth_call calldata {expected}, request was {request}"
+    );
 }
 
 fn string_result_hex(value: &str) -> String {
@@ -1713,6 +1751,382 @@ fn approval_source_metadata_and_provider_errors_are_sanitized() {
         assert!(!raw.contains("mnemonic seed phrase"));
         assert!(raw.contains("[redacted"));
     });
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn approval_scanner_chain_mismatch_marks_job_and_preserves_allowance() {
+    let _lock = test_lock().lock().expect("test lock");
+    let _app_dir = TestAppDirGuard::new("approval-scanner-chain-mismatch");
+    upsert_allowance_snapshot(UpsertAllowanceSnapshotInput {
+        chain_id: 1,
+        owner: ACCOUNT.to_string(),
+        token_contract: USDC.to_string(),
+        spender: SPENDER.to_string(),
+        allowance_raw: Some("77".to_string()),
+        status: AllowanceSnapshotStatus::Active,
+        source: Some(approval_source(ApprovalSourceKind::RpcPointRead)),
+        last_scanned_at: Some("1700000000".to_string()),
+        clear_last_scanned_at: false,
+        last_error_summary: None,
+        clear_last_error_summary: false,
+        stale_after: None,
+        clear_stale_after: false,
+        rpc_identity: None,
+        clear_rpc_identity: false,
+        rpc_profile_id: None,
+        clear_rpc_profile_id: false,
+    })
+    .expect("seed allowance");
+    let (rpc_url, requests) = start_token_rpc_server(1, |request| {
+        assert!(request.contains("eth_chainId"));
+        rpc_result("\"0x5\"".to_string())
+    });
+
+    let state = scan_erc20_allowance(ScanErc20AllowanceInput {
+        rpc_url,
+        chain_id: 1,
+        owner: ACCOUNT.to_string(),
+        token_contract: USDC.to_string(),
+        spender: SPENDER.to_string(),
+        rpc_profile_id: None,
+    })
+    .await
+    .expect("scan allowance");
+
+    assert_eq!(requests.lock().expect("requests").len(), 1);
+    let snapshot = &state.allowance_snapshots[0];
+    assert_eq!(snapshot.allowance_raw, "77");
+    assert_eq!(snapshot.status, AllowanceSnapshotStatus::ChainMismatch);
+    assert_eq!(
+        snapshot.last_error_summary.as_deref(),
+        Some("chainId mismatch: expected 1, actual 5")
+    );
+    assert_eq!(
+        state.asset_scan_jobs[0].status,
+        AssetScanJobStatus::ChainMismatch
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn approval_scanner_erc20_allowance_success_writes_raw_without_metadata() {
+    let _lock = test_lock().lock().expect("test lock");
+    let _app_dir = TestAppDirGuard::new("approval-scanner-allowance-success");
+    let expected_words = vec![address_word_hex(ACCOUNT), address_word_hex(SPENDER)];
+    let (rpc_url, requests) = start_token_rpc_server(2, move |request| {
+        if request.contains("eth_chainId") {
+            rpc_result("\"0x1\"".to_string())
+        } else if request.contains("dd62ed3e") {
+            assert_eth_call_data(request, "dd62ed3e", &expected_words);
+            rpc_result(u256_result_hex(U256::from(123_456u64)))
+        } else {
+            rpc_result("null".to_string())
+        }
+    });
+
+    let state = scan_erc20_allowance(ScanErc20AllowanceInput {
+        rpc_url,
+        chain_id: 1,
+        owner: ACCOUNT.to_string(),
+        token_contract: USDC.to_string(),
+        spender: SPENDER.to_string(),
+        rpc_profile_id: Some("mainnet".to_string()),
+    })
+    .await
+    .expect("scan allowance");
+
+    assert_eq!(requests.lock().expect("requests").len(), 2);
+    assert!(state.token_metadata_cache.is_empty());
+    let snapshot = &state.allowance_snapshots[0];
+    assert_eq!(snapshot.allowance_raw, "123456");
+    assert_eq!(snapshot.status, AllowanceSnapshotStatus::Active);
+    assert_eq!(snapshot.rpc_profile_id.as_deref(), Some("mainnet"));
+    assert_eq!(state.asset_scan_jobs[0].status, AssetScanJobStatus::Ok);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn approval_scanner_operator_approval_success_handles_true_and_false() {
+    let _lock = test_lock().lock().expect("test lock");
+    let _app_dir = TestAppDirGuard::new("approval-scanner-operator-success");
+    let expected_words = vec![address_word_hex(ACCOUNT), address_word_hex(OPERATOR)];
+    let (true_rpc, _requests) = start_token_rpc_server(2, move |request| {
+        if request.contains("eth_chainId") {
+            rpc_result("\"0x1\"".to_string())
+        } else if request.contains("e985e9c5") {
+            assert_eth_call_data(request, "e985e9c5", &expected_words);
+            rpc_result(bool_result_hex(true))
+        } else {
+            rpc_result("null".to_string())
+        }
+    });
+    scan_nft_operator_approval(ScanNftOperatorApprovalInput {
+        rpc_url: true_rpc,
+        chain_id: 1,
+        owner: ACCOUNT.to_string(),
+        token_contract: DAI.to_string(),
+        operator: OPERATOR.to_string(),
+        rpc_profile_id: None,
+    })
+    .await
+    .expect("operator true");
+
+    let expected_words = vec![address_word_hex(ACCOUNT), address_word_hex(OPERATOR)];
+    let (false_rpc, _requests) = start_token_rpc_server(2, move |request| {
+        if request.contains("eth_chainId") {
+            rpc_result("\"0x1\"".to_string())
+        } else if request.contains("e985e9c5") {
+            assert_eth_call_data(request, "e985e9c5", &expected_words);
+            rpc_result(bool_result_hex(false))
+        } else {
+            rpc_result("null".to_string())
+        }
+    });
+    let state = scan_nft_operator_approval(ScanNftOperatorApprovalInput {
+        rpc_url: false_rpc,
+        chain_id: 1,
+        owner: ACCOUNT.to_string(),
+        token_contract: DAI.to_string(),
+        operator: OPERATOR.to_string(),
+        rpc_profile_id: None,
+    })
+    .await
+    .expect("operator false");
+
+    assert_eq!(state.nft_approval_snapshots.len(), 1);
+    let snapshot = &state.nft_approval_snapshots[0];
+    assert_eq!(snapshot.approved, Some(false));
+    assert_eq!(snapshot.status, NftApprovalSnapshotStatus::Revoked);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn approval_scanner_repeated_nft_failures_preserve_last_approved_value() {
+    let _lock = test_lock().lock().expect("test lock");
+    let _app_dir = TestAppDirGuard::new("approval-scanner-repeated-nft-failure");
+    let (success_rpc, _requests) = start_token_rpc_server(2, |request| {
+        if request.contains("eth_chainId") {
+            rpc_result("\"0x1\"".to_string())
+        } else if request.contains("e985e9c5") {
+            rpc_result(bool_result_hex(true))
+        } else {
+            rpc_result("null".to_string())
+        }
+    });
+    scan_nft_operator_approval(ScanNftOperatorApprovalInput {
+        rpc_url: success_rpc,
+        chain_id: 1,
+        owner: ACCOUNT.to_string(),
+        token_contract: DAI.to_string(),
+        operator: OPERATOR.to_string(),
+        rpc_profile_id: None,
+    })
+    .await
+    .expect("operator true");
+
+    for label in ["first", "second"] {
+        let (failure_rpc, _requests) = start_token_rpc_server(2, |request| {
+            if request.contains("eth_chainId") {
+                rpc_result("\"0x1\"".to_string())
+            } else if request.contains("e985e9c5") {
+                rpc_error("operator approval read failed")
+            } else {
+                rpc_result("null".to_string())
+            }
+        });
+        let state = scan_nft_operator_approval(ScanNftOperatorApprovalInput {
+            rpc_url: failure_rpc,
+            chain_id: 1,
+            owner: ACCOUNT.to_string(),
+            token_contract: DAI.to_string(),
+            operator: OPERATOR.to_string(),
+            rpc_profile_id: None,
+        })
+        .await
+        .unwrap_or_else(|_| panic!("{label} failed scan should update stale snapshot"));
+        let snapshot = &state.nft_approval_snapshots[0];
+        assert_eq!(snapshot.status, NftApprovalSnapshotStatus::Stale);
+        assert_eq!(snapshot.approved, Some(true), "{label} failure");
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn approval_scanner_get_approved_success_handles_approved_and_revoked_zero() {
+    let _lock = test_lock().lock().expect("test lock");
+    let _app_dir = TestAppDirGuard::new("approval-scanner-get-approved-success");
+    let expected_words = vec![u256_word_hex(U256::from(42u64))];
+    let (approved_rpc, _requests) = start_token_rpc_server(2, move |request| {
+        if request.contains("eth_chainId") {
+            rpc_result("\"0x1\"".to_string())
+        } else if request.contains("081812fc") {
+            assert_eth_call_data(request, "081812fc", &expected_words);
+            rpc_result(address_result_hex(APPROVED))
+        } else {
+            rpc_result("null".to_string())
+        }
+    });
+    scan_erc721_token_approval(ScanErc721TokenApprovalInput {
+        rpc_url: approved_rpc,
+        chain_id: 1,
+        owner: ACCOUNT.to_string(),
+        token_contract: DAI.to_string(),
+        token_id: "00042".to_string(),
+        operator: None,
+        rpc_profile_id: None,
+    })
+    .await
+    .expect("getApproved active");
+    upsert_nft_approval_snapshot(UpsertNftApprovalSnapshotInput {
+        chain_id: 1,
+        owner: ACCOUNT.to_string(),
+        token_contract: DAI.to_string(),
+        kind: ApprovalWatchKind::Erc721TokenApproval,
+        operator: OPERATOR.to_string(),
+        token_id: Some("42".to_string()),
+        approved: Some(true),
+        status: NftApprovalSnapshotStatus::Active,
+        source: Some(approval_source(ApprovalSourceKind::RpcPointRead)),
+        last_scanned_at: Some("1700000000".to_string()),
+        clear_last_scanned_at: false,
+        last_error_summary: None,
+        clear_last_error_summary: false,
+        stale_after: None,
+        clear_stale_after: false,
+        rpc_identity: None,
+        clear_rpc_identity: false,
+        rpc_profile_id: None,
+        clear_rpc_profile_id: false,
+    })
+    .expect("second remembered operator");
+
+    let expected_words = vec![u256_word_hex(U256::from(42u64))];
+    let (revoked_rpc, _requests) = start_token_rpc_server(2, move |request| {
+        if request.contains("eth_chainId") {
+            rpc_result("\"0x1\"".to_string())
+        } else if request.contains("081812fc") {
+            assert_eth_call_data(request, "081812fc", &expected_words);
+            rpc_result(address_result_hex(
+                "0x0000000000000000000000000000000000000000",
+            ))
+        } else {
+            rpc_result("null".to_string())
+        }
+    });
+    let state = scan_erc721_token_approval(ScanErc721TokenApprovalInput {
+        rpc_url: revoked_rpc,
+        chain_id: 1,
+        owner: ACCOUNT.to_string(),
+        token_contract: DAI.to_string(),
+        token_id: "42".to_string(),
+        operator: None,
+        rpc_profile_id: None,
+    })
+    .await
+    .expect("getApproved revoked");
+
+    let token_snapshots = state
+        .nft_approval_snapshots
+        .iter()
+        .filter(|item| item.token_id.as_deref() == Some("42"))
+        .collect::<Vec<_>>();
+    assert_eq!(token_snapshots.len(), 2);
+    assert!(token_snapshots
+        .iter()
+        .any(|item| item.operator.to_lowercase() == APPROVED));
+    assert!(token_snapshots
+        .iter()
+        .any(|item| item.operator.to_lowercase() == OPERATOR));
+    assert!(token_snapshots
+        .iter()
+        .all(|item| item.approved == Some(false)
+            && item.status == NftApprovalSnapshotStatus::Revoked));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn approval_scanner_failure_isolated_preserves_previous_and_redacts_errors() {
+    let _lock = test_lock().lock().expect("test lock");
+    let _app_dir = TestAppDirGuard::new("approval-scanner-failure-redaction");
+    let (success_rpc, _requests) = start_token_rpc_server(2, |request| {
+        if request.contains("eth_chainId") {
+            rpc_result("\"0x1\"".to_string())
+        } else if request.contains("dd62ed3e") {
+            rpc_result(u256_result_hex(U256::from(500u64)))
+        } else {
+            rpc_result("null".to_string())
+        }
+    });
+    scan_erc20_allowance(ScanErc20AllowanceInput {
+        rpc_url: success_rpc,
+        chain_id: 1,
+        owner: ACCOUNT.to_string(),
+        token_contract: USDC.to_string(),
+        spender: SPENDER.to_string(),
+        rpc_profile_id: None,
+    })
+    .await
+    .expect("seed allowance");
+    upsert_allowance_snapshot(UpsertAllowanceSnapshotInput {
+        chain_id: 1,
+        owner: ACCOUNT.to_string(),
+        token_contract: DAI.to_string(),
+        spender: SPENDER.to_string(),
+        allowance_raw: Some("999".to_string()),
+        status: AllowanceSnapshotStatus::Active,
+        source: Some(approval_source(ApprovalSourceKind::RpcPointRead)),
+        last_scanned_at: Some("1700000000".to_string()),
+        clear_last_scanned_at: false,
+        last_error_summary: None,
+        clear_last_error_summary: false,
+        stale_after: None,
+        clear_stale_after: false,
+        rpc_identity: None,
+        clear_rpc_identity: false,
+        rpc_profile_id: None,
+        clear_rpc_profile_id: false,
+    })
+    .expect("seed unrelated allowance");
+
+    let (failure_rpc, _requests) = start_token_rpc_server(2, |request| {
+        if request.contains("eth_chainId") {
+            rpc_result("\"0x1\"".to_string())
+        } else if request.contains("dd62ed3e") {
+            rpc_error("too many requests apiKey=rpc-secret Authorization Bearer hidden-secret")
+        } else {
+            rpc_result("null".to_string())
+        }
+    });
+    let state = scan_erc20_allowance(ScanErc20AllowanceInput {
+        rpc_url: format!("{failure_rpc}/?apiKey=url-secret"),
+        chain_id: 1,
+        owner: ACCOUNT.to_string(),
+        token_contract: USDC.to_string(),
+        spender: SPENDER.to_string(),
+        rpc_profile_id: None,
+    })
+    .await
+    .expect("failed allowance");
+
+    let failed = state
+        .allowance_snapshots
+        .iter()
+        .find(|item| item.token_contract.to_lowercase() == USDC)
+        .expect("failed item");
+    assert_eq!(failed.allowance_raw, "500");
+    assert_eq!(failed.status, AllowanceSnapshotStatus::Stale);
+    assert!(failed
+        .last_error_summary
+        .as_deref()
+        .expect("last error")
+        .contains("allowanceCallFailed"));
+    let unrelated = state
+        .allowance_snapshots
+        .iter()
+        .find(|item| item.token_contract.to_lowercase() == DAI)
+        .expect("unrelated item");
+    assert_eq!(unrelated.allowance_raw, "999");
+    assert_eq!(unrelated.status, AllowanceSnapshotStatus::Active);
+    let raw = fs::read_to_string(token_watchlist_path().expect("path")).expect("read state");
+    assert!(!raw.contains("rpc-secret"));
+    assert!(!raw.contains("url-secret"));
+    assert!(!raw.contains("hidden-secret"));
+    assert!(raw.contains("[redacted"));
 }
 
 #[tokio::test(flavor = "current_thread")]
