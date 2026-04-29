@@ -16,6 +16,8 @@ const RAW_CALLDATA_PREVIEW_PREFIX_BYTES: usize = 32;
 const RAW_CALLDATA_PREVIEW_SUFFIX_BYTES: usize = 32;
 const RAW_CALLDATA_FROZEN_KEY_PREFIX: &str = "raw-calldata";
 const RAW_CALLDATA_MAX_MULTIPLIER_FRACTION_DIGITS: usize = 18;
+const RAW_CALLDATA_HUMAN_PREVIEW_MAX_ROWS: usize = 12;
+const RAW_CALLDATA_HUMAN_PREVIEW_MAX_CHARS: usize = 160;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -266,12 +268,14 @@ pub fn validate_raw_calldata_submit_input(
             selected_chain_id, input.chain_id
         ));
     }
+    validate_selected_rpc_endpoint(selected_rpc, &rpc_url)?;
 
     let account_index = input
         .account_index
         .ok_or_else(|| "accountIndex is required for raw calldata submit".to_string())?;
     let from = checksum_address(&input.from, "from")?;
     let to = checksum_address(&input.to, "to")?;
+    validate_human_preview(&input.human_preview)?;
     let calldata = normalize_raw_calldata(&input.calldata)?;
     validate_calldata_summary(&input, &calldata)?;
 
@@ -303,8 +307,8 @@ pub fn validate_raw_calldata_submit_input(
         chain_id: input.chain_id,
         selected_rpc,
         account_index,
-        from: &from,
-        to: &to,
+        from: &input.from,
+        to: &input.to,
         value_wei: &value_wei.to_string(),
         calldata: &calldata,
         gas_limit: &fees.gas_limit.to_string(),
@@ -533,6 +537,86 @@ fn checksum_address(value: &str, label: &str) -> Result<String, String> {
     let address = Address::from_str(value.trim())
         .map_err(|_| format!("{label} must be a valid EVM address"))?;
     Ok(to_checksum(&address, None))
+}
+
+fn validate_selected_rpc_endpoint(
+    selected_rpc: &AbiCallSelectedRpcSummary,
+    rpc_url: &str,
+) -> Result<(), String> {
+    if let Some(endpoint_summary) = selected_rpc.endpoint_summary.as_deref() {
+        if endpoint_summary != summarize_rpc_endpoint(rpc_url) {
+            return Err(
+                "submitted rpcUrl does not match frozen selectedRpc endpointSummary".to_string(),
+            );
+        }
+    }
+    if let Some(endpoint_fingerprint) = selected_rpc.endpoint_fingerprint.as_deref() {
+        if endpoint_fingerprint != rpc_endpoint_fingerprint(rpc_url) {
+            return Err(
+                "submitted rpcUrl does not match frozen selectedRpc endpointFingerprint"
+                    .to_string(),
+            );
+        }
+    }
+    Ok(())
+}
+
+fn validate_human_preview(human: &RawCalldataHumanPreview) -> Result<(), String> {
+    if human.rows.len() > RAW_CALLDATA_HUMAN_PREVIEW_MAX_ROWS {
+        return Err("humanPreview rows exceed raw calldata preview bounds".to_string());
+    }
+    if !human.truncated_rows && human.omitted_rows != 0 {
+        return Err("humanPreview omittedRows requires truncatedRows".to_string());
+    }
+    for row in &human.rows {
+        validate_human_preview_text("humanPreview label", &row.label)?;
+        validate_human_preview_text("humanPreview value", &row.value)?;
+        validate_human_preview_text("humanPreview displayText", &row.display_text)?;
+        let expected_display =
+            bound_human_preview_text(&format_human_preview_display_text(&row.label, &row.value)).0;
+        if row.display_text != expected_display {
+            return Err(
+                "humanPreview displayText must match bounded raw calldata preview text".to_string(),
+            );
+        }
+    }
+    Ok(())
+}
+
+fn validate_human_preview_text(label: &str, value: &str) -> Result<(), String> {
+    if compact_human_preview_text(value) != value {
+        return Err(format!("{label} must be compacted"));
+    }
+    if value.chars().count() > RAW_CALLDATA_HUMAN_PREVIEW_MAX_CHARS {
+        return Err(format!("{label} exceeds raw calldata preview bounds"));
+    }
+    Ok(())
+}
+
+fn format_human_preview_display_text(label: &str, value: &str) -> String {
+    if label.is_empty() {
+        return value.to_string();
+    }
+    if value.is_empty() {
+        return label.to_string();
+    }
+    format!("{label}: {value}")
+}
+
+fn bound_human_preview_text(value: &str) -> (String, bool) {
+    let compact = compact_human_preview_text(value);
+    let truncated = compact.chars().count() > RAW_CALLDATA_HUMAN_PREVIEW_MAX_CHARS;
+    (
+        compact
+            .chars()
+            .take(RAW_CALLDATA_HUMAN_PREVIEW_MAX_CHARS)
+            .collect(),
+        truncated,
+    )
+}
+
+fn compact_human_preview_text(value: &str) -> String {
+    value.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 fn parse_fee_fields(input: &RawCalldataSubmitInput) -> Result<ParsedFeeFields, String> {
@@ -1192,6 +1276,161 @@ fn hex_lower(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
+fn summarize_rpc_endpoint(rpc_url: &str) -> String {
+    let trimmed = rpc_url.trim();
+    let Some((scheme, rest)) = trimmed.split_once("://") else {
+        return "[redacted_endpoint]".to_string();
+    };
+    let scheme = scheme.to_ascii_lowercase();
+    if scheme.is_empty()
+        || !scheme
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '+' | '-' | '.'))
+    {
+        return "[redacted_endpoint]".to_string();
+    }
+
+    let authority = rest
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or_default()
+        .rsplit('@')
+        .next()
+        .unwrap_or_default();
+    if authority.is_empty() || authority.contains(char::is_whitespace) {
+        return "[redacted_endpoint]".to_string();
+    }
+    let authority = canonical_rpc_authority(&scheme, authority);
+
+    format!("{scheme}://{authority}")
+}
+
+fn rpc_endpoint_fingerprint(rpc_url: &str) -> String {
+    compact_hash_key_with_prefix(
+        "rpc-endpoint",
+        &normalized_secret_safe_rpc_identity(rpc_url),
+    )
+}
+
+fn normalized_secret_safe_rpc_identity(rpc_url: &str) -> String {
+    let trimmed = rpc_url.trim();
+    let Some((scheme, rest)) = trimmed.split_once("://") else {
+        return "[redacted_url]".to_string();
+    };
+    let scheme = scheme.to_ascii_lowercase();
+    let rest = rest.split('#').next().unwrap_or_default();
+    let authority_end = rest.find(['/', '?']).unwrap_or(rest.len());
+    let authority = rest[..authority_end]
+        .rsplit('@')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if authority.is_empty() {
+        return "[redacted_url]".to_string();
+    }
+    let authority = canonical_rpc_authority(&scheme, &authority);
+    let remainder = &rest[authority_end..];
+    let (path, query) = match remainder.split_once('?') {
+        Some((path, query)) => (if path.is_empty() { "/" } else { path }, Some(query)),
+        None => {
+            let path = if remainder.is_empty() { "/" } else { remainder };
+            (path, None)
+        }
+    };
+    let query = query
+        .filter(|query| !query.is_empty())
+        .map(|query| {
+            query
+                .split('&')
+                .filter(|part| !part.is_empty())
+                .map(|part| {
+                    let key = part.split_once('=').map(|(key, _)| key).unwrap_or(part);
+                    let key = decode_rpc_query_key(key);
+                    format!("{key}=[redacted]")
+                })
+                .collect::<Vec<_>>()
+                .join("&")
+        })
+        .filter(|query| !query.is_empty())
+        .map(|query| format!("?{query}"))
+        .unwrap_or_default();
+    format!("{scheme}://{authority}{path}{query}")
+}
+
+fn canonical_rpc_authority(scheme: &str, authority: &str) -> String {
+    let authority = authority.to_ascii_lowercase();
+    if let Some(rest) = authority.strip_prefix('[') {
+        if let Some(end) = rest.find(']') {
+            let bracketed_host = &authority[..=end + 1];
+            let suffix = &authority[end + 2..];
+            if let Some(port) = suffix.strip_prefix(':') {
+                if is_default_rpc_port(scheme, port) {
+                    return bracketed_host.to_string();
+                }
+            }
+            return authority;
+        }
+    }
+    if let Some((host, port)) = authority.rsplit_once(':') {
+        if !host.contains(':') && is_default_rpc_port(scheme, port) {
+            return host.to_string();
+        }
+    }
+    authority
+}
+
+fn is_default_rpc_port(scheme: &str, port: &str) -> bool {
+    matches!((scheme, port), ("https", "443") | ("http", "80"))
+}
+
+fn decode_rpc_query_key(value: &str) -> String {
+    let mut bytes = Vec::with_capacity(value.len());
+    let input = value.as_bytes();
+    let mut index = 0;
+    while index < input.len() {
+        match input[index] {
+            b'+' => {
+                bytes.push(b' ');
+                index += 1;
+            }
+            b'%' if index + 2 < input.len() => {
+                let high = input[index + 1];
+                let low = input[index + 2];
+                if let (Some(high), Some(low)) = (hex_value(high), hex_value(low)) {
+                    bytes.push((high << 4) | low);
+                    index += 3;
+                } else {
+                    bytes.push(input[index]);
+                    index += 1;
+                }
+            }
+            byte => {
+                bytes.push(byte);
+                index += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
+fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn compact_hash_key_with_prefix(prefix: &str, value: &str) -> String {
+    let mut hash = 0x811c9dc5u32;
+    for code_unit in value.encode_utf16() {
+        hash ^= code_unit as u32;
+        hash = hash.wrapping_mul(0x01000193);
+    }
+    format!("{prefix}-{hash:08x}")
+}
+
 fn unknown_string() -> String {
     "unknown".to_string()
 }
@@ -1218,11 +1457,11 @@ mod tests {
                 endpoint_id: Some("primary".to_string()),
                 endpoint_name: Some("Primary".to_string()),
                 endpoint_summary: Some("https://rpc.example".to_string()),
-                endpoint_fingerprint: Some("rpc-fp-1".to_string()),
+                endpoint_fingerprint: Some(rpc_endpoint_fingerprint("https://rpc.example")),
             }),
-            from: "0x1111111111111111111111111111111111111111".to_string(),
+            from: "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd".to_string(),
             account_index: Some(0),
-            to: "0x2222222222222222222222222222222222222222".to_string(),
+            to: "0xfeedfeedfeedfeedfeedfeedfeedfeedfeedfeed".to_string(),
             value_wei: "0".to_string(),
             calldata: calldata.canonical.clone(),
             calldata_hash_version: RAW_CALLDATA_HASH_VERSION.to_string(),
@@ -1283,14 +1522,12 @@ mod tests {
                     ..warning
                 })
                 .collect::<Vec<_>>();
-        let from = checksum_address(&input.from, "from").unwrap();
-        let to = checksum_address(&input.to, "to").unwrap();
         input.frozen_key = Some(raw_calldata_frozen_key(&RawCalldataFrozenPayloadParts {
             chain_id: input.chain_id,
             selected_rpc,
             account_index: input.account_index.unwrap(),
-            from: &from,
-            to: &to,
+            from: &input.from,
+            to: &input.to,
             value_wei: &value_wei.to_string(),
             calldata: &calldata,
             gas_limit: &fees.gas_limit.to_string(),
@@ -1430,9 +1667,29 @@ mod tests {
     }
 
     #[test]
+    fn raw_calldata_submit_binds_rpc_url_to_selected_rpc_identity() {
+        let input = base_input();
+        validate_raw_calldata_submit_input(input).expect("matching rpc identity should pass");
+
+        let mut input = base_input();
+        input.rpc_url = "https://other-rpc.example".to_string();
+        let error =
+            validate_raw_calldata_submit_input(input).expect_err("swapped rpc summary rejected");
+        assert!(error.contains("endpointSummary"), "{error}");
+        assert!(!error.contains("other-rpc.example"), "{error}");
+
+        let mut input = base_input();
+        input.selected_rpc.as_mut().unwrap().endpoint_summary = None;
+        input.rpc_url = "https://rpc.example/alternate?api_key=secret".to_string();
+        let error = validate_raw_calldata_submit_input(input)
+            .expect_err("swapped rpc fingerprint rejected");
+        assert!(error.contains("endpointFingerprint"), "{error}");
+        assert!(!error.contains("secret"), "{error}");
+    }
+
+    #[test]
     fn raw_calldata_submit_rejects_malformed_addresses_and_checksums_from() {
         let mut input = base_input();
-        input.from = "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd".to_string();
         let expected_from = to_checksum(&Address::from_str(&input.from).unwrap(), None);
         refresh_frozen_key(&mut input);
         let (intent, _, _, _) =
@@ -1450,6 +1707,64 @@ mod tests {
         assert!(validate_raw_calldata_submit_input(input)
             .expect_err("bad to")
             .contains("to"));
+    }
+
+    #[test]
+    fn raw_calldata_submit_frozen_key_covers_draft_address_strings() {
+        let mut input = base_input();
+        let checksummed_from = to_checksum(&Address::from_str(&input.from).unwrap(), None);
+        assert_ne!(input.from, checksummed_from);
+        input.from = checksummed_from;
+
+        let error = validate_raw_calldata_submit_input(input)
+            .expect_err("changed address string should invalidate frozen key");
+        assert!(error.contains("frozenKey"), "{error}");
+    }
+
+    #[test]
+    fn raw_calldata_submit_rejects_unbounded_human_preview() {
+        let mut valid = base_input();
+        valid.human_preview = RawCalldataHumanPreview {
+            rows: vec![RawCalldataHumanPreviewRow {
+                label: "Method".to_string(),
+                value: "transfer".to_string(),
+                display_text: "Method: transfer".to_string(),
+                truncated: false,
+                original_char_length: 14,
+            }],
+            truncated_rows: false,
+            omitted_rows: 0,
+        };
+        refresh_frozen_key(&mut valid);
+        validate_raw_calldata_submit_input(valid).expect("bounded human preview should pass");
+
+        let mut input = base_input();
+        input.human_preview.rows = (0..=RAW_CALLDATA_HUMAN_PREVIEW_MAX_ROWS)
+            .map(|index| RawCalldataHumanPreviewRow {
+                label: format!("Row {index}"),
+                value: "value".to_string(),
+                display_text: format!("Row {index}: value"),
+                truncated: false,
+                original_char_length: 10,
+            })
+            .collect();
+        refresh_frozen_key(&mut input);
+        let error = validate_raw_calldata_submit_input(input).expect_err("too many rows rejected");
+        assert!(error.contains("humanPreview"), "{error}");
+
+        let mut input = base_input();
+        let overlong = "x".repeat(RAW_CALLDATA_HUMAN_PREVIEW_MAX_CHARS + 1);
+        input.human_preview.rows = vec![RawCalldataHumanPreviewRow {
+            label: "Label".to_string(),
+            value: overlong.clone(),
+            display_text: overlong,
+            truncated: false,
+            original_char_length: (RAW_CALLDATA_HUMAN_PREVIEW_MAX_CHARS + 1) as u64,
+        }];
+        refresh_frozen_key(&mut input);
+        let error =
+            validate_raw_calldata_submit_input(input).expect_err("overlong preview rejected");
+        assert!(error.contains("humanPreview"), "{error}");
     }
 
     #[test]
@@ -1582,7 +1897,7 @@ mod tests {
         let input = base_input();
         assert_eq!(
             input.frozen_key.as_deref(),
-            Some("raw-calldata-b4de9bc3644947cf")
+            Some("raw-calldata-2418ac21f27bc662")
         );
     }
 
