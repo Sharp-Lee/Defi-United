@@ -714,8 +714,10 @@ function hasFrozenRpcField(value: string | null | undefined) {
   return typeof value === "string" && value.trim().length > 0;
 }
 
-function normalizeAccountIndex(value: number | null | undefined) {
-  return Number.isSafeInteger(value) && value >= 0 && value <= 0xffffffff ? value : null;
+function normalizeAccountIndex(value: number | null | undefined): number | null {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value <= 0xffffffff
+    ? value
+    : null;
 }
 
 function emptyBlockedPreview(): RawCalldataPreview {
