@@ -2864,6 +2864,93 @@ async fn raw_calldata_submit_rejects_unreadable_history_before_broadcast() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn raw_calldata_submit_rejects_pending_history_with_legacy_submission_identity() {
+    let _guard = test_lock().lock().expect("test lock");
+    let _app_dir_guard = TestAppDirGuard::new("raw-calldata-legacy-submission-conflict");
+    wallet_workbench_lib::session::write_session_mnemonic(
+        "test test test test test test test test test test test junk".into(),
+    );
+    let (rpc_url, requests) = start_submission_guard_rpc_server();
+    let intent = raw_calldata_intent(rpc_url);
+    let mut record = history_record(intent.nonce, ChainOutcomeState::Pending, "0xlegacy");
+    record.intent.chain_id = 99;
+    record.intent.account_index = 9;
+    record.intent.from = "0x9999999999999999999999999999999999999999".into();
+    record.intent.nonce = 99;
+    record.submission.chain_id = Some(intent.chain_id);
+    record.submission.account_index = Some(intent.account_index);
+    record.submission.from = Some(intent.from.to_lowercase());
+    record.submission.nonce = Some(intent.nonce);
+    record.submission.tx_hash = "0xlegacy-submission".into();
+    record.outcome.tx_hash = record.submission.tx_hash.clone();
+    record.nonce_thread = wallet_workbench_lib::models::NonceThread::default();
+    fs::write(
+        history_path().expect("history path"),
+        serde_json::to_string_pretty(&vec![record]).expect("serialize history"),
+    )
+    .expect("write history");
+
+    let error = submit_raw_calldata(
+        intent,
+        raw_calldata_bytes(),
+        raw_calldata_metadata(),
+        "raw-draft-frozen-key".to_string(),
+    )
+    .await
+    .expect_err("legacy submission identity conflict rejected");
+    let joined_requests = requests.lock().expect("requests lock").join("\n");
+
+    assert!(
+        error.contains("pending local nonce conflict"),
+        "unexpected error: {error}; requests={joined_requests}"
+    );
+    assert!(error.contains("0xlegacy-submission"));
+    assert!(!joined_requests.contains("eth_sendRawTransaction"));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn raw_calldata_submit_rejects_pending_history_with_legacy_intent_identity() {
+    let _guard = test_lock().lock().expect("test lock");
+    let _app_dir_guard = TestAppDirGuard::new("raw-calldata-legacy-intent-conflict");
+    wallet_workbench_lib::session::write_session_mnemonic(
+        "test test test test test test test test test test test junk".into(),
+    );
+    let (rpc_url, requests) = start_submission_guard_rpc_server();
+    let intent = raw_calldata_intent(rpc_url);
+    let mut record = history_record(intent.nonce, ChainOutcomeState::Pending, "0xlegacy");
+    record.intent = intent.clone();
+    record.submission.chain_id = None;
+    record.submission.account_index = None;
+    record.submission.from = None;
+    record.submission.nonce = None;
+    record.submission.tx_hash = "0xlegacy-intent".into();
+    record.outcome.tx_hash = record.submission.tx_hash.clone();
+    record.nonce_thread = wallet_workbench_lib::models::NonceThread::default();
+    fs::write(
+        history_path().expect("history path"),
+        serde_json::to_string_pretty(&vec![record]).expect("serialize history"),
+    )
+    .expect("write history");
+
+    let error = submit_raw_calldata(
+        intent,
+        raw_calldata_bytes(),
+        raw_calldata_metadata(),
+        "raw-draft-frozen-key".to_string(),
+    )
+    .await
+    .expect_err("legacy intent identity conflict rejected");
+    let joined_requests = requests.lock().expect("requests lock").join("\n");
+
+    assert!(
+        error.contains("pending local nonce conflict"),
+        "unexpected error: {error}; requests={joined_requests}"
+    );
+    assert!(error.contains("0xlegacy-intent"));
+    assert!(!joined_requests.contains("eth_sendRawTransaction"));
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn raw_calldata_preflight_error_redacts_secret_rpc_url() {
     let _guard = test_lock().lock().expect("test lock");
     let _app_dir_guard = TestAppDirGuard::new("raw-calldata-preflight-redaction");

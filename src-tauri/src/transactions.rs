@@ -4113,15 +4113,12 @@ pub async fn submit_native_contract_call(
 fn ensure_no_pending_nonce_conflict(intent: &NativeTransferIntent) -> Result<(), String> {
     let records = load_history_records()?;
     let conflict = records.iter().find(|record| {
+        let identity = history_identity_for_record(record);
         record.outcome.state == ChainOutcomeState::Pending
-            && record.nonce_thread.chain_id == Some(intent.chain_id)
-            && record.nonce_thread.account_index == Some(intent.account_index)
-            && record.nonce_thread.nonce == Some(intent.nonce)
-            && record
-                .nonce_thread
-                .from
-                .as_deref()
-                .is_some_and(|from| from.eq_ignore_ascii_case(&intent.from))
+            && identity.chain_id == intent.chain_id
+            && identity.account_index == intent.account_index
+            && identity.nonce == intent.nonce
+            && identity.from.eq_ignore_ascii_case(&intent.from)
     });
     if let Some(record) = conflict {
         return Err(format!(
