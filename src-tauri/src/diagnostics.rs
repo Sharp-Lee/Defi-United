@@ -864,9 +864,12 @@ fn is_sensitive_message_key(key: &str) -> bool {
 
 fn is_abi_payload_message_key(key: &str) -> bool {
     let key = normalize_key_name(key);
-    key.contains("rawabi")
-        || key.contains("rawcalldata")
-        || key.contains("canonicalparams")
+    key.contains("rawabi") || key.contains("canonicalparams") || is_calldata_alias_message_key(&key)
+}
+
+fn is_calldata_alias_message_key(key: &str) -> bool {
+    let key = normalize_key_name(key);
+    key.contains("rawcalldata")
         || matches!(
             key.as_str(),
             "calldata" | "fullcalldata" | "canonicalcalldata"
@@ -912,9 +915,15 @@ fn is_standalone_multi_token_secret_key(token: &str) -> bool {
 
 fn sensitive_space_key_match(tokens: &[&str], index: usize) -> Option<(usize, RedactMode)> {
     let first = normalized_standalone_token(tokens.get(index)?);
+    let raw_second = tokens.get(index + 1).copied();
     let second = tokens
         .get(index + 1)
         .map(|token| normalized_standalone_token(token));
+
+    if is_calldata_alias_message_key(&first) && raw_second.is_some_and(is_split_key_value_delimiter)
+    {
+        return Some((2, RedactMode::AbiPayloadUntilNextKeyValue));
+    }
 
     if matches!(
         (first.as_str(), second.as_deref()),
@@ -969,6 +978,10 @@ fn normalized_standalone_token(token: &&str) -> String {
 
 fn trim_auth_token_punctuation(token: &str) -> &str {
     token.trim_matches(|ch: char| !ch.is_ascii_alphanumeric())
+}
+
+fn is_split_key_value_delimiter(token: &str) -> bool {
+    matches!(token, "=" | ":")
 }
 
 fn looks_like_key_value_token(token: &str) -> bool {
@@ -1217,9 +1230,12 @@ mod tests {
     #[test]
     fn redacts_raw_calldata_sender_payloads_and_keeps_bounded_labels() {
         let raw_calldata = format!("0x12345678{}", "ab".repeat(512));
+        let split_full_calldata = "0xa9059cbbff";
+        let split_calldata = "0xbbbbccccff";
+        let split_canonical_calldata = "0xccccddddff";
         let event = event(
             &format!(
-                "raw calldata failed selector=0x12345678 fullCalldata={raw_calldata} fullCalldata= 0xa9059cbbff next=value calldata: 0xa9059cbbff canonicalCalldata= 0xa9059cbbff nextCanonical=value privateKey=secret-private-key rawTx=0xsigned"
+                "raw calldata failed selector=0x12345678 fullCalldata={raw_calldata} fullCalldata = {split_full_calldata} next=value calldata : {split_calldata} canonicalCalldata = {split_canonical_calldata} nextCanonical=value privateKey=secret-private-key rawTx=0xsigned"
             ),
             serde_json::json!({
                 "sender": "rawCalldata",
@@ -1251,7 +1267,9 @@ mod tests {
         assert!(serialized.contains("next=value"));
         assert!(serialized.contains("nextCanonical=value"));
         assert!(!serialized.contains(&raw_calldata));
-        assert!(!serialized.contains("0xa9059cbbff"));
+        assert!(!serialized.contains(split_full_calldata));
+        assert!(!serialized.contains(split_calldata));
+        assert!(!serialized.contains(split_canonical_calldata));
         assert!(!serialized.contains("abababababababababababababababababababab"));
         assert!(!serialized.contains("secret-private-key"));
         assert!(!serialized.contains("0xsigned"));
