@@ -528,6 +528,7 @@ export function AbiLibraryView({
   });
   const catalogRequestIdRef = useRef(0);
   const previewRequestIdRef = useRef(0);
+  const readRequestIdRef = useRef(0);
   const draftRequestIdRef = useRef(0);
 
   useEffect(() => {
@@ -1012,6 +1013,14 @@ export function AbiLibraryView({
     }
     const canonicalParams = parseCanonicalParams();
     if (!canonicalParams) return;
+    const requestId = readRequestIdRef.current + 1;
+    readRequestIdRef.current = requestId;
+    const requestEntryKey = cacheIdentity(selectedPreviewEntry);
+    const requestFunctionSignature = selectedFunction.signature;
+    const requestParamsText = paramsText;
+    const requestChainId = selectedChainId.toString();
+    const requestRpcUrl = rpcUrl;
+    const requestAccountIndex = selectedAccountIndex;
     setCallBusy(true);
     try {
       const result = await onCallReadOnlyFunction({
@@ -1022,6 +1031,19 @@ export function AbiLibraryView({
         canonicalParams,
         from: selectedAccount?.address ?? null,
       });
+      const latestPreview = latestPreviewStateRef.current;
+      const latestDraft = latestDraftStateRef.current;
+      if (
+        readRequestIdRef.current !== requestId ||
+        latestPreview.entryKey !== requestEntryKey ||
+        latestPreview.functionSignature !== requestFunctionSignature ||
+        latestPreview.paramsText !== requestParamsText ||
+        latestDraft.chainId !== requestChainId ||
+        latestDraft.rpcUrl !== requestRpcUrl ||
+        latestDraft.accountIndex !== requestAccountIndex
+      ) {
+        return;
+      }
       setReadResult(result);
       if (result.status === "success") {
         setLocalMessage(`Read call succeeded: ${result.outputs.length} output${result.outputs.length === 1 ? "" : "s"}.`);
@@ -1030,9 +1052,24 @@ export function AbiLibraryView({
         setLocalError(`Read call blocked: ${result.errorSummary ?? (reasonText || statusLabel(result.status))}.`);
       }
     } catch (err) {
+      const latestPreview = latestPreviewStateRef.current;
+      const latestDraft = latestDraftStateRef.current;
+      if (
+        readRequestIdRef.current !== requestId ||
+        latestPreview.entryKey !== requestEntryKey ||
+        latestPreview.functionSignature !== requestFunctionSignature ||
+        latestPreview.paramsText !== requestParamsText ||
+        latestDraft.chainId !== requestChainId ||
+        latestDraft.rpcUrl !== requestRpcUrl ||
+        latestDraft.accountIndex !== requestAccountIndex
+      ) {
+        return;
+      }
       setLocalError(err instanceof Error ? err.message : String(err));
     } finally {
-      setCallBusy(false);
+      if (readRequestIdRef.current === requestId) {
+        setCallBusy(false);
+      }
     }
   }
 
@@ -1196,6 +1233,7 @@ export function AbiLibraryView({
         warningsAcknowledged: writeDraft.warnings.length === 0 || writeWarningsAcknowledged,
       });
       setLocalMessage(`ABI write submitted: ${compact(record.submission.tx_hash, 18, 10)}.`);
+      clearWriteDraft();
     } catch (err) {
       setLocalError(err instanceof Error ? err.message : String(err));
     } finally {

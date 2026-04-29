@@ -907,6 +907,8 @@ describe("AbiLibraryView", () => {
       ),
     );
     expect(screen.getByText(/ABI write submitted:/)).toBeInTheDocument();
+    expect(screen.queryByLabelText("ABI write draft confirmation")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Submit Transaction" })).toBeDisabled();
   });
 
   it("ignores stale write draft fee lookups when draft inputs change in flight", async () => {
@@ -1313,5 +1315,90 @@ describe("AbiLibraryView", () => {
 
     expect(screen.queryByLabelText("ABI calldata preview result")).not.toBeInTheDocument();
     expect(screen.queryByText("0xbbbbbbbbbb")).not.toBeInTheDocument();
+  });
+
+  it("ignores stale read call results when params change in flight", async () => {
+    const readResult = deferred<AbiReadCallResult>();
+    const entry = cacheEntry("v1");
+    const onListFunctions = vi.fn(async (input: AbiManagedEntryInput): Promise<AbiFunctionCatalogResult> => ({
+      status: "success",
+      reasons: [],
+      contractAddress: input.contractAddress,
+      sourceKind: input.sourceKind,
+      providerConfigId: input.providerConfigId ?? null,
+      userSourceId: input.userSourceId ?? null,
+      versionId: input.versionId,
+      abiHash: input.abiHash,
+      sourceFingerprint: input.sourceFingerprint,
+      unsupportedItemCount: 0,
+      functions: [
+        {
+          name: "lookup",
+          signature: "lookup(uint256)",
+          selector: "0x9d46a1a8",
+          stateMutability: "view",
+          callKind: "read",
+          supported: true,
+          unsupportedReason: null,
+          inputs: [{ name: "id", type: "uint256", kind: "uint", arrayLength: null, components: null }],
+          outputs: [],
+        },
+      ],
+    }));
+    const onCallReadOnlyFunction = vi.fn(() => readResult.promise);
+    renderAbi(registryState({ cacheEntries: [entry] }), {
+      onListFunctions,
+      onCallReadOnlyFunction,
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Load Functions" }));
+    await waitFor(() => expect(screen.getByLabelText("Function signature")).toHaveValue("lookup(uint256)"));
+    fireEvent.change(screen.getByLabelText("Canonical params JSON array"), {
+      target: { value: '["1"]' },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Read Call" }));
+    await waitFor(() => expect(onCallReadOnlyFunction).toHaveBeenCalledTimes(1));
+
+    fireEvent.change(screen.getByLabelText("Canonical params JSON array"), {
+      target: { value: '["2"]' },
+    });
+    await act(async () => {
+      readResult.resolve({
+        status: "success",
+        reasons: [],
+        functionSignature: "lookup(uint256)",
+        selector: "0x9d46a1a8",
+        contractAddress: entry.contractAddress,
+        from: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        sourceKind: entry.sourceKind,
+        providerConfigId: entry.providerConfigId,
+        userSourceId: entry.userSourceId,
+        versionId: entry.versionId,
+        abiHash: entry.abiHash,
+        sourceFingerprint: entry.sourceFingerprint,
+        calldata: {
+          byteLength: 36,
+          hash: "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        },
+        outputs: [
+          {
+            kind: "uint",
+            type: "uint256",
+            value: "999",
+            byteLength: null,
+            hash: null,
+            items: null,
+            fields: null,
+            truncated: false,
+          },
+        ],
+        rpc: { endpoint: "https://rpc.example.invalid", expectedChainId: 1, actualChainId: 1 },
+      });
+      await readResult.promise;
+    });
+
+    expect(screen.queryByLabelText("ABI read call result")).not.toBeInTheDocument();
+    expect(screen.queryByText("999")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Read call succeeded/)).not.toBeInTheDocument();
   });
 });
