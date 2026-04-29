@@ -161,7 +161,7 @@ export interface RawCalldataSubmission {
   chainId: number;
   selectedRpc: RawCalldataRpcIdentity | null;
   from: string;
-  fromAccountIndex: number | null;
+  fromAccountIndex: number;
   to: string;
   valueWei: string;
   calldata: string;
@@ -269,6 +269,7 @@ export function buildRawCalldataPreview(
 export function buildRawCalldataDraft(input: BuildRawCalldataDraftInput): RawCalldataDraft {
   const blockingStatuses: RawCalldataStatus[] = [];
   const normalizeResult = normalizeRawCalldata(input.calldata);
+  const fromAccountIndex = normalizeAccountIndex(input.fromAccountIndex);
   if (!normalizeResult.ok) {
     blockingStatuses.push(normalizeResult.error);
   }
@@ -302,6 +303,11 @@ export function buildRawCalldataDraft(input: BuildRawCalldataDraftInput): RawCal
   }
   if (!input.from) {
     blockingStatuses.push(blocking("missingFrom", "Select a sender account.", "account"));
+  }
+  if (fromAccountIndex === null) {
+    blockingStatuses.push(
+      blocking("accountIndex", "Sender account index must be a non-negative safe integer.", "account"),
+    );
   }
   if (!input.to) {
     blockingStatuses.push(blocking("missingTo", "Enter a target contract address.", "contract"));
@@ -349,13 +355,21 @@ export function buildRawCalldataDraft(input: BuildRawCalldataDraftInput): RawCal
     uniqueBlocking.length > 0 ||
     !input.selectedRpc ||
     !input.from ||
+    fromAccountIndex === null ||
     !input.to ||
     input.nonce === null
   ) {
     return {
       draftId: compactHashKey({ kind: "rawCalldataDraftBlocked", createdAt, blockingStatuses: uniqueBlocking }),
       frozenKey: compactHashKey(
-        frozenPayload(input, preview, inference, uniqueWarnings, baseFeeMultiplier?.text ?? null),
+        frozenPayload(
+          input,
+          fromAccountIndex,
+          preview,
+          inference,
+          uniqueWarnings,
+          baseFeeMultiplier?.text ?? null,
+        ),
       ),
       createdAt,
       preview: preview ?? emptyBlockedPreview(),
@@ -372,7 +386,7 @@ export function buildRawCalldataDraft(input: BuildRawCalldataDraftInput): RawCal
     chainId: numericChainId(input.chainId),
     selectedRpc: sanitizeRpcIdentity(input.selectedRpc),
     from: input.from,
-    fromAccountIndex: input.fromAccountIndex ?? null,
+    fromAccountIndex,
     to: input.to,
     valueWei: input.valueWei.toString(),
     calldata: preview.canonical,
@@ -391,7 +405,14 @@ export function buildRawCalldataDraft(input: BuildRawCalldataDraftInput): RawCal
     maxFeeOverridePerGas: input.fee.maxFeeOverridePerGas?.toString() ?? null,
     maxPriorityFeePerGas: input.fee.maxPriorityFeePerGas.toString(),
   };
-  const frozen = frozenPayload(input, preview, inference, uniqueWarnings, baseFeeMultiplier?.text ?? null);
+  const frozen = frozenPayload(
+    input,
+    fromAccountIndex,
+    preview,
+    inference,
+    uniqueWarnings,
+    baseFeeMultiplier?.text ?? null,
+  );
 
   return {
     draftId: compactHashKey({ ...frozen, createdAt }),
@@ -587,6 +608,7 @@ function boundText(value: string, maxLength: number) {
 
 function frozenPayload(
   input: BuildRawCalldataDraftInput,
+  fromAccountIndex: number | null,
   preview: RawCalldataPreview | null,
   inference: RawCalldataInferenceInput,
   warnings: RawCalldataStatus[],
@@ -597,7 +619,7 @@ function frozenPayload(
     version: 1,
     chainId: numericChainId(input.chainId),
     rpc: sanitizeRpcIdentity(input.selectedRpc),
-    fromAccountIndex: input.fromAccountIndex ?? null,
+    fromAccountIndex,
     from: input.from ?? null,
     to: input.to ?? null,
     valueWei: input.valueWei.toString(),
@@ -690,6 +712,10 @@ function sanitizeRpcIdentity(input: RawCalldataRpcIdentityInput | null): RawCall
 
 function hasFrozenRpcField(value: string | null | undefined) {
   return typeof value === "string" && value.trim().length > 0;
+}
+
+function normalizeAccountIndex(value: number | null | undefined) {
+  return Number.isSafeInteger(value) && value >= 0 ? value : null;
 }
 
 function emptyBlockedPreview(): RawCalldataPreview {

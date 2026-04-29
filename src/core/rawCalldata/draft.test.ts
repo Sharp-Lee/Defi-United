@@ -407,6 +407,34 @@ describe("buildRawCalldataDraft", () => {
     expect(draft.blockingStatuses).toMatchObject([{ code: "oddLength" }]);
   });
 
+  it("blocks missing, null, and invalid sender account indexes", () => {
+    const { fromAccountIndex: _fromAccountIndex, ...missingAccountIndexInput } = baseInput;
+    const cases: BuildRawCalldataDraftInput[] = [
+      missingAccountIndexInput,
+      { ...baseInput, fromAccountIndex: null },
+      { ...baseInput, fromAccountIndex: -1 },
+      { ...baseInput, fromAccountIndex: 1.5 },
+      { ...baseInput, fromAccountIndex: Number.MAX_SAFE_INTEGER + 1 },
+    ];
+
+    for (const input of cases) {
+      const draft = buildRawCalldataDraft(input);
+
+      expect(draft.submission).toBeNull();
+      expect(draft.canSubmit).toBe(false);
+      expect(draft.blockingStatuses).toMatchObject([{ code: "accountIndex" }]);
+    }
+  });
+
+  it("keeps valid sender account indexes numeric in submittable drafts", () => {
+    const draft = buildRawCalldataDraft({ ...baseInput, fromAccountIndex: 2 });
+
+    expect(draft.canSubmit).toBe(true);
+    expect(draft.submission?.fromAccountIndex).toBe(2);
+    expect(typeof draft.submission?.fromAccountIndex).toBe("number");
+    expect(() => JSON.stringify(draft.submission)).not.toThrow();
+  });
+
   it("changes frozen key for covered transaction, preview, acknowledgement, and inference fields", () => {
     const frozenKey = buildRawCalldataDraft(baseInput).frozenKey;
     const changedInputs: BuildRawCalldataDraftInput[] = [
@@ -416,6 +444,7 @@ describe("buildRawCalldataDraft", () => {
         selectedRpc: { ...baseInput.selectedRpc, endpointFingerprint: "rpc-fp-2" },
       },
       { ...baseInput, from: "0x3333333333333333333333333333333333333333" },
+      { ...baseInput, fromAccountIndex: 2 },
       { ...baseInput, to: "0x4444444444444444444444444444444444444444" },
       { ...baseInput, valueWei: 1n, warningAcknowledgements: { nonzeroValue: true } },
       { ...baseInput, calldata: "0x87654321" },
