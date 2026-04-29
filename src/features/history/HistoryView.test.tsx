@@ -361,6 +361,106 @@ function nativeDistributionRecord() {
   };
 }
 
+function rawCalldataRecord() {
+  const calldataPreview = `0x${"12".repeat(32)}...${"34".repeat(32)}`;
+  return {
+    ...record({
+      txHash: "0xrawcalldata",
+      nonce: 13,
+      submissionValueWei: "99",
+      intentValueWei: "99",
+    }),
+    intent: {
+      ...record({ txHash: "0xraw-intent", nonce: 13 }).intent,
+      transaction_type: "rawCalldata",
+      to: recipient,
+      value_wei: "99",
+      native_value_wei: "99",
+      selector: "0x12345678",
+      method_name: null,
+      nonce: 13,
+    },
+    submission: {
+      ...record({ txHash: "0xraw-submission", nonce: 13 }).submission,
+      frozen_key: "raw-calldata-frozen",
+      tx_hash: "0xrawcalldata",
+      kind: "rawCalldata",
+      transaction_type: "rawCalldata",
+      to: recipient,
+      value_wei: "99",
+      native_value_wei: "99",
+      selector: "0x12345678",
+      method_name: null,
+      nonce: 13,
+    },
+    raw_calldata_metadata: {
+      intent_kind: "rawCalldata",
+      draft_id: "raw-draft-1",
+      created_at: "1700000000",
+      chain_id: 1,
+      account_index: 1,
+      from: accountA,
+      to: recipient,
+      value_wei: "99",
+      gas_limit: "70000",
+      max_fee_per_gas: "40000000000",
+      max_priority_fee_per_gas: "1500000000",
+      nonce: 13,
+      calldata_hash_version: "keccak256-v1",
+      calldata_hash: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      calldata_byte_length: 90,
+      selector: "0x12345678",
+      selector_status: "present",
+      preview: {
+        preview_prefix_bytes: 32,
+        preview_suffix_bytes: 32,
+        truncated: true,
+        omitted_bytes: 26,
+        display: calldataPreview,
+        prefix: `0x${"12".repeat(32)}`,
+        suffix: `0x${"34".repeat(32)}`,
+      },
+      warning_acknowledgements: [
+        {
+          level: "warning",
+          code: "unknownSelector",
+          message: "No ABI selector match is selected for this calldata.",
+          source: "selector",
+        },
+      ],
+      warning_summaries: [],
+      blocking_statuses: [],
+      inference: {
+        inference_status: "unknown",
+        matched_source_kind: null,
+        matched_source_id: null,
+        matched_version_id: null,
+        matched_source_fingerprint: null,
+        matched_abi_hash: null,
+        selector_match_count: 0,
+        conflict_summary: null,
+        stale_status: null,
+        source_status: "noAbiForContract",
+      },
+      frozen_key: "raw-calldata-frozen",
+      future_submission: null,
+      future_outcome: null,
+      broadcast: null,
+      recovery: null,
+    },
+    abi_call_metadata: {
+      function_signature: "shouldNotRender()",
+    },
+    batch_metadata: {
+      batch_id: "should-not-render",
+      child_id: "should-not-render",
+      batch_kind: "distribute",
+      asset_kind: "native",
+      recipients: [],
+    },
+  };
+}
+
 function recoveryIntent(overrides = {}) {
   return {
     schemaVersion: 1,
@@ -386,6 +486,66 @@ function recoveryIntent(overrides = {}) {
     dismissedAt: null,
     ...overrides,
   };
+}
+
+function rawCalldataRecoveryIntent() {
+  return recoveryIntent({
+    id: "raw-broadcast-1",
+    kind: "rawCalldata",
+    txHash: "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    valueWei: "99",
+    selector: "0x12345678",
+    nativeValueWei: "99",
+    frozenKey: "raw-calldata-frozen",
+    rawCalldataMetadata: {
+      intent_kind: "rawCalldata",
+      draft_id: "raw-draft-1",
+      created_at: "1700000000",
+      chain_id: 1,
+      account_index: 1,
+      from: accountA,
+      to: recipient,
+      value_wei: "99",
+      gas_limit: "70000",
+      max_fee_per_gas: "40000000000",
+      max_priority_fee_per_gas: "1500000000",
+      nonce: 7,
+      calldata_hash_version: "keccak256-v1",
+      calldata_hash: "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      calldata_byte_length: 4,
+      selector: "0x12345678",
+      selector_status: "present",
+      preview: {
+        preview_prefix_bytes: 32,
+        preview_suffix_bytes: 32,
+        truncated: false,
+        omitted_bytes: 0,
+        display: "0x12345678",
+        prefix: "0x12345678",
+        suffix: "",
+      },
+      warning_acknowledgements: [],
+      warning_summaries: [],
+      blocking_statuses: [],
+      inference: {
+        inference_status: "unknown",
+        matched_source_kind: null,
+        matched_source_id: null,
+        matched_version_id: null,
+        matched_source_fingerprint: null,
+        matched_abi_hash: null,
+        selector_match_count: 0,
+        conflict_summary: null,
+        stale_status: null,
+        source_status: "noAbiForContract",
+      },
+      frozen_key: "raw-calldata-frozen",
+      future_submission: null,
+      future_outcome: null,
+      broadcast: null,
+      recovery: null,
+    },
+  });
 }
 
 const damagedStorage = {
@@ -687,6 +847,31 @@ describe("HistoryView", () => {
     expect(allocations.getByText("200 wei")).toBeInTheDocument();
     expect(allocations.getAllByText("0xdisperse")).toHaveLength(2);
     expect(allocations.getAllByText("Pending")).toHaveLength(2);
+  });
+
+  it("shows raw calldata typed detail without disguising it as ABI, batch, native, or ERC-20", () => {
+    const fullCalldata = `0x12345678${"ab".repeat(128)}`;
+    const boundedPreview = `0x${"12".repeat(32)}...${"34".repeat(32)}`;
+    renderHistory([rawCalldataRecord()]);
+
+    const row = screen.getByText("0xrawcalldata").closest("tr") as HTMLElement;
+    expect(within(row).getByText("99 wei")).toBeInTheDocument();
+    fireEvent.click(within(row).getByText("Details"));
+
+    const panel = within(screen.getByLabelText("History details"));
+    expect(panel.getAllByText("Raw calldata (rawCalldata)").length).toBeGreaterThan(0);
+    expect(panel.getByText("Raw Calldata")).toBeInTheDocument();
+    expect(panel.getAllByText("0x12345678").length).toBeGreaterThan(0);
+    expect(panel.getByText("keccak256-v1")).toBeInTheDocument();
+    expect(panel.getAllByText("90").length).toBeGreaterThan(0);
+    expect(panel.getAllByText("unknown").length).toBeGreaterThan(0);
+    expect(panel.getByText("noAbiForContract")).toBeInTheDocument();
+    expect(panel.getByText(boundedPreview)).toBeInTheDocument();
+    expect(panel.queryByText("ERC-20 transfer (erc20Transfer)")).not.toBeInTheDocument();
+    expect(panel.queryByText("Native transfer (nativeTransfer)")).not.toBeInTheDocument();
+    expect(panel.queryByText("Recipient Allocations")).not.toBeInTheDocument();
+    expect(panel.queryByText("shouldNotRender()")).not.toBeInTheDocument();
+    expect(panel.queryByText(fullCalldata)).not.toBeInTheDocument();
   });
 
   it("shows unknown typed records as unsupported instead of native transfer copy", () => {
@@ -1611,6 +1796,26 @@ describe("HistoryView", () => {
     expect(onRecoverBroadcastedHistory).toHaveBeenCalledWith("broadcast-1");
     fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
     expect(onDismissRecovery).toHaveBeenCalledWith("broadcast-1");
+  });
+
+  it("shows raw calldata recovery metadata without full calldata", () => {
+    const fullCalldata = `0x12345678${"ab".repeat(128)}`;
+    renderHistory([], {
+      recoveryIntents: [rawCalldataRecoveryIntent()],
+      onRecoverBroadcastedHistory: vi.fn(),
+    });
+
+    expect(screen.getByText("Raw calldata")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "selector 0x12345678 · 4 bytes · 0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Raw preview")).toBeInTheDocument();
+    expect(screen.getByText("0x12345678")).toBeInTheDocument();
+    expect(screen.getByText("Raw inference")).toBeInTheDocument();
+    expect(screen.getByText("raw-calldata-frozen")).toBeInTheDocument();
+    expect(screen.queryByText(fullCalldata)).not.toBeInTheDocument();
   });
 
   it("disables broadcast recovery when minimum frozen fields are missing", () => {

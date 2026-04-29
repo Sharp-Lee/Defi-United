@@ -721,6 +721,89 @@ describe("history schema normalization", () => {
     expect(JSON.stringify(records[0])).not.toContain(shortRawCalldata);
   });
 
+  it("redacts non-truncated preview parts when they contain short full calldata", () => {
+    const shortFullCalldata = "0x1234567890";
+    const boundedLookingDisplay = "0x123456789...90ab";
+    const records = normalizeHistoryRecords([
+      {
+        intent: {
+          ...legacyIntent,
+          transaction_type: "rawCalldata",
+          selector: "0x12345678",
+        },
+        submission: {
+          frozen_key: "raw-draft-key",
+          tx_hash: "0xraw",
+          kind: "rawCalldata",
+          transaction_type: "rawCalldata",
+          selector: "0x12345678",
+        },
+        outcome: { state: "Pending", tx_hash: "0xraw" },
+        rawCalldataMetadata: {
+          intentKind: "rawCalldata",
+          calldataHashVersion: "keccak256-v1",
+          calldataByteLength: 5,
+          selector: "0x12345678",
+          preview: {
+            display: boundedLookingDisplay,
+            prefix: shortFullCalldata,
+            suffix: "",
+            truncated: false,
+          },
+        },
+      },
+    ]);
+
+    expect(records[0].raw_calldata_metadata?.preview?.display).toBe("[redacted_payload]");
+    expect(records[0].raw_calldata_metadata?.preview?.prefix).toBe("[redacted_payload]");
+    expect(JSON.stringify(records[0])).not.toContain(boundedLookingDisplay);
+    expect(JSON.stringify(records[0])).not.toContain(shortFullCalldata);
+  });
+
+  it("preserves explicit bounded raw calldata preview display and parts", () => {
+    const prefix = `0x${"12".repeat(32)}`;
+    const suffix = `0x${"34".repeat(32)}`;
+    const display = `${prefix}...${suffix.slice(2)}`;
+    const records = normalizeHistoryRecords([
+      {
+        intent: {
+          ...legacyIntent,
+          transaction_type: "rawCalldata",
+          selector: "0x12345678",
+        },
+        submission: {
+          frozen_key: "raw-draft-key",
+          tx_hash: "0xraw",
+          kind: "rawCalldata",
+          transaction_type: "rawCalldata",
+          selector: "0x12345678",
+        },
+        outcome: { state: "Pending", tx_hash: "0xraw" },
+        rawCalldataMetadata: {
+          intentKind: "rawCalldata",
+          calldataHashVersion: "keccak256-v1",
+          calldataByteLength: 90,
+          selector: "0x12345678",
+          preview: {
+            display,
+            prefix,
+            suffix,
+            truncated: true,
+            omittedBytes: 26,
+          },
+        },
+      },
+    ]);
+
+    expect(records[0].raw_calldata_metadata?.preview).toMatchObject({
+      display,
+      prefix,
+      suffix,
+      truncated: true,
+      omitted_bytes: 26,
+    });
+  });
+
   it("redacts raw-shaped frozen keys that contain full calldata or secrets", () => {
     const shortRawCalldata =
       "0xa9059cbb0000000000000000000000001111111111111111111111111111111111111111";

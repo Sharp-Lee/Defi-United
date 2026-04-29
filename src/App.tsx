@@ -41,6 +41,7 @@ import {
   scanWatchlistTokenMetadata,
   removeAbiDataSourceConfig,
   submitAbiWriteCall,
+  submitRawCalldata,
   upsertAbiDataSourceConfig,
   unlockVault,
   validateAbiPayload,
@@ -1211,6 +1212,29 @@ export function App() {
     }
   }
 
+  async function handleSubmitRawCalldata(input: Parameters<typeof submitRawCalldata>[0]) {
+    try {
+      const record = await submitRawCalldata(input);
+      setHistory((current) => [record, ...current]);
+      void inspectTransactionHistoryStorage()
+        .then(setHistoryStorage)
+        .catch(() => {});
+      void loadHistoryRecoveryIntents()
+        .then(setHistoryRecoveryIntents)
+        .catch(() => {});
+      void refreshAccountsFromDisk();
+      return record;
+    } catch (err) {
+      await inspectHistoryStorageGate(errorMessage(err));
+      try {
+        setHistoryRecoveryIntents(await loadHistoryRecoveryIntents());
+      } catch {
+        // Keep the submit error visible in the raw calldata panel.
+      }
+      throw err;
+    }
+  }
+
   async function handleQuarantineHistory() {
     setAppError(null);
     setHistoryError(null);
@@ -1376,6 +1400,7 @@ export function App() {
       onListAbiFunctions={listManagedAbiFunctions}
       onPreviewAbiCalldata={previewManagedAbiCalldata}
       onSubmitAbiWriteCall={handleSubmitAbiWriteCall}
+      onSubmitRawCalldata={handleSubmitRawCalldata}
       onValidateRpc={handleValidateRpc}
       rpcUrl={rpcUrl}
       selectedChainId={selectedChainId}

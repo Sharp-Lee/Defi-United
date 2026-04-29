@@ -208,8 +208,22 @@ td {
 }
 
 .settings-grid,
-.transfer-grid {
+.transfer-grid,
+.raw-calldata-grid {
   max-width: 820px;
+}
+
+.raw-calldata-textarea {
+  min-height: 180px;
+}
+
+.raw-calldata-confirmation-grid {
+  grid-template-columns: 140px minmax(0, 1fr);
+}
+
+.raw-calldata-warning-list {
+  display: grid;
+  gap: 8px;
 }
 
 .tokens-grid {
@@ -1191,6 +1205,10 @@ td {
   }
 
   .confirmation-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .raw-calldata-confirmation-grid {
     grid-template-columns: 1fr;
   }
 }

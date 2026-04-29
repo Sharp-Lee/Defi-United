@@ -1046,6 +1046,15 @@ function feeSummary(intent: HistoryRecoveryIntent) {
   return `gas ${gasLimit} · max ${maxFee} wei · priority ${priority} wei`;
 }
 
+function rawCalldataRecoverySummary(intent: HistoryRecoveryIntent) {
+  const metadata = intent.rawCalldataMetadata;
+  if (!metadata) return null;
+  const selector = metadata.selector ?? intent.selector ?? "none";
+  const bytes = metadata.calldata_byte_length ?? "unknown";
+  const hash = metadata.calldata_hash ?? "unknown";
+  return `selector ${selector} · ${bytes} bytes · ${hash}`;
+}
+
 function sanitizeRecoveryDisplayText(value: string) {
   return value
     .replace(/https?:\/\/\S+/gi, "[redacted_url]")
@@ -1062,6 +1071,10 @@ function sanitizeRecoveryDisplayText(value: string) {
     .replace(
       /\b(api[_-]?key|access[_-]?token|token|authorization|auth|password|passphrase|mnemonic|seed|private[_-]?key|signature|signed[_-]?tx|raw[_-]?tx|secret)\s*[:=]\s*("[^"]*"|'[^']*'|[^\s,;)]+)/gi,
       "$1=[redacted]",
+    )
+    .replace(
+      /\b(rawCalldata|fullCalldata|canonicalCalldata|calldata)\s*[:=]\s*0x[a-f0-9]+/gi,
+      "$1=[redacted_calldata]",
     )
     .replace(/0x[a-f0-9]{64,}/gi, "[redacted_hex]");
 }
@@ -1129,6 +1142,30 @@ function HistoryBroadcastRecoveryList({
                 <dt>Fee summary</dt>
                 <dd className="mono">{feeSummary(intent)}</dd>
               </div>
+              {intent.rawCalldataMetadata && (
+                <>
+                  <div>
+                    <dt>Raw calldata</dt>
+                    <dd className="mono">{rawCalldataRecoverySummary(intent)}</dd>
+                  </div>
+                  <div>
+                    <dt>Raw preview</dt>
+                    <dd className="mono">
+                      {intent.rawCalldataMetadata.preview?.display ?? "Unknown"}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Raw inference</dt>
+                    <dd className="mono">
+                      {intent.rawCalldataMetadata.inference?.inference_status ?? "unknown"}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Raw frozen key</dt>
+                    <dd className="mono">{intent.rawCalldataMetadata.frozen_key ?? "Unknown"}</dd>
+                  </div>
+                </>
+              )}
               <div>
                 <dt>Broadcasted at</dt>
                 <dd>{formatTimestamp(intent.broadcastedAt)}</dd>
@@ -1570,6 +1607,27 @@ function typedSubmissionRows(
   }
 }
 
+function rawCalldataRows(record: HistoryRecord): DetailRow[] {
+  const metadata = record.raw_calldata_metadata;
+  if (!metadata) return [];
+  return [
+    ["Intent kind", metadata.intent_kind],
+    ["Draft id", metadata.draft_id],
+    ["Created at", formatTimestamp(metadata.created_at ?? null)],
+    ["Calldata hash version", metadata.calldata_hash_version],
+    ["Calldata hash", metadata.calldata_hash],
+    ["Calldata bytes", metadata.calldata_byte_length],
+    ["Selector", metadata.selector],
+    ["Selector status", metadata.selector_status],
+    ["Preview", metadata.preview?.display],
+    ["Preview truncated", formatOptionalBoolean(metadata.preview?.truncated)],
+    ["Omitted bytes", metadata.preview?.omitted_bytes],
+    ["Inference status", metadata.inference?.inference_status],
+    ["Inference source", metadata.inference?.source_status],
+    ["Frozen key", metadata.frozen_key],
+  ];
+}
+
 function HistorySubmissionDetails({
   entry,
   nowMs,
@@ -1629,6 +1687,9 @@ function HistorySubmissionDetails({
         />
         <HistoryDetailSection title="ChainOutcome" rows={outcomeRows(entry)} />
       </div>
+      {record.raw_calldata_metadata && (
+        <HistoryDetailSection title="Raw Calldata" rows={rawCalldataRows(record)} />
+      )}
       <DistributionRecipientRows record={record} />
     </article>
   );

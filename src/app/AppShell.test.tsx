@@ -35,6 +35,7 @@ describe("AppShell", () => {
     expect(screen.getByRole("tab", { name: "Tokens" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Orchestration" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Transfer" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Raw Calldata" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "History" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Diagnostics" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Settings" })).toBeInTheDocument();
@@ -167,5 +168,33 @@ describe("AppShell", () => {
 
     expect(screen.getByRole("button", { name: "Build Draft" })).toBeDisabled();
     expect(screen.getByText(/Local transaction history is unreadable/)).toBeInTheDocument();
+  });
+
+  it("renders the desktop raw calldata workspace tab", () => {
+    renderScreen(
+      <AppShell
+        activeTab="rawCalldata"
+        accounts={[
+          {
+            address: "0x1111111111111111111111111111111111111111",
+            index: 1,
+            label: "Account 1",
+            nativeBalanceWei: 1n,
+            nonce: 0,
+          },
+        ]}
+        abiRegistryState={{ schemaVersion: 1, dataSources: [], cacheEntries: [] }}
+        onTabChange={() => {}}
+        onUnlock={async () => {}}
+        session={{ status: "ready" }}
+      />,
+    );
+
+    expect(screen.getByRole("tab", { name: "Raw Calldata" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    expect(screen.getByRole("heading", { name: "Raw Calldata" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Calldata")).toHaveValue("0x");
   });
 });

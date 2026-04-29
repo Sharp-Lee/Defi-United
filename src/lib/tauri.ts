@@ -11,6 +11,13 @@ import {
   type NativeTransferIntent as NormalizedNativeTransferIntent,
   type RawCalldataHistoryMetadata,
 } from "../core/history/schema";
+import type {
+  RawCalldataHumanPreview,
+  RawCalldataInferenceInput,
+  RawCalldataRpcIdentity,
+  RawCalldataSelectorStatus,
+  RawCalldataStatus,
+} from "../core/rawCalldata/draft";
 import {
   DISPERSE_ETHER_METHOD,
   DISPERSE_ETHER_SELECTOR,
@@ -355,6 +362,48 @@ export interface AbiWriteSubmitInput extends AbiCalldataPreviewInput {
   warnings?: Array<{ level: string; code: string; message?: string | null; source?: string | null }>;
   blockingStatuses?: Array<{ level: string; code: string; message?: string | null; source?: string | null }>;
   warningsAcknowledged?: boolean;
+}
+
+export interface RawCalldataWarningAcknowledgementInput {
+  code: string;
+  acknowledged: boolean;
+}
+
+export interface RawCalldataSubmitInput {
+  rpcUrl: string;
+  draftId?: string | null;
+  frozenKey: string;
+  createdAt?: string | null;
+  chainId: number;
+  selectedRpc: RawCalldataRpcIdentity | null;
+  from: string;
+  accountIndex: number;
+  fromAccountIndex?: number | null;
+  to: string;
+  valueWei: string;
+  calldata: string;
+  calldataHashVersion: string;
+  calldataHash: string;
+  calldataByteLength: number;
+  selector: string | null;
+  selectorStatus: RawCalldataSelectorStatus;
+  nonce: number;
+  gasLimit: string;
+  estimatedGasLimit?: string | null;
+  manualGas: boolean;
+  latestBaseFeePerGas?: string | null;
+  baseFeePerGas: string;
+  baseFeeMultiplier?: string | null;
+  maxFeePerGas: string;
+  maxFeeOverridePerGas?: string | null;
+  maxPriorityFeePerGas: string;
+  liveMaxFeePerGas?: string | null;
+  liveMaxPriorityFeePerGas?: string | null;
+  warnings: RawCalldataStatus[];
+  warningAcknowledgements: RawCalldataWarningAcknowledgementInput[];
+  blockingStatuses: RawCalldataStatus[];
+  inference: RawCalldataInferenceInput;
+  humanPreview: RawCalldataHumanPreview;
 }
 
 export interface AbiCallDataSummary {
@@ -941,6 +990,11 @@ export function previewManagedAbiCalldata(input: AbiCalldataPreviewInput) {
 
 export async function submitAbiWriteCall(input: AbiWriteSubmitInput) {
   const raw = await invoke<string>("submit_abi_write_call_command", { input });
+  return normalizeHistoryRecord(JSON.parse(raw));
+}
+
+export async function submitRawCalldata(input: RawCalldataSubmitInput) {
+  const raw = await invoke<string>("submit_raw_calldata_command", { input });
   return normalizeHistoryRecord(JSON.parse(raw));
 }
 

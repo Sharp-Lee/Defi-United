@@ -1,4 +1,4 @@
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde::{ser::SerializeStruct, Deserialize, Deserializer, Serialize, Serializer};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VaultBlob {
@@ -665,35 +665,93 @@ pub struct AbiCallHistoryMetadata {
     pub recovery: Option<AbiCallRecoveryPlaceholder>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone)]
 pub struct RawCalldataPreviewSummary {
-    #[serde(default, alias = "preview_prefix_bytes")]
     pub preview_prefix_bytes: Option<u64>,
-    #[serde(default, alias = "preview_suffix_bytes")]
     pub preview_suffix_bytes: Option<u64>,
-    #[serde(default)]
     pub truncated: bool,
-    #[serde(default, alias = "omitted_bytes")]
     pub omitted_bytes: Option<u64>,
-    #[serde(
-        default,
-        deserialize_with = "deserialize_sanitized_raw_calldata_text_option_256",
-        serialize_with = "serialize_sanitized_raw_calldata_text_option_256"
-    )]
     pub display: Option<String>,
-    #[serde(
-        default,
-        deserialize_with = "deserialize_sanitized_raw_calldata_text_option_80",
-        serialize_with = "serialize_sanitized_raw_calldata_text_option_80"
-    )]
     pub prefix: Option<String>,
-    #[serde(
-        default,
-        deserialize_with = "deserialize_sanitized_raw_calldata_text_option_80",
-        serialize_with = "serialize_sanitized_raw_calldata_text_option_80"
-    )]
     pub suffix: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawCalldataPreviewSummaryWire {
+    #[serde(default, alias = "preview_prefix_bytes")]
+    preview_prefix_bytes: Option<u64>,
+    #[serde(default, alias = "preview_suffix_bytes")]
+    preview_suffix_bytes: Option<u64>,
+    #[serde(default)]
+    truncated: bool,
+    #[serde(default, alias = "omitted_bytes")]
+    omitted_bytes: Option<u64>,
+    #[serde(default)]
+    display: Option<String>,
+    #[serde(default)]
+    prefix: Option<String>,
+    #[serde(default)]
+    suffix: Option<String>,
+}
+
+impl<'de> Deserialize<'de> for RawCalldataPreviewSummary {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let wire = RawCalldataPreviewSummaryWire::deserialize(deserializer)?;
+        Ok(Self {
+            preview_prefix_bytes: wire.preview_prefix_bytes,
+            preview_suffix_bytes: wire.preview_suffix_bytes,
+            truncated: wire.truncated,
+            omitted_bytes: wire.omitted_bytes,
+            display: wire
+                .display
+                .map(|value| sanitize_raw_calldata_preview_display(&value, wire.truncated)),
+            prefix: wire
+                .prefix
+                .map(|value| sanitize_raw_calldata_preview_part(&value, wire.truncated)),
+            suffix: wire
+                .suffix
+                .map(|value| sanitize_raw_calldata_preview_part(&value, wire.truncated)),
+        })
+    }
+}
+
+impl Serialize for RawCalldataPreviewSummary {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("RawCalldataPreviewSummary", 7)?;
+        state.serialize_field("previewPrefixBytes", &self.preview_prefix_bytes)?;
+        state.serialize_field("previewSuffixBytes", &self.preview_suffix_bytes)?;
+        state.serialize_field("truncated", &self.truncated)?;
+        state.serialize_field("omittedBytes", &self.omitted_bytes)?;
+        state.serialize_field(
+            "display",
+            &self
+                .display
+                .as_deref()
+                .map(|value| sanitize_raw_calldata_preview_display(value, self.truncated)),
+        )?;
+        state.serialize_field(
+            "prefix",
+            &self
+                .prefix
+                .as_deref()
+                .map(|value| sanitize_raw_calldata_preview_part(value, self.truncated)),
+        )?;
+        state.serialize_field(
+            "suffix",
+            &self
+                .suffix
+                .as_deref()
+                .map(|value| sanitize_raw_calldata_preview_part(value, self.truncated)),
+        )?;
+        state.end()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1198,6 +1256,53 @@ fn sanitize_raw_calldata_text(value: &str, max_chars: usize) -> String {
     sanitize_abi_history_text(compact, max_chars).0
 }
 
+fn is_bounded_raw_calldata_preview_part(value: &str) -> bool {
+    let Some(hex) = value.strip_prefix("0x") else {
+        return false;
+    };
+    hex.len() <= 64 && hex.chars().all(|ch| ch.is_ascii_hexdigit())
+}
+
+fn is_bounded_raw_calldata_preview_display(value: &str) -> bool {
+    let Some((prefix, suffix)) = value.split_once("...") else {
+        return false;
+    };
+    if suffix.contains("...") {
+        return false;
+    }
+    let Some(prefix_hex) = prefix.strip_prefix("0x") else {
+        return false;
+    };
+    prefix_hex.len() <= 64
+        && suffix.len() <= 64
+        && prefix_hex.chars().all(|ch| ch.is_ascii_hexdigit())
+        && suffix.chars().all(|ch| ch.is_ascii_hexdigit())
+}
+
+fn sanitize_raw_calldata_preview_display(value: &str, truncated: bool) -> String {
+    let compact = value.trim();
+    if truncated && is_bounded_raw_calldata_preview_display(compact) {
+        return truncate_chars(
+            &redact_abi_sensitive_key_labels(compact.to_string()),
+            ABI_HISTORY_VALUE_MAX_CHARS,
+        )
+        .0;
+    }
+    sanitize_raw_calldata_text(compact, ABI_HISTORY_VALUE_MAX_CHARS)
+}
+
+fn sanitize_raw_calldata_preview_part(value: &str, truncated: bool) -> String {
+    let compact = value.trim();
+    if truncated && is_bounded_raw_calldata_preview_part(compact) {
+        return truncate_chars(
+            &redact_abi_sensitive_key_labels(compact.to_string()),
+            RAW_CALLDATA_PREVIEW_PART_MAX_CHARS,
+        )
+        .0;
+    }
+    sanitize_raw_calldata_text(compact, RAW_CALLDATA_PREVIEW_PART_MAX_CHARS)
+}
+
 fn sanitize_raw_calldata_hash(value: &str) -> String {
     let compact = value.trim();
     if is_hex_payload(compact) && compact.len() != 66 {
@@ -1262,32 +1367,6 @@ where
         .as_deref()
         .map(|value| sanitize_raw_calldata_text(value, max_chars));
     sanitized.serialize(serializer)
-}
-
-fn deserialize_sanitized_raw_calldata_text_option_80<'de, D>(
-    deserializer: D,
-) -> Result<Option<String>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    deserialize_sanitized_raw_calldata_text_option(
-        deserializer,
-        RAW_CALLDATA_PREVIEW_PART_MAX_CHARS,
-    )
-}
-
-fn serialize_sanitized_raw_calldata_text_option_80<S>(
-    value: &Option<String>,
-    serializer: S,
-) -> Result<S::Ok, S::Error>
-where
-    S: Serializer,
-{
-    serialize_sanitized_raw_calldata_text_option(
-        value,
-        serializer,
-        RAW_CALLDATA_PREVIEW_PART_MAX_CHARS,
-    )
 }
 
 fn deserialize_sanitized_raw_calldata_text_option_96<'de, D>(

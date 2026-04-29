@@ -405,6 +405,8 @@ const LEGACY = "legacy";
 const UNKNOWN = "unknown";
 const RAW_FROZEN_KEY_MAX_LENGTH = 160;
 const RAW_CALLDATA_PAYLOAD_RE = /0x[0-9a-f]{9,}/i;
+const RAW_CALLDATA_BOUNDED_PREVIEW_DISPLAY_RE = /^0x[0-9a-f]{0,64}\.\.\.[0-9a-f]{0,64}$/i;
+const RAW_CALLDATA_BOUNDED_PREVIEW_PART_RE = /^0x[0-9a-f]{0,64}$/i;
 const TRANSACTION_TYPES = new Set<TransactionType>([
   "legacy",
   "nativeTransfer",
@@ -505,6 +507,24 @@ function sanitizeRawCalldataSummaryText(value: unknown, maxLength = 160) {
     return "[redacted_payload]";
   }
   return sanitizeDurableRpcSummary(compact, maxLength);
+}
+
+function sanitizeRawCalldataPreviewDisplay(value: unknown, truncated: boolean) {
+  if (typeof value !== "string") return null;
+  const compact = value.replace(/\s+/g, " ").trim();
+  if (truncated && RAW_CALLDATA_BOUNDED_PREVIEW_DISPLAY_RE.test(compact)) {
+    return sanitizeDurableRpcSummary(compact, 256);
+  }
+  return sanitizeRawCalldataSummaryText(compact, 256);
+}
+
+function sanitizeRawCalldataPreviewPart(value: unknown, truncated: boolean) {
+  if (typeof value !== "string") return null;
+  const compact = value.replace(/\s+/g, " ").trim();
+  if (truncated && RAW_CALLDATA_BOUNDED_PREVIEW_PART_RE.test(compact)) {
+    return sanitizeDurableRpcSummary(compact, 80);
+  }
+  return sanitizeRawCalldataSummaryText(compact, 80);
 }
 
 function sanitizeRawFrozenKey(value: unknown) {
@@ -985,14 +1005,15 @@ function normalizeRawCalldataHashVersion(
 function normalizeRawCalldataPreview(rawPreview: unknown): RawCalldataPreviewSummary | null {
   if (rawPreview == null) return null;
   const preview = objectOrEmpty(rawPreview);
+  const truncated = booleanOrNull(preview.truncated) ?? false;
   return {
     preview_prefix_bytes: numberOrNull(preview.preview_prefix_bytes ?? preview.previewPrefixBytes),
     preview_suffix_bytes: numberOrNull(preview.preview_suffix_bytes ?? preview.previewSuffixBytes),
-    truncated: booleanOrNull(preview.truncated) ?? false,
+    truncated,
     omitted_bytes: numberOrNull(preview.omitted_bytes ?? preview.omittedBytes),
-    display: sanitizeRawCalldataSummaryText(preview.display, 256),
-    prefix: sanitizeRawCalldataSummaryText(preview.prefix, 80),
-    suffix: sanitizeRawCalldataSummaryText(preview.suffix, 80),
+    display: sanitizeRawCalldataPreviewDisplay(preview.display, truncated),
+    prefix: sanitizeRawCalldataPreviewPart(preview.prefix, truncated),
+    suffix: sanitizeRawCalldataPreviewPart(preview.suffix, truncated),
   };
 }
 

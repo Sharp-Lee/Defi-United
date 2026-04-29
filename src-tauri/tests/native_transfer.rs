@@ -1741,6 +1741,131 @@ fn history_record_redacts_short_full_raw_calldata_summary_fields() {
 }
 
 #[test]
+fn history_record_redacts_non_truncated_preview_parts_that_are_short_full_calldata() {
+    let short_full_calldata = "0x1234567890";
+    let with_raw = serde_json::json!({
+        "schema_version": 5,
+        "intent": {
+            "transaction_type": "rawCalldata",
+            "rpc_url": "history-schema-placeholder",
+            "account_index": 1,
+            "chain_id": 1,
+            "from": "0x1111111111111111111111111111111111111111",
+            "to": "0x6666666666666666666666666666666666666666",
+            "value_wei": "42",
+            "nonce": 7,
+            "gas_limit": "120000",
+            "max_fee_per_gas": "40000000000",
+            "max_priority_fee_per_gas": "1500000000",
+            "selector": "0x12345678"
+        },
+        "submission": {
+            "transaction_type": "rawCalldata",
+            "frozen_key": "raw-draft-key",
+            "tx_hash": "0xraw",
+            "kind": "rawCalldata",
+            "selector": "0x12345678"
+        },
+        "outcome": {
+            "state": "Pending",
+            "tx_hash": "0xraw"
+        },
+        "raw_calldata_metadata": {
+            "intentKind": "rawCalldata",
+            "calldataHashVersion": "keccak256-v1",
+            "calldataByteLength": 5,
+            "selector": "0x12345678",
+            "preview": {
+                "display": short_full_calldata,
+                "prefix": short_full_calldata,
+                "suffix": "",
+                "truncated": false
+            }
+        }
+    });
+
+    let record: HistoryRecord =
+        serde_json::from_value(with_raw).expect("raw calldata short preview record");
+    let preview = record
+        .raw_calldata_metadata
+        .as_ref()
+        .and_then(|metadata| metadata.preview.as_ref())
+        .expect("raw calldata preview");
+
+    assert_eq!(preview.display.as_deref(), Some("[redacted_payload]"));
+    assert_eq!(preview.prefix.as_deref(), Some("[redacted_payload]"));
+
+    let serialized = serde_json::to_string(&record).expect("serialize short preview record");
+    assert!(!serialized.contains(short_full_calldata));
+}
+
+#[test]
+fn history_record_preserves_bounded_raw_calldata_preview_fields() {
+    let prefix = format!("0x{}", "12".repeat(32));
+    let suffix = format!("0x{}", "34".repeat(32));
+    let display = format!("{prefix}...{}", suffix.trim_start_matches("0x"));
+    let with_raw = serde_json::json!({
+        "schema_version": 5,
+        "intent": {
+            "transaction_type": "rawCalldata",
+            "rpc_url": "history-schema-placeholder",
+            "account_index": 1,
+            "chain_id": 1,
+            "from": "0x1111111111111111111111111111111111111111",
+            "to": "0x6666666666666666666666666666666666666666",
+            "value_wei": "42",
+            "nonce": 7,
+            "gas_limit": "120000",
+            "max_fee_per_gas": "40000000000",
+            "max_priority_fee_per_gas": "1500000000",
+            "selector": "0x12345678"
+        },
+        "submission": {
+            "transaction_type": "rawCalldata",
+            "frozen_key": "raw-draft-key",
+            "tx_hash": "0xraw",
+            "kind": "rawCalldata",
+            "selector": "0x12345678"
+        },
+        "outcome": {
+            "state": "Pending",
+            "tx_hash": "0xraw"
+        },
+        "raw_calldata_metadata": {
+            "intentKind": "rawCalldata",
+            "calldataHashVersion": "keccak256-v1",
+            "calldataByteLength": 90,
+            "selector": "0x12345678",
+            "preview": {
+                "display": display,
+                "prefix": prefix,
+                "suffix": suffix,
+                "truncated": true,
+                "omittedBytes": 26
+            }
+        }
+    });
+
+    let record: HistoryRecord =
+        serde_json::from_value(with_raw).expect("raw calldata bounded preview record");
+    let preview = record
+        .raw_calldata_metadata
+        .as_ref()
+        .and_then(|metadata| metadata.preview.as_ref())
+        .expect("raw calldata preview");
+
+    assert_eq!(preview.display.as_deref(), Some(display.as_str()));
+    assert_eq!(preview.prefix.as_deref(), Some(prefix.as_str()));
+    assert_eq!(preview.suffix.as_deref(), Some(suffix.as_str()));
+    assert_eq!(preview.omitted_bytes, Some(26));
+
+    let serialized = serde_json::to_string(&record).expect("serialize bounded preview record");
+    assert!(serialized.contains(&display));
+    assert!(serialized.contains(&prefix));
+    assert!(serialized.contains(&suffix));
+}
+
+#[test]
 fn history_record_redacts_raw_calldata_frozen_keys() {
     let short_raw_calldata =
         "0xa9059cbb0000000000000000000000001111111111111111111111111111111111111111";

@@ -4,6 +4,7 @@ import type { AbiMutationHandlerResult } from "../features/abi/AbiLibraryView";
 import { DiagnosticsView } from "../features/diagnostics/DiagnosticsView";
 import { HistoryView } from "../features/history/HistoryView";
 import { AccountOrchestrationView } from "../features/orchestration/AccountOrchestrationView";
+import { RawCalldataView } from "../features/rawCalldata/RawCalldataView";
 import { SettingsView } from "../features/settings/SettingsView";
 import { TokensView } from "../features/tokens/TokensView";
 import { TransferView } from "../features/transfer/TransferView";
@@ -19,6 +20,7 @@ import type {
   HistoryStorageInspection,
   HistoryStorageQuarantineResult,
   PendingMutationRequest,
+  RawCalldataSubmitInput,
   AddWatchlistTokenInput,
   AbiCacheEntryRecord,
   AbiCalldataPreviewInput,
@@ -44,6 +46,7 @@ export type WorkspaceTab =
   | "tokens"
   | "orchestration"
   | "transfer"
+  | "rawCalldata"
   | "history"
   | "diagnostics"
   | "settings";
@@ -135,6 +138,7 @@ export interface AppShellProps {
   onValidateRpc?: () => Promise<void> | void;
   onTransferSubmitFailed?: (error: unknown) => Promise<void> | void;
   onTransferSubmitted?: (record: HistoryRecord) => void;
+  onSubmitRawCalldata?: (input: RawCalldataSubmitInput) => Promise<HistoryRecord>;
   onNativeBatchSubmitFailed?: (error: unknown) => Promise<void> | void;
   onNativeBatchSubmitted?: (records: HistoryRecord[]) => void;
   onErc20BatchSubmitted?: (records: HistoryRecord[], result: Erc20BatchSubmitResult) => void;
@@ -146,6 +150,7 @@ const workspaceTabs: WorkspaceTab[] = [
   "tokens",
   "orchestration",
   "transfer",
+  "rawCalldata",
   "history",
   "diagnostics",
   "settings",
@@ -153,6 +158,7 @@ const workspaceTabs: WorkspaceTab[] = [
 
 function tabLabel(tab: WorkspaceTab) {
   if (tab === "abi") return "ABI Library";
+  if (tab === "rawCalldata") return "Raw Calldata";
   return tab[0].toUpperCase() + tab.slice(1);
 }
 
@@ -262,6 +268,9 @@ export function AppShell({
   onValidateRpc = async () => {},
   onTransferSubmitFailed = async () => {},
   onTransferSubmitted = () => {},
+  onSubmitRawCalldata = async () => {
+    throw new Error("Raw calldata submitter is not configured.");
+  },
   onNativeBatchSubmitFailed = async () => {},
   onNativeBatchSubmitted = () => {},
   onErc20BatchSubmitted = () => {},
@@ -356,6 +365,24 @@ export function AppShell({
                 rpcReady={chainReady}
                 selectedChainId={selectedChainId}
                 state={tokenWatchlistState}
+              />
+            )}
+            {activeTab === "rawCalldata" && (
+              <RawCalldataView
+                abiRegistryState={abiRegistryState}
+                accounts={accounts}
+                chainId={selectedChainId}
+                chainName={selectedChain?.name ?? "Unknown chain"}
+                history={history}
+                historyStorageIssue={
+                  historyStorage?.status === "corrupted"
+                    ? "Local transaction history is unreadable. Submission is disabled until history is retried or the damaged file is quarantined."
+                    : null
+                }
+                onListAbiFunctions={onListAbiFunctions}
+                onSubmitFailed={onTransferSubmitFailed}
+                onSubmitRawCalldata={onSubmitRawCalldata}
+                rpcUrl={rpcUrl}
               />
             )}
             {activeTab === "abi" && (
