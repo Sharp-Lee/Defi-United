@@ -25,6 +25,7 @@ pub fn run() {
             commands::abi_registry::upsert_abi_data_source_config,
             commands::abi_registry::validate_abi_payload,
             commands::accounts::derive_account,
+            commands::asset_approvals::submit_asset_approval_revoke_command,
             commands::accounts::load_accounts,
             commands::accounts::save_account_sync_error,
             commands::accounts::save_scanned_account,

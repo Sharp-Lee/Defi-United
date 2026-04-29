@@ -227,6 +227,7 @@ function renderAssets(
     onScanErc20Allowance: ReturnType<typeof vi.fn>;
     onScanNftOperatorApproval: ReturnType<typeof vi.fn>;
     onScanErc721TokenApproval: ReturnType<typeof vi.fn>;
+    onSubmitAssetApprovalRevoke: ReturnType<typeof vi.fn>;
   }> = {},
 ) {
   const props = {
@@ -234,6 +235,7 @@ function renderAssets(
     onScanErc20Allowance: handlers.onScanErc20Allowance ?? vi.fn(),
     onScanNftOperatorApproval: handlers.onScanNftOperatorApproval ?? vi.fn(),
     onScanErc721TokenApproval: handlers.onScanErc721TokenApproval ?? vi.fn(),
+    onSubmitAssetApprovalRevoke: handlers.onSubmitAssetApprovalRevoke,
   };
   renderScreen(
     <AssetApprovalsView
@@ -246,6 +248,7 @@ function renderAssets(
           nonce: 0,
         },
       ]}
+      rpcUrl="https://rpc.example.invalid"
       rpcReady={true}
       selectedRpc={{
         chainId: 1,
@@ -787,7 +790,40 @@ describe("AssetApprovalsView", () => {
     expect(panel.getAllByText(new RegExp(`spender=${spender}`)).length).toBeGreaterThan(0);
     expect(panel.getByText(/amount=0/)).toBeInTheDocument();
     expect(panel.getByText(new RegExp(`spender ${spender}`))).toBeInTheDocument();
-    expect(panel.getByRole("button", { name: "Submit unavailable until P5-4f" })).toBeDisabled();
+    expect(panel.queryByRole("button", { name: "Submit unavailable until P5-4f" })).not.toBeInTheDocument();
+    expect(panel.getByRole("button", { name: "Submit revoke" })).toBeDisabled();
+  });
+
+  it("submits a revoke payload with one canonical account index field", async () => {
+    const onSubmitAssetApprovalRevoke = vi.fn(async (_input: unknown) => ({}));
+    renderAssets(
+      state({
+        allowanceSnapshots: [
+          {
+            chainId: 1,
+            owner,
+            tokenContract: tokenA,
+            spender,
+            allowanceRaw: "100",
+            status: "active",
+            source: { kind: "rpcPointRead" },
+            createdAt: "1",
+            updatedAt: "2",
+          },
+        ],
+      }),
+      { onSubmitAssetApprovalRevoke },
+    );
+
+    fireEvent.click(within(screen.getByLabelText("ERC-20 allowance snapshots")).getByRole("button", { name: "Build Revoke Draft" }));
+    fillRevokeFees();
+    acknowledgeRevokeWarnings();
+    fireEvent.click(revokePanel().getByRole("button", { name: "Submit revoke" }));
+
+    await waitFor(() => expect(onSubmitAssetApprovalRevoke).toHaveBeenCalledTimes(1));
+    const payload = onSubmitAssetApprovalRevoke.mock.calls[0][0] as Record<string, unknown>;
+    expect(payload.accountIndex).toBe(1);
+    expect(payload).not.toHaveProperty("fromAccountIndex");
   });
 
   it("builds an NFT operator revoke draft with setApprovalForAll(operator, false)", () => {

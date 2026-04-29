@@ -26,11 +26,11 @@ use crate::diagnostics::{
 use crate::models::{
     AbiCallBroadcastPlaceholder, AbiCallHistoryMetadata, AbiCallOutcomePlaceholder,
     AbiCallOutcomeState, AbiCallRecoveryPlaceholder, AbiCallSubmissionPlaceholder,
-    BatchHistoryMetadata, ChainOutcome, DroppedReviewSummary, Erc20TransferIntent,
-    HistoryErrorSummary, HistoryRecoveryIntent, HistoryRecoveryIntentStatus, HistoryRecoveryResult,
-    HistoryRecoveryResultStatus, IntentSnapshotMetadata, NonceThread, RawCalldataHistoryMetadata,
-    ReceiptSummary, ReconcileSummary, SubmissionKind, SubmissionRecord, TransactionType,
-    TypedTransactionFields,
+    AssetApprovalRevokeHistoryMetadata, BatchHistoryMetadata, ChainOutcome, DroppedReviewSummary,
+    Erc20TransferIntent, HistoryErrorSummary, HistoryRecoveryIntent, HistoryRecoveryIntentStatus,
+    HistoryRecoveryResult, HistoryRecoveryResultStatus, IntentSnapshotMetadata, NonceThread,
+    RawCalldataHistoryMetadata, ReceiptSummary, ReconcileSummary, SubmissionKind, SubmissionRecord,
+    TransactionType, TypedTransactionFields,
 };
 use crate::session::with_session_mnemonic;
 use crate::storage::{
@@ -107,6 +107,12 @@ fn acquire_raw_calldata_inflight_guard(
     intent: &NativeTransferIntent,
 ) -> Result<NonceSubmitInflightGuard, String> {
     acquire_nonce_submit_inflight_guard(intent, "raw calldata")
+}
+
+fn acquire_asset_approval_revoke_inflight_guard(
+    intent: &NativeTransferIntent,
+) -> Result<NonceSubmitInflightGuard, String> {
+    acquire_nonce_submit_inflight_guard(intent, "asset approval revoke")
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -714,6 +720,7 @@ fn history_recovery_intent_from_broadcast_failure_with_frozen_key(
         batch_metadata,
         abi_call_metadata: None,
         raw_calldata_metadata: None,
+        asset_approval_revoke_metadata: None,
         broadcasted_at,
         write_error: sanitize_recovery_error(&write_error),
         last_recovery_error: None,
@@ -1217,6 +1224,7 @@ fn persist_pending_history_with_kind_at_and_batch(
         batch_metadata,
         abi_call_metadata,
         None,
+        None,
         frozen_key_override,
     )
 }
@@ -1230,6 +1238,7 @@ fn persist_pending_history_with_kind_at_and_metadata(
     batch_metadata: Option<BatchHistoryMetadata>,
     abi_call_metadata: Option<AbiCallHistoryMetadata>,
     raw_calldata_metadata: Option<RawCalldataHistoryMetadata>,
+    asset_approval_revoke_metadata: Option<AssetApprovalRevokeHistoryMetadata>,
     frozen_key_override: Option<String>,
 ) -> Result<HistoryRecord, String> {
     let _guard = history_lock()
@@ -1269,6 +1278,7 @@ fn persist_pending_history_with_kind_at_and_metadata(
         batch_metadata,
         abi_call_metadata,
         raw_calldata_metadata,
+        asset_approval_revoke_metadata,
     };
 
     let mut records = load_history_records()?;
@@ -1860,7 +1870,8 @@ fn local_same_nonce_review_result(
             | SubmissionKind::NativeTransfer
             | SubmissionKind::Erc20Transfer
             | SubmissionKind::AbiWriteCall
-            | SubmissionKind::RawCalldata => Some((
+            | SubmissionKind::RawCalldata
+            | SubmissionKind::AssetApprovalRevoke => Some((
                 ChainOutcomeState::Replaced,
                 candidate_hash,
                 "localReplacementSameNonce".to_string(),
@@ -2656,6 +2667,36 @@ fn finalized_raw_calldata_metadata_for_recovery(
     Some(metadata)
 }
 
+fn finalized_asset_approval_revoke_metadata_for_recovery(
+    metadata: &Option<AssetApprovalRevokeHistoryMetadata>,
+    outcome_state: &ChainOutcomeState,
+    receipt: Option<&ReceiptSummary>,
+    checked_at: &str,
+) -> Option<AssetApprovalRevokeHistoryMetadata> {
+    let mut metadata = metadata.clone()?;
+    metadata.future_outcome = Some(AbiCallOutcomePlaceholder {
+        state: Some(abi_call_outcome_state_from_chain(outcome_state)),
+        checked_at: Some(checked_at.to_string()),
+        receipt_status: receipt.and_then(|receipt| receipt.status),
+        block_number: receipt.and_then(|receipt| receipt.block_number),
+        gas_used: receipt.and_then(|receipt| receipt.gas_used.clone()),
+        error_summary: None,
+    });
+    let mut recovery = metadata.recovery.unwrap_or(AbiCallRecoveryPlaceholder {
+        recovery_id: None,
+        status: None,
+        created_at: None,
+        recovered_at: None,
+        last_error: None,
+        replacement_tx_hash: None,
+    });
+    recovery.status = Some("recovered".to_string());
+    recovery.recovered_at = Some(checked_at.to_string());
+    recovery.last_error = None;
+    metadata.recovery = Some(recovery);
+    Some(metadata)
+}
+
 fn history_record_from_recovery_intent(
     intent: &HistoryRecoveryIntent,
     outcome_state: ChainOutcomeState,
@@ -2684,19 +2725,39 @@ fn history_record_from_recovery_intent(
         .max_priority_fee_per_gas
         .clone()
         .unwrap_or_else(|| "unknown".to_string());
-    let is_raw_calldata =
-        intent.kind == SubmissionKind::RawCalldata || intent.raw_calldata_metadata.is_some();
-    let is_erc20 = !is_raw_calldata
+    let is_asset_approval_revoke = intent.kind == SubmissionKind::AssetApprovalRevoke
+        || intent.asset_approval_revoke_metadata.is_some();
+    let is_raw_calldata = !is_asset_approval_revoke
+        && (intent.kind == SubmissionKind::RawCalldata || intent.raw_calldata_metadata.is_some());
+    let is_erc20 = !is_asset_approval_revoke
+        && !is_raw_calldata
         && (intent.kind == SubmissionKind::Erc20Transfer
             || intent.token_contract.is_some()
             || intent.amount_raw.is_some());
     let is_contract_call = !is_erc20
+        && !is_asset_approval_revoke
         && !is_raw_calldata
         && (intent.kind == SubmissionKind::AbiWriteCall
             || intent.selector.is_some()
             || intent.method_name.is_some()
             || intent.batch_metadata.is_some());
-    let typed_transaction = if is_raw_calldata {
+    let typed_transaction = if is_asset_approval_revoke {
+        TypedTransactionFields::asset_approval_revoke(
+            intent
+                .asset_approval_revoke_metadata
+                .as_ref()
+                .and_then(|metadata| metadata.token_approval_contract.clone())
+                .unwrap_or_else(|| to.clone()),
+            intent
+                .selector
+                .clone()
+                .unwrap_or_else(|| "unknown".to_string()),
+            intent
+                .method_name
+                .clone()
+                .unwrap_or_else(|| "unknown".to_string()),
+        )
+    } else if is_raw_calldata {
         TypedTransactionFields::raw_calldata(
             intent.selector.clone(),
             intent
@@ -2769,6 +2830,15 @@ fn history_record_from_recovery_intent(
                     .as_deref()
                     .unwrap_or(ERC20_TRANSFER_SELECTOR_HEX)
             )
+        } else if is_asset_approval_revoke {
+            format!(
+                "{chain_id}:{from}:{to}:{value_wei}:{nonce}:assetApprovalRevoke:{}:{}",
+                typed_transaction.selector.as_deref().unwrap_or("unknown"),
+                typed_transaction
+                    .method_name
+                    .as_deref()
+                    .unwrap_or("unknown")
+            )
         } else if is_contract_call {
             format!(
                 "{chain_id}:{from}:{to}:{value_wei}:{nonce}:{}:{}",
@@ -2782,7 +2852,7 @@ fn history_record_from_recovery_intent(
             format!("{chain_id}:{from}:{to}:{value_wei}:{nonce}")
         }
     });
-    let abi_call_metadata = if is_raw_calldata {
+    let abi_call_metadata = if is_raw_calldata || is_asset_approval_revoke {
         None
     } else {
         finalized_abi_call_metadata_for_recovery(
@@ -2794,6 +2864,12 @@ fn history_record_from_recovery_intent(
     };
     let raw_calldata_metadata = finalized_raw_calldata_metadata_for_recovery(
         &intent.raw_calldata_metadata,
+        &outcome_state,
+        receipt.as_ref(),
+        &checked_at,
+    );
+    let asset_approval_revoke_metadata = finalized_asset_approval_revoke_metadata_for_recovery(
+        &intent.asset_approval_revoke_metadata,
         &outcome_state,
         receipt.as_ref(),
         &checked_at,
@@ -2827,7 +2903,9 @@ fn history_record_from_recovery_intent(
             typed_transaction,
             frozen_key,
             tx_hash: intent.tx_hash.clone(),
-            kind: if is_raw_calldata {
+            kind: if is_asset_approval_revoke {
+                SubmissionKind::AssetApprovalRevoke
+            } else if is_raw_calldata {
                 SubmissionKind::RawCalldata
             } else {
                 intent.kind.clone()
@@ -2871,13 +2949,14 @@ fn history_record_from_recovery_intent(
             replaces_tx_hash: intent.replaces_tx_hash.clone(),
             replaced_by_tx_hash: None,
         },
-        batch_metadata: if is_raw_calldata {
+        batch_metadata: if is_raw_calldata || is_asset_approval_revoke {
             None
         } else {
             intent.batch_metadata.clone()
         },
         abi_call_metadata,
         raw_calldata_metadata,
+        asset_approval_revoke_metadata,
     })
 }
 
@@ -4209,6 +4288,46 @@ fn raw_calldata_metadata_for_broadcast(
     metadata
 }
 
+fn asset_approval_revoke_metadata_for_broadcast(
+    mut metadata: AssetApprovalRevokeHistoryMetadata,
+    tx_hash: &str,
+    broadcasted_at: &str,
+    rpc_chain_id: u64,
+    rpc_url: &str,
+) -> AssetApprovalRevokeHistoryMetadata {
+    metadata.future_submission = Some(AbiCallSubmissionPlaceholder {
+        status: Some("broadcasted".to_string()),
+        tx_hash: Some(tx_hash.to_string()),
+        submitted_at: Some(broadcasted_at.to_string()),
+        broadcasted_at: Some(broadcasted_at.to_string()),
+        error_summary: None,
+    });
+    metadata.future_outcome = Some(AbiCallOutcomePlaceholder {
+        state: Some(AbiCallOutcomeState::Pending),
+        checked_at: None,
+        receipt_status: None,
+        block_number: None,
+        gas_used: None,
+        error_summary: None,
+    });
+    metadata.broadcast = Some(AbiCallBroadcastPlaceholder {
+        tx_hash: Some(tx_hash.to_string()),
+        broadcasted_at: Some(broadcasted_at.to_string()),
+        rpc_chain_id: Some(rpc_chain_id),
+        rpc_endpoint_summary: Some(summarize_rpc_endpoint(rpc_url)),
+        error_summary: None,
+    });
+    metadata.recovery = Some(AbiCallRecoveryPlaceholder {
+        recovery_id: None,
+        status: None,
+        created_at: None,
+        recovered_at: None,
+        last_error: None,
+        replacement_tx_hash: None,
+    });
+    metadata
+}
+
 fn abi_broadcast_history_write_error(
     tx_hash: &str,
     intent: &NativeTransferIntent,
@@ -4252,6 +4371,45 @@ fn raw_calldata_broadcast_history_write_error(
             .map(|value| value.to_string())
             .unwrap_or_else(|| "unknown".to_string()),
         metadata.calldata_hash.as_deref().unwrap_or("unknown"),
+        frozen_key,
+    )
+}
+
+fn asset_approval_revoke_broadcast_history_write_error(
+    tx_hash: &str,
+    intent: &NativeTransferIntent,
+    metadata: &AssetApprovalRevokeHistoryMetadata,
+    frozen_key: &str,
+    error: &str,
+) -> String {
+    format!(
+        "asset approval revoke broadcast but local history write failed; tx_hash={tx_hash}; chainId={}; accountIndex={}; from={}; contract={}; spender={}; operator={}; tokenId={}; method={}; selector={}; gasLimit={}; maxFeePerGas={}; maxPriorityFeePerGas={}; nonce={}; snapshotIdentity={}; snapshotStatus={}; frozenKey={}; error={error}",
+        intent.chain_id,
+        intent.account_index,
+        intent.from,
+        metadata
+            .token_approval_contract
+            .as_deref()
+            .unwrap_or(intent.to.as_str()),
+        metadata.spender.as_deref().unwrap_or("none"),
+        metadata.operator.as_deref().unwrap_or("none"),
+        metadata.token_id.as_deref().unwrap_or("none"),
+        metadata.method.as_deref().unwrap_or("unknown"),
+        metadata.selector.as_deref().unwrap_or("unknown"),
+        intent.gas_limit,
+        intent.max_fee_per_gas,
+        intent.max_priority_fee_per_gas,
+        intent.nonce,
+        metadata
+            .snapshot
+            .as_ref()
+            .and_then(|snapshot| snapshot.identity_key.as_deref())
+            .unwrap_or("unknown"),
+        metadata
+            .snapshot
+            .as_ref()
+            .and_then(|snapshot| snapshot.status.as_deref())
+            .unwrap_or("unknown"),
         frozen_key,
     )
 }
@@ -4390,6 +4548,7 @@ pub async fn submit_raw_calldata(
         None,
         None,
         Some(history_metadata),
+        None,
         Some(frozen_key.clone()),
     )
     .map_err(|error| {
@@ -4448,6 +4607,211 @@ pub async fn submit_raw_calldata(
             }),
         );
         raw_calldata_broadcast_history_write_error(
+            &tx_hash,
+            &recovery_intent,
+            &recovery_metadata,
+            &frozen_key,
+            &error,
+        )
+    })
+}
+
+pub async fn submit_asset_approval_revoke(
+    intent: NativeTransferIntent,
+    calldata: Bytes,
+    asset_approval_revoke_metadata: AssetApprovalRevokeHistoryMetadata,
+    frozen_key: String,
+) -> Result<HistoryRecord, String> {
+    if intent.typed_transaction.transaction_type != TransactionType::AssetApprovalRevoke {
+        return Err(
+            "asset approval revoke submit requires transaction_type assetApprovalRevoke"
+                .to_string(),
+        );
+    }
+    let _inflight_guard = acquire_asset_approval_revoke_inflight_guard(&intent)?;
+    let diagnostic_selector = asset_approval_revoke_metadata.selector.clone();
+    let diagnostic_method = asset_approval_revoke_metadata.method.clone();
+    let diagnostic_approval_kind = asset_approval_revoke_metadata.approval_kind.clone();
+    let wallet = with_session_mnemonic(|mnemonic| derive_wallet(mnemonic, intent.account_index))?
+        .with_chain_id(intent.chain_id);
+    let provider = Provider::<Http>::try_from(intent.rpc_url.clone()).map_err(|e| {
+        let error = sanitize_diagnostic_message(&e.to_string());
+        record_transaction_diagnostic(
+            DiagnosticLevel::Error,
+            "assetApprovalRevokeProviderInvalid",
+            Some(intent.chain_id),
+            Some(intent.account_index),
+            None,
+            Some(error.clone()),
+            json!({
+                "selector": diagnostic_selector.clone(),
+                "method": diagnostic_method.clone(),
+                "approvalKind": diagnostic_approval_kind.clone(),
+            }),
+        );
+        error
+    })?;
+    preflight_native_transfer(&intent, wallet.address(), &provider)
+        .await
+        .map_err(|error| sanitize_diagnostic_message(&error))?;
+    ensure_no_pending_nonce_conflict(&intent)?;
+
+    let signer = SignerMiddleware::new(provider, wallet);
+    let tx = Eip1559TransactionRequest::new()
+        .to(parse_native_transfer_address(
+            &intent,
+            "to",
+            &intent.to,
+            "assetApprovalRevokeTransactionFieldInvalid",
+        )?)
+        .from(parse_native_transfer_address(
+            &intent,
+            "from",
+            &intent.from,
+            "assetApprovalRevokeTransactionFieldInvalid",
+        )?)
+        .value(parse_native_transfer_u256(
+            &intent,
+            "value_wei",
+            &intent.value_wei,
+            "assetApprovalRevokeTransactionFieldInvalid",
+        )?)
+        .data(calldata)
+        .nonce(U256::from(intent.nonce))
+        .gas(parse_native_transfer_u256(
+            &intent,
+            "gas_limit",
+            &intent.gas_limit,
+            "assetApprovalRevokeTransactionFieldInvalid",
+        )?)
+        .max_fee_per_gas(parse_native_transfer_u256(
+            &intent,
+            "max_fee_per_gas",
+            &intent.max_fee_per_gas,
+            "assetApprovalRevokeTransactionFieldInvalid",
+        )?)
+        .max_priority_fee_per_gas(parse_native_transfer_u256(
+            &intent,
+            "max_priority_fee_per_gas",
+            &intent.max_priority_fee_per_gas,
+            "assetApprovalRevokeTransactionFieldInvalid",
+        )?)
+        .chain_id(intent.chain_id);
+
+    let pending = signer.send_transaction(tx, None).await.map_err(|e| {
+        let error = sanitize_diagnostic_message(&e.to_string());
+        record_transaction_diagnostic(
+            DiagnosticLevel::Error,
+            "assetApprovalRevokeBroadcastFailed",
+            Some(intent.chain_id),
+            Some(intent.account_index),
+            None,
+            Some(error.clone()),
+            json!({
+                "selector": diagnostic_selector.clone(),
+                "method": diagnostic_method.clone(),
+                "approvalKind": diagnostic_approval_kind.clone(),
+                "nonce": intent.nonce,
+            }),
+        );
+        error
+    })?;
+    let tx_hash = format!("{:#x}", pending.tx_hash());
+    record_transaction_diagnostic(
+        DiagnosticLevel::Info,
+        "assetApprovalRevokeBroadcastSucceeded",
+        Some(intent.chain_id),
+        Some(intent.account_index),
+        Some(tx_hash.clone()),
+        None,
+        json!({
+            "selector": diagnostic_selector.clone(),
+            "method": diagnostic_method.clone(),
+            "approvalKind": diagnostic_approval_kind.clone(),
+            "nonce": intent.nonce,
+        }),
+    );
+
+    let recovery_intent = intent.clone();
+    let broadcasted_at = now_unix_seconds()?;
+    let history_metadata = asset_approval_revoke_metadata_for_broadcast(
+        asset_approval_revoke_metadata,
+        &tx_hash,
+        &broadcasted_at,
+        intent.chain_id,
+        &intent.rpc_url,
+    );
+    let recovery_metadata = history_metadata.clone();
+    let mut history_intent = intent;
+    history_intent.rpc_url = summarize_rpc_endpoint(&history_intent.rpc_url);
+    persist_pending_history_with_kind_at_and_metadata(
+        history_intent,
+        tx_hash.clone(),
+        SubmissionKind::AssetApprovalRevoke,
+        None,
+        broadcasted_at.clone(),
+        None,
+        None,
+        None,
+        Some(history_metadata),
+        Some(frozen_key.clone()),
+    )
+    .map_err(|error| {
+        let error = sanitize_diagnostic_message(&error);
+        let mut recovery_result = history_recovery_intent_from_broadcast_failure_with_frozen_key(
+            &recovery_intent,
+            tx_hash.clone(),
+            SubmissionKind::AssetApprovalRevoke,
+            None,
+            broadcasted_at,
+            error.clone(),
+            Some(frozen_key.clone()),
+            None,
+        );
+        if let Ok(intent) = recovery_result.as_mut() {
+            let mut metadata = recovery_metadata.clone();
+            if let Some(recovery) = metadata.recovery.as_mut() {
+                recovery.recovery_id = Some(intent.id.clone());
+                recovery.status = Some("active".to_string());
+                recovery.created_at = Some(intent.created_at.clone());
+                recovery.last_error = Some(sanitize_recovery_error(&error));
+            }
+            intent.asset_approval_revoke_metadata = Some(metadata);
+        }
+        let recovery_result = recovery_result.and_then(record_history_recovery_intent);
+        let recovery_recorded = recovery_result.is_ok();
+        if let Some(recovery_error) = recovery_result.err() {
+            record_transaction_diagnostic(
+                DiagnosticLevel::Error,
+                "assetApprovalRevokeHistoryRecoveryIntentWriteFailed",
+                Some(recovery_intent.chain_id),
+                Some(recovery_intent.account_index),
+                Some(tx_hash.clone()),
+                Some(recovery_error),
+                json!({
+                    "selector": recovery_metadata.selector.clone(),
+                    "method": recovery_metadata.method.clone(),
+                    "approvalKind": recovery_metadata.approval_kind.clone(),
+                    "nonce": recovery_intent.nonce,
+                }),
+            );
+        }
+        record_transaction_diagnostic(
+            DiagnosticLevel::Error,
+            "assetApprovalRevokeHistoryWriteAfterBroadcastFailed",
+            Some(recovery_intent.chain_id),
+            Some(recovery_intent.account_index),
+            Some(tx_hash.clone()),
+            Some(error.clone()),
+            json!({
+                "selector": recovery_metadata.selector.clone(),
+                "method": recovery_metadata.method.clone(),
+                "approvalKind": recovery_metadata.approval_kind.clone(),
+                "nonce": recovery_intent.nonce,
+                "recoveryRecorded": recovery_recorded,
+            }),
+        );
+        asset_approval_revoke_broadcast_history_write_error(
             &tx_hash,
             &recovery_intent,
             &recovery_metadata,
@@ -4854,6 +5218,26 @@ mod tests {
         }
     }
 
+    fn asset_revoke_intent(nonce: u64) -> NativeTransferIntent {
+        NativeTransferIntent {
+            typed_transaction: TypedTransactionFields::asset_approval_revoke(
+                "0x2222222222222222222222222222222222222222",
+                "0x095ea7b3",
+                "approve(address,uint256)",
+            ),
+            rpc_url: "http://127.0.0.1:8545".to_string(),
+            account_index: 42,
+            chain_id: 31337,
+            from: "0x1111111111111111111111111111111111111111".to_string(),
+            to: "0x2222222222222222222222222222222222222222".to_string(),
+            value_wei: "0".to_string(),
+            nonce,
+            gas_limit: "50000".to_string(),
+            max_fee_per_gas: "2000000000".to_string(),
+            max_priority_fee_per_gas: "1000000000".to_string(),
+        }
+    }
+
     fn abi_call_metadata() -> AbiCallHistoryMetadata {
         AbiCallHistoryMetadata {
             intent_kind: "abiWriteCall".to_string(),
@@ -4895,6 +5279,68 @@ mod tests {
         }
     }
 
+    fn asset_revoke_metadata() -> AssetApprovalRevokeHistoryMetadata {
+        AssetApprovalRevokeHistoryMetadata {
+            intent_kind: "assetApprovalRevoke".to_string(),
+            draft_id: Some("asset-revoke-draft".to_string()),
+            created_at: Some("1700000000".to_string()),
+            frozen_at: Some("1700000000".to_string()),
+            chain_id: Some(31337),
+            account_index: Some(42),
+            from: Some("0x1111111111111111111111111111111111111111".to_string()),
+            to: Some("0x2222222222222222222222222222222222222222".to_string()),
+            value_wei: Some("0".to_string()),
+            approval_kind: Some("erc20Allowance".to_string()),
+            token_approval_contract: Some("0x2222222222222222222222222222222222222222".to_string()),
+            spender: Some("0x3333333333333333333333333333333333333333".to_string()),
+            operator: None,
+            token_id: None,
+            method: Some("approve(address,uint256)".to_string()),
+            selector: Some("0x095ea7b3".to_string()),
+            calldata_hash: Some(
+                "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+            ),
+            calldata_byte_length: Some(68),
+            calldata_args: Vec::new(),
+            gas_limit: Some("50000".to_string()),
+            latest_base_fee_per_gas: Some("1000000000".to_string()),
+            base_fee_per_gas: Some("1000000000".to_string()),
+            max_fee_per_gas: Some("2000000000".to_string()),
+            max_priority_fee_per_gas: Some("1000000000".to_string()),
+            nonce: Some(8),
+            selected_rpc: None,
+            snapshot: Some(crate::models::AssetApprovalRevokeSnapshotMetadata {
+                identity_key: Some("approval-identity".to_string()),
+                status: Some("active".to_string()),
+                source_kind: Some("rpcPointRead".to_string()),
+                source_summary: Some("RPC point read".to_string()),
+                stale: Some(false),
+                failure: Some(false),
+                created_at: None,
+                updated_at: None,
+                last_scanned_at: None,
+                stale_after: None,
+                rpc_identity: None,
+                rpc_profile_id: None,
+            }),
+            warning_acknowledgements: Vec::new(),
+            warning_summaries: Vec::new(),
+            blocking_statuses: Vec::new(),
+            frozen_key: Some("asset-revoke-frozen".to_string()),
+            future_submission: None,
+            future_outcome: None,
+            broadcast: None,
+            recovery: Some(AbiCallRecoveryPlaceholder {
+                recovery_id: Some("recovery-id".to_string()),
+                status: Some("active".to_string()),
+                created_at: Some("1700000001".to_string()),
+                recovered_at: None,
+                last_error: Some("history write failed".to_string()),
+                replacement_tx_hash: None,
+            }),
+        }
+    }
+
     #[test]
     fn abi_write_inflight_guard_blocks_same_nonce_until_drop() {
         let intent = abi_write_intent(9001);
@@ -4932,6 +5378,58 @@ mod tests {
         drop(guard);
         let _next_guard =
             acquire_raw_calldata_inflight_guard(&intent).expect("guard released after drop");
+    }
+
+    #[test]
+    fn recovery_reconstructs_asset_approval_revoke_history_record() {
+        let intent = asset_revoke_intent(8);
+        let mut recovery = history_recovery_intent_from_broadcast_failure_with_frozen_key(
+            &intent,
+            "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+            SubmissionKind::AssetApprovalRevoke,
+            None,
+            "1700000001".to_string(),
+            "history write failed".to_string(),
+            Some("asset-revoke-frozen".to_string()),
+            None,
+        )
+        .expect("recovery intent");
+        recovery.asset_approval_revoke_metadata = Some(asset_revoke_metadata());
+
+        let record = history_record_from_recovery_intent(
+            &recovery,
+            ChainOutcomeState::Confirmed,
+            None,
+            "1700000002".to_string(),
+            "transactionFoundConfirmed".to_string(),
+        )
+        .expect("recovered record");
+
+        assert_eq!(record.submission.kind, SubmissionKind::AssetApprovalRevoke);
+        assert_eq!(
+            record.submission.typed_transaction.transaction_type,
+            TransactionType::AssetApprovalRevoke
+        );
+        assert!(record.raw_calldata_metadata.is_none());
+        assert!(record.abi_call_metadata.is_none());
+        let metadata = record
+            .asset_approval_revoke_metadata
+            .expect("asset revoke metadata");
+        assert_eq!(metadata.intent_kind, "assetApprovalRevoke");
+        assert_eq!(
+            metadata
+                .recovery
+                .as_ref()
+                .and_then(|recovery| recovery.status.as_deref()),
+            Some("recovered")
+        );
+        assert_eq!(
+            metadata
+                .future_outcome
+                .as_ref()
+                .and_then(|outcome| outcome.state.clone()),
+            Some(AbiCallOutcomeState::Confirmed)
+        );
     }
 
     #[test]

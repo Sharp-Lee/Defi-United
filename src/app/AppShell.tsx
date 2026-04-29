@@ -38,6 +38,7 @@ import type {
   AbiReadCallResult,
   AbiRegistryState,
   AbiWriteSubmitInput,
+  AssetApprovalRevokeSubmitInput,
   FetchExplorerAbiInput,
   EditWatchlistTokenInput,
   TokenWatchlistState,
@@ -154,6 +155,7 @@ export interface AppShellProps {
   ) => Promise<AbiCalldataPreviewResult>;
   onCallReadOnlyAbiFunction?: (input: AbiReadCallInput) => Promise<AbiReadCallResult>;
   onSubmitAbiWriteCall?: (input: AbiWriteSubmitInput) => Promise<HistoryRecord>;
+  onSubmitAssetApprovalRevoke?: (input: AssetApprovalRevokeSubmitInput) => Promise<HistoryRecord>;
   onRefreshAccounts?: () => Promise<void> | void;
   onRefreshHistory?: () => Promise<void> | void;
   onQuarantineHistory?: () => Promise<void> | void;
@@ -306,6 +308,9 @@ export function AppShell({
   onSubmitRawCalldata = async () => {
     throw new Error("Raw calldata submitter is not configured.");
   },
+  onSubmitAssetApprovalRevoke = async () => {
+    throw new Error("Asset approval revoke submitter is not configured.");
+  },
   onNativeBatchSubmitFailed = async () => {},
   onNativeBatchSubmitted = () => {},
   onErc20BatchSubmitted = () => {},
@@ -421,7 +426,9 @@ export function AppShell({
                 onScanErc20Allowance={onScanErc20Allowance}
                 onScanErc721TokenApproval={onScanErc721TokenApproval}
                 onScanNftOperatorApproval={onScanNftOperatorApproval}
+                onSubmitAssetApprovalRevoke={onSubmitAssetApprovalRevoke}
                 rpcReady={chainReady}
+                rpcUrl={rpcUrl}
                 selectedRpc={selectedRpcForAssets}
                 selectedChainId={selectedChainId}
                 state={tokenWatchlistState}

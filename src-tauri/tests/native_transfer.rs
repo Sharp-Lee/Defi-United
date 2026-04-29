@@ -560,6 +560,7 @@ fn history_record(nonce: u64, state: ChainOutcomeState, tx_hash: &str) -> Histor
         batch_metadata: None,
         abi_call_metadata: None,
         raw_calldata_metadata: None,
+        asset_approval_revoke_metadata: None,
         intent,
     }
 }

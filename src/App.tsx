@@ -44,6 +44,7 @@ import {
   scanWatchlistTokenMetadata,
   removeAbiDataSourceConfig,
   submitAbiWriteCall,
+  submitAssetApprovalRevoke,
   submitRawCalldata,
   upsertAbiDataSourceConfig,
   upsertApprovalWatchlistEntry,
@@ -1361,6 +1362,29 @@ export function App() {
     }
   }
 
+  async function handleSubmitAssetApprovalRevoke(input: Parameters<typeof submitAssetApprovalRevoke>[0]) {
+    try {
+      const record = await submitAssetApprovalRevoke(input);
+      setHistory((current) => [record, ...current]);
+      void inspectTransactionHistoryStorage()
+        .then(setHistoryStorage)
+        .catch(() => {});
+      void loadHistoryRecoveryIntents()
+        .then(setHistoryRecoveryIntents)
+        .catch(() => {});
+      void refreshAccountsFromDisk();
+      return record;
+    } catch (err) {
+      await inspectHistoryStorageGate(errorMessage(err));
+      try {
+        setHistoryRecoveryIntents(await loadHistoryRecoveryIntents());
+      } catch {
+        // Keep the submit error visible in the approvals panel.
+      }
+      throw err;
+    }
+  }
+
   async function handleQuarantineHistory() {
     setAppError(null);
     setHistoryError(null);
@@ -1530,6 +1554,7 @@ export function App() {
       onListAbiFunctions={listManagedAbiFunctions}
       onPreviewAbiCalldata={previewManagedAbiCalldata}
       onSubmitAbiWriteCall={handleSubmitAbiWriteCall}
+      onSubmitAssetApprovalRevoke={handleSubmitAssetApprovalRevoke}
       onSubmitRawCalldata={handleSubmitRawCalldata}
       onValidateRpc={handleValidateRpc}
       rpcUrl={rpcUrl}

@@ -2,10 +2,12 @@ import { invoke } from "@tauri-apps/api/core";
 import {
   normalizeHistoryRecord,
   normalizeAbiCallMetadata,
+  normalizeAssetApprovalRevokeMetadata,
   normalizeBatchMetadata,
   normalizeRawCalldataMetadata,
   parseTransactionHistoryPayload,
   type AbiCallHistoryMetadata,
+  type AssetApprovalRevokeHistoryMetadata,
   type BatchHistoryMetadata,
   type HistoryRecord as NormalizedHistoryRecord,
   type NativeTransferIntent as NormalizedNativeTransferIntent,
@@ -37,6 +39,7 @@ export type {
   HistoryRecord,
   NativeTransferIntent,
   RawCalldataHistoryMetadata,
+  AssetApprovalRevokeHistoryMetadata,
   SubmissionKind,
   TransactionType,
 } from "../core/history/schema";
@@ -404,6 +407,87 @@ export interface RawCalldataSubmitInput {
   blockingStatuses: RawCalldataStatus[];
   inference: RawCalldataInferenceInput;
   humanPreview: RawCalldataHumanPreview;
+}
+
+export interface AssetApprovalRevokeSelectedRpcInput {
+  chainId?: number | null;
+  providerConfigId?: string | null;
+  endpointId?: string | null;
+  endpointName?: string | null;
+  endpointSummary?: string | null;
+  endpointFingerprint?: string | null;
+}
+
+export interface AssetApprovalRevokeSnapshotIdentityInput {
+  identityKey: string;
+  chainId: number;
+  owner: string;
+  contract: string;
+  kind: "erc20Allowance" | "erc721ApprovalForAll" | "erc721TokenApproval" | string;
+  spender?: string | null;
+  operator?: string | null;
+  tokenId?: string | null;
+  status: string;
+  sourceKind: string;
+  sourceSummary?: string | null;
+  source?: unknown;
+  stale?: boolean;
+  failure?: boolean;
+  ref?: {
+    createdAt?: string | null;
+    updatedAt?: string | null;
+    lastScannedAt?: string | null;
+    staleAfter?: string | null;
+    rpcIdentity?: string | null;
+    rpcProfileId?: string | null;
+  };
+}
+
+export interface AssetApprovalRevokeCalldataArgInput {
+  name: string;
+  type: string;
+  value: string | boolean;
+}
+
+export interface AssetApprovalRevokeStatusInput {
+  level: string;
+  code: string;
+  message: string;
+  source: string;
+  requiresAcknowledgement?: boolean;
+  acknowledged?: boolean;
+}
+
+export interface AssetApprovalRevokeSubmitInput {
+  rpcUrl: string;
+  draftId?: string | null;
+  frozenKey: string;
+  createdAt?: string | null;
+  frozenAt?: string | null;
+  chainId: number;
+  selectedRpc: AssetApprovalRevokeSelectedRpcInput;
+  from: string;
+  accountIndex: number;
+  to: string;
+  valueWei: "0" | string;
+  approvalIdentity: AssetApprovalRevokeSnapshotIdentityInput;
+  approvalKind: string;
+  tokenApprovalContract: string;
+  spender?: string | null;
+  operator?: string | null;
+  tokenId?: string | null;
+  method: string;
+  selector: string;
+  calldata: string;
+  calldataArgs: AssetApprovalRevokeCalldataArgInput[];
+  nonce: number;
+  gasLimit: string;
+  latestBaseFeePerGas?: string | null;
+  baseFeePerGas?: string | null;
+  maxFeePerGas: string;
+  maxPriorityFeePerGas: string;
+  warnings: AssetApprovalRevokeStatusInput[];
+  blockingStatuses: AssetApprovalRevokeStatusInput[];
 }
 
 export interface AbiCallDataSummary {
@@ -1131,6 +1215,7 @@ export interface HistoryRecoveryIntent {
   batchMetadata?: BatchHistoryMetadata | null;
   abiCallMetadata?: AbiCallHistoryMetadata | null;
   rawCalldataMetadata?: RawCalldataHistoryMetadata | null;
+  assetApprovalRevokeMetadata?: AssetApprovalRevokeHistoryMetadata | null;
   broadcastedAt: string;
   writeError: string;
   lastRecoveryError: string | null;
@@ -1146,6 +1231,8 @@ function normalizeHistoryRecoveryIntent(rawIntent: unknown): HistoryRecoveryInte
     batchMetadata?: unknown;
     raw_calldata_metadata?: unknown;
     rawCalldataMetadata?: unknown;
+    asset_approval_revoke_metadata?: unknown;
+    assetApprovalRevokeMetadata?: unknown;
   };
   return {
     ...intent,
@@ -1153,6 +1240,9 @@ function normalizeHistoryRecoveryIntent(rawIntent: unknown): HistoryRecoveryInte
     batchMetadata: normalizeBatchMetadata(intent.batchMetadata ?? intent.batch_metadata),
     rawCalldataMetadata: normalizeRawCalldataMetadata(
       intent.rawCalldataMetadata ?? intent.raw_calldata_metadata,
+    ),
+    assetApprovalRevokeMetadata: normalizeAssetApprovalRevokeMetadata(
+      intent.assetApprovalRevokeMetadata ?? intent.asset_approval_revoke_metadata,
     ),
   };
 }
@@ -1279,6 +1369,11 @@ export async function submitAbiWriteCall(input: AbiWriteSubmitInput) {
 
 export async function submitRawCalldata(input: RawCalldataSubmitInput) {
   const raw = await invoke<string>("submit_raw_calldata_command", { input });
+  return normalizeHistoryRecord(JSON.parse(raw));
+}
+
+export async function submitAssetApprovalRevoke(input: AssetApprovalRevokeSubmitInput) {
+  const raw = await invoke<string>("submit_asset_approval_revoke_command", { input });
   return normalizeHistoryRecord(JSON.parse(raw));
 }
 

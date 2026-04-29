@@ -1,6 +1,7 @@
 pub mod abi_caller;
 pub mod abi_registry;
 pub mod accounts;
+pub mod asset_approvals;
 pub mod config;
 pub mod diagnostics;
 pub mod raw_calldata;

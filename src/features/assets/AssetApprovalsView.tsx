@@ -16,6 +16,7 @@ import {
 } from "../../core/assets/revokeDraft";
 import type {
   AccountRecord,
+  AssetApprovalRevokeSubmitInput,
   AllowanceSnapshotRecord,
   AllowanceSnapshotStatus,
   ApprovalSourceKind,
@@ -25,6 +26,7 @@ import type {
   AssetSnapshotStatus,
   BalanceStatus,
   Erc20BalanceSnapshotRecord,
+  HistoryRecord,
   NftApprovalSnapshotRecord,
   NftApprovalSnapshotStatus,
   ResolvedTokenMetadataRecord,
@@ -56,6 +58,7 @@ export interface AssetApprovalsViewProps {
   error?: string | null;
   rpcReady?: boolean;
   selectedRpc?: RevokeDraftRpcIdentityInput | null;
+  rpcUrl?: string;
   selectedChainId: bigint;
   state: TokenWatchlistState | null;
   onAddApprovalCandidate: (
@@ -80,6 +83,7 @@ export interface AssetApprovalsViewProps {
     tokenId: string,
     operator?: string | null,
   ) => Promise<boolean | void> | boolean | void;
+  onSubmitAssetApprovalRevoke?: (input: AssetApprovalRevokeSubmitInput) => Promise<HistoryRecord>;
 }
 
 const approvalKinds: ApprovalWatchKind[] = [
@@ -606,6 +610,7 @@ export function AssetApprovalsView({
   busy = false,
   error = null,
   rpcReady = false,
+  rpcUrl = "",
   selectedRpc = null,
   selectedChainId,
   state,
@@ -613,6 +618,7 @@ export function AssetApprovalsView({
   onScanErc20Allowance,
   onScanNftOperatorApproval,
   onScanErc721TokenApproval,
+  onSubmitAssetApprovalRevoke,
 }: AssetApprovalsViewProps) {
   const [filterOwner, setFilterOwner] = useState("");
   const [filterChainId, setFilterChainId] = useState("");
@@ -630,6 +636,7 @@ export function AssetApprovalsView({
   const [candidateTokenId, setCandidateTokenId] = useState("");
   const [candidateLabel, setCandidateLabel] = useState("");
   const [candidateNotes, setCandidateNotes] = useState("");
+  const [revokeSubmitStatus, setRevokeSubmitStatus] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const [revokeSelection, setRevokeSelection] = useState<RevokeDraftSelection | null>(null);
   const [revokeNonce, setRevokeNonce] = useState("");
@@ -874,6 +881,77 @@ export function AssetApprovalsView({
 
   function setRevokeAcknowledgement(code: RevokeDraftWarningCode, acknowledged: boolean) {
     setRevokeAcknowledgements((current) => ({ ...current, [code]: acknowledged }));
+  }
+
+  async function submitRevokeDraft() {
+    setRevokeSubmitStatus(null);
+    if (!revokeDraft?.ready || !revokeDraft.intent || !revokeDraft.approvalIdentity) {
+      setRevokeSubmitStatus("Revoke draft is not ready.");
+      return;
+    }
+    if (!rpcReady || !rpcUrl.trim()) {
+      setRevokeSubmitStatus("Validate an RPC before submitting.");
+      return;
+    }
+    if (!onSubmitAssetApprovalRevoke) {
+      setRevokeSubmitStatus("Asset approval revoke submitter is not configured.");
+      return;
+    }
+    const input: AssetApprovalRevokeSubmitInput = {
+      rpcUrl: rpcUrl.trim(),
+      draftId: revokeDraft.draftId,
+      frozenKey: revokeDraft.frozenKey,
+      createdAt: revokeDraft.createdAt,
+      frozenAt: revokeDraft.frozenAt,
+      chainId: revokeDraft.intent.chainId,
+      selectedRpc: revokeDraft.selectedRpc,
+      from: revokeDraft.intent.from,
+      accountIndex: revokeDraft.intent.fromAccountIndex ?? -1,
+      to: revokeDraft.intent.to,
+      valueWei: revokeDraft.intent.valueWei,
+      approvalIdentity: revokeDraft.approvalIdentity,
+      approvalKind: revokeDraft.approvalIdentity.kind,
+      tokenApprovalContract: revokeDraft.transactionTo ?? revokeDraft.approvalIdentity.contract,
+      spender: revokeDraft.approvalIdentity.spender,
+      operator: revokeDraft.approvalIdentity.operator,
+      tokenId: revokeDraft.approvalIdentity.tokenId,
+      method: revokeDraft.intent.method,
+      selector: revokeDraft.intent.selector,
+      calldata: revokeDraft.intent.calldata,
+      calldataArgs: revokeDraft.intent.calldataArgs,
+      nonce: revokeDraft.intent.nonce,
+      gasLimit: revokeDraft.intent.gasLimit,
+      latestBaseFeePerGas: revokeDraft.intent.latestBaseFeePerGas,
+      baseFeePerGas: revokeDraft.intent.baseFeePerGas,
+      maxFeePerGas: revokeDraft.intent.maxFeePerGas,
+      maxPriorityFeePerGas: revokeDraft.intent.maxPriorityFeePerGas,
+      warnings: revokeDraft.warnings.map((warning) => ({
+        level: warning.level,
+        code: warning.code,
+        message: warning.message,
+        source: warning.source,
+        requiresAcknowledgement: warning.requiresAcknowledgement,
+        acknowledged: warning.acknowledged,
+      })),
+      blockingStatuses: revokeDraft.blockingStatuses.map((status) => ({
+        level: status.level,
+        code: status.code,
+        message: status.message,
+        source: status.source,
+        requiresAcknowledgement: status.requiresAcknowledgement,
+        acknowledged: status.acknowledged,
+      })),
+    };
+    if (input.accountIndex < 0) {
+      setRevokeSubmitStatus("Approval owner must match a local account.");
+      return;
+    }
+    try {
+      await onSubmitAssetApprovalRevoke(input);
+      setRevokeSubmitStatus("Revoke submitted.");
+    } catch (err) {
+      setRevokeSubmitStatus(err instanceof Error ? err.message : String(err));
+    }
   }
 
   async function submitCandidate() {
@@ -1212,8 +1290,20 @@ export function AssetApprovalsView({
                 </label>
               ))}
             </div>
-            <button disabled type="button">
-              Submit unavailable until P5-4f
+            {revokeSubmitStatus && <div className="inline-warning">{revokeSubmitStatus}</div>}
+            <button
+              disabled={
+                busy ||
+                !rpcReady ||
+                !rpcUrl.trim() ||
+                !revokeDraft.ready ||
+                !revokeDraft.intent ||
+                !onSubmitAssetApprovalRevoke
+              }
+              onClick={() => void submitRevokeDraft()}
+              type="button"
+            >
+              Submit revoke
             </button>
           </div>
         ) : (

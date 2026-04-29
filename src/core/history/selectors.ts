@@ -203,6 +203,7 @@ export function selectSubmissionRole(kind: SubmissionKind): HistorySubmissionRol
     case "erc20Transfer":
     case "abiWriteCall":
     case "rawCalldata":
+    case "assetApprovalRevoke":
       return "submission";
     case "replacement":
       return "replacement";

@@ -174,6 +174,8 @@ function transactionTypeLabel(type: TransactionType) {
       return "Contract call";
     case "rawCalldata":
       return "Raw calldata";
+    case "assetApprovalRevoke":
+      return "Asset approval revoke";
     case "unknown":
       return "Unsupported/unknown";
   }
@@ -204,6 +206,7 @@ function primaryTransactionTarget(record: HistoryRecord) {
       );
     case "contractCall":
     case "rawCalldata":
+    case "assetApprovalRevoke":
       return (
         record.submission.to ??
         record.intent.to ??
@@ -224,6 +227,7 @@ function primaryTransactionValue(record: HistoryRecord) {
       return `${formatOptional(record.submission.amount_raw ?? record.intent.amount_raw)} raw`;
     case "contractCall":
     case "rawCalldata":
+    case "assetApprovalRevoke":
       return `${formatOptional(
         record.submission.native_value_wei ??
           record.intent.native_value_wei ??
@@ -1502,6 +1506,19 @@ function typedIntentRows(record: HistoryRecord): DetailRow[] {
         ["Calldata bytes", record.raw_calldata_metadata?.calldata_byte_length],
         ["Selector status", record.raw_calldata_metadata?.selector_status],
       ];
+    case "assetApprovalRevoke":
+      return [
+        ...baseRows,
+        ["Transaction to", record.intent.to],
+        ["Token approval contract", record.asset_approval_revoke_metadata?.token_approval_contract ?? record.intent.token_contract],
+        ["Approval kind", record.asset_approval_revoke_metadata?.approval_kind],
+        ["Spender", record.asset_approval_revoke_metadata?.spender],
+        ["Operator", record.asset_approval_revoke_metadata?.operator],
+        ["Token ID", record.asset_approval_revoke_metadata?.token_id],
+        ["Selector", record.intent.selector],
+        ["Method name", record.intent.method_name],
+        ["Native value", `${formatOptional(record.intent.native_value_wei ?? record.intent.value_wei)} wei`],
+      ];
     case "unknown":
       return [
         ...baseRows,
@@ -1596,6 +1613,20 @@ function typedSubmissionRows(
         ["Calldata hash", record.raw_calldata_metadata?.calldata_hash],
         ["Calldata bytes", record.raw_calldata_metadata?.calldata_byte_length],
         ["Selector status", record.raw_calldata_metadata?.selector_status],
+        ...tailRows,
+      ];
+    case "assetApprovalRevoke":
+      return [
+        ...baseRows,
+        ["Transaction to", record.submission.to],
+        ["Token approval contract", record.asset_approval_revoke_metadata?.token_approval_contract ?? record.submission.token_contract],
+        ["Approval kind", record.asset_approval_revoke_metadata?.approval_kind],
+        ["Spender", record.asset_approval_revoke_metadata?.spender],
+        ["Operator", record.asset_approval_revoke_metadata?.operator],
+        ["Token ID", record.asset_approval_revoke_metadata?.token_id],
+        ["Selector", record.submission.selector],
+        ["Method name", record.submission.method_name],
+        ["Native value", `${formatOptional(record.submission.native_value_wei ?? record.submission.value_wei)} wei`],
         ...tailRows,
       ];
     case "unknown":
