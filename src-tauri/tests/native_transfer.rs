@@ -1231,6 +1231,170 @@ fn history_record_roundtrips_raw_calldata_metadata_without_raw_payloads() {
 }
 
 #[test]
+fn history_record_load_output_drops_raw_calldata_abi_and_batch_metadata() {
+    with_test_app_dir("raw-calldata-history-metadata-normalization", |_| {
+        let raw_record = serde_json::json!({
+            "schema_version": 5,
+            "intent": {
+                "transaction_type": "rawCalldata",
+                "rpc_url": "history-schema-placeholder",
+                "account_index": 1,
+                "chain_id": 1,
+                "from": "0x1111111111111111111111111111111111111111",
+                "to": "0x6666666666666666666666666666666666666666",
+                "value_wei": "42",
+                "nonce": 7,
+                "gas_limit": "120000",
+                "max_fee_per_gas": "40000000000",
+                "max_priority_fee_per_gas": "1500000000",
+                "selector": "0x12345678",
+                "native_value_wei": "42"
+            },
+            "submission": {
+                "transaction_type": "rawCalldata",
+                "frozen_key": "raw-draft-key",
+                "tx_hash": "0xraw",
+                "kind": "rawCalldata",
+                "source": "rawCalldataDraft",
+                "chain_id": 1,
+                "account_index": 1,
+                "from": "0x1111111111111111111111111111111111111111",
+                "to": "0x6666666666666666666666666666666666666666",
+                "value_wei": "42",
+                "nonce": 7,
+                "gas_limit": "120000",
+                "max_fee_per_gas": "40000000000",
+                "max_priority_fee_per_gas": "1500000000",
+                "selector": "0x12345678",
+                "native_value_wei": "42"
+            },
+            "outcome": {
+                "state": "Pending",
+                "tx_hash": "0xraw"
+            },
+            "raw_calldata_metadata": {
+                "intentKind": "rawCalldata",
+                "calldataHashVersion": "keccak256-v1",
+                "calldataHash": "0xrawhash",
+                "calldataByteLength": 4,
+                "selector": "0x12345678"
+            },
+            "abi_call_metadata": {
+                "intentKind": "abiWriteCall",
+                "draftId": "stale-abi-metadata",
+                "sourceKind": "provider",
+                "selector": "0xa9059cbb",
+                "functionSignature": "transfer(address,uint256)"
+            },
+            "batch_metadata": {
+                "batchId": "stale-batch",
+                "childId": "stale-batch:child-0001",
+                "batchKind": "collect",
+                "assetKind": "native"
+            }
+        });
+        let abi_batch_record = serde_json::json!({
+            "schema_version": 5,
+            "intent": {
+                "transaction_type": "contractCall",
+                "rpc_url": "history-schema-placeholder",
+                "account_index": 1,
+                "chain_id": 1,
+                "from": "0x1111111111111111111111111111111111111111",
+                "to": "0x6666666666666666666666666666666666666666",
+                "value_wei": "0",
+                "nonce": 8,
+                "gas_limit": "120000",
+                "max_fee_per_gas": "40000000000",
+                "max_priority_fee_per_gas": "1500000000",
+                "selector": "0xa9059cbb",
+                "method_name": "transfer(address,uint256)",
+                "native_value_wei": "0"
+            },
+            "submission": {
+                "transaction_type": "contractCall",
+                "frozen_key": "abi-batch-key",
+                "tx_hash": "0xabi",
+                "kind": "abiWriteCall",
+                "source": "abiWriteDraft",
+                "chain_id": 1,
+                "account_index": 1,
+                "from": "0x1111111111111111111111111111111111111111",
+                "to": "0x6666666666666666666666666666666666666666",
+                "value_wei": "0",
+                "nonce": 8,
+                "gas_limit": "120000",
+                "max_fee_per_gas": "40000000000",
+                "max_priority_fee_per_gas": "1500000000",
+                "selector": "0xa9059cbb",
+                "method_name": "transfer(address,uint256)",
+                "native_value_wei": "0"
+            },
+            "outcome": {
+                "state": "Pending",
+                "tx_hash": "0xabi"
+            },
+            "abi_call_metadata": {
+                "intentKind": "abiWriteCall",
+                "draftId": "valid-abi-metadata",
+                "sourceKind": "provider",
+                "selector": "0xa9059cbb",
+                "functionSignature": "transfer(address,uint256)"
+            },
+            "batch_metadata": {
+                "batchId": "valid-batch",
+                "childId": "valid-batch:child-0001",
+                "batchKind": "collect",
+                "assetKind": "native"
+            }
+        });
+        fs::write(
+            history_path().expect("history path"),
+            serde_json::to_string_pretty(&serde_json::json!([raw_record, abi_batch_record]))
+                .expect("serialize history"),
+        )
+        .expect("write history");
+
+        let records = load_history_records().expect("load normalized history");
+
+        assert_eq!(records.len(), 2);
+        assert_eq!(
+            records[0].submission.kind,
+            wallet_workbench_lib::models::SubmissionKind::RawCalldata
+        );
+        assert_eq!(
+            records[0].intent.typed_transaction.transaction_type,
+            wallet_workbench_lib::models::TransactionType::RawCalldata
+        );
+        assert!(records[0].abi_call_metadata.is_none());
+        assert!(records[0].batch_metadata.is_none());
+        assert!(records[0].raw_calldata_metadata.is_some());
+        assert!(records[1].abi_call_metadata.is_some());
+        assert!(records[1].batch_metadata.is_some());
+
+        let loaded_output =
+            wallet_workbench_lib::commands::transactions::load_transaction_history()
+                .expect("load history command");
+        let output: serde_json::Value =
+            serde_json::from_str(&loaded_output).expect("parse history output");
+        assert!(output[0]["abi_call_metadata"].is_null());
+        assert!(output[0]["batch_metadata"].is_null());
+        assert_eq!(
+            output[0]["submission"]["kind"],
+            serde_json::Value::String("rawCalldata".to_string())
+        );
+        assert_eq!(
+            output[1]["abi_call_metadata"]["draftId"],
+            serde_json::Value::String("valid-abi-metadata".to_string())
+        );
+        assert_eq!(
+            output[1]["batch_metadata"]["batchId"],
+            serde_json::Value::String("valid-batch".to_string())
+        );
+    });
+}
+
+#[test]
 fn history_record_redacts_oversized_accepted_raw_calldata_summary_fields() {
     let oversized_hex = format!("0x12345678{}", "ab".repeat(512));
     let with_raw = serde_json::json!({
@@ -3743,6 +3907,19 @@ async fn recovery_reconstructs_raw_calldata_history_record_without_type_fallback
                         "createdAt": "1700000000",
                         "lastError": "stale raw recovery error privateKey=0xabc"
                     }
+                },
+                "abiCallMetadata": {
+                    "intentKind": "abiWriteCall",
+                    "draftId": "stale-abi-metadata",
+                    "sourceKind": "provider",
+                    "selector": "0xa9059cbb",
+                    "functionSignature": "transfer(address,uint256)"
+                },
+                "batchMetadata": {
+                    "batchId": "stale-batch",
+                    "childId": "stale-batch:child-0001",
+                    "batchKind": "collect",
+                    "assetKind": "native"
                 },
                 "broadcastedAt": "1700000001",
                 "writeError": "schema placeholder"

@@ -546,7 +546,12 @@ pub fn load_history_records() -> Result<Vec<HistoryRecord>, String> {
 }
 
 fn write_history_records(records: &[HistoryRecord]) -> Result<(), String> {
-    let raw = serde_json::to_string_pretty(records).map_err(|e| e.to_string())?;
+    let normalized = records
+        .iter()
+        .cloned()
+        .map(HistoryRecord::raw_calldata_metadata_normalized)
+        .collect::<Vec<_>>();
+    let raw = serde_json::to_string_pretty(&normalized).map_err(|e| e.to_string())?;
     write_file_atomic(&history_path()?, &raw)
 }
 
@@ -2636,7 +2641,8 @@ fn history_record_from_recovery_intent(
         .max_priority_fee_per_gas
         .clone()
         .unwrap_or_else(|| "unknown".to_string());
-    let is_raw_calldata = intent.kind == SubmissionKind::RawCalldata;
+    let is_raw_calldata =
+        intent.kind == SubmissionKind::RawCalldata || intent.raw_calldata_metadata.is_some();
     let is_erc20 = !is_raw_calldata
         && (intent.kind == SubmissionKind::Erc20Transfer
             || intent.token_contract.is_some()
@@ -2733,12 +2739,16 @@ fn history_record_from_recovery_intent(
             format!("{chain_id}:{from}:{to}:{value_wei}:{nonce}")
         }
     });
-    let abi_call_metadata = finalized_abi_call_metadata_for_recovery(
-        &intent.abi_call_metadata,
-        &outcome_state,
-        receipt.as_ref(),
-        &checked_at,
-    );
+    let abi_call_metadata = if is_raw_calldata {
+        None
+    } else {
+        finalized_abi_call_metadata_for_recovery(
+            &intent.abi_call_metadata,
+            &outcome_state,
+            receipt.as_ref(),
+            &checked_at,
+        )
+    };
     let raw_calldata_metadata = finalized_raw_calldata_metadata_for_recovery(
         &intent.raw_calldata_metadata,
         &outcome_state,
@@ -2774,7 +2784,11 @@ fn history_record_from_recovery_intent(
             typed_transaction,
             frozen_key,
             tx_hash: intent.tx_hash.clone(),
-            kind: intent.kind.clone(),
+            kind: if is_raw_calldata {
+                SubmissionKind::RawCalldata
+            } else {
+                intent.kind.clone()
+            },
             source: "historyRecoveryIntent".to_string(),
             chain_id: Some(chain_id),
             account_index: Some(account_index),
@@ -2814,7 +2828,11 @@ fn history_record_from_recovery_intent(
             replaces_tx_hash: intent.replaces_tx_hash.clone(),
             replaced_by_tx_hash: None,
         },
-        batch_metadata: intent.batch_metadata.clone(),
+        batch_metadata: if is_raw_calldata {
+            None
+        } else {
+            intent.batch_metadata.clone()
+        },
         abi_call_metadata,
         raw_calldata_metadata,
     })

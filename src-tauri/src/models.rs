@@ -1700,7 +1700,7 @@ impl Default for NonceThread {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct HistoryRecord {
     #[serde(default = "history_schema_version")]
     pub schema_version: u32,
@@ -1721,6 +1721,72 @@ pub struct HistoryRecord {
         skip_serializing_if = "Option::is_none"
     )]
     pub raw_calldata_metadata: Option<RawCalldataHistoryMetadata>,
+}
+
+#[derive(Debug, Deserialize)]
+struct HistoryRecordUnchecked {
+    #[serde(default = "history_schema_version")]
+    schema_version: u32,
+    intent: NativeTransferIntent,
+    #[serde(default)]
+    intent_snapshot: IntentSnapshotMetadata,
+    submission: SubmissionRecord,
+    outcome: ChainOutcome,
+    #[serde(default)]
+    nonce_thread: NonceThread,
+    #[serde(default)]
+    batch_metadata: Option<BatchHistoryMetadata>,
+    #[serde(default)]
+    abi_call_metadata: Option<AbiCallHistoryMetadata>,
+    #[serde(default, alias = "rawCalldataMetadata")]
+    raw_calldata_metadata: Option<RawCalldataHistoryMetadata>,
+}
+
+impl<'de> Deserialize<'de> for HistoryRecord {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let unchecked = HistoryRecordUnchecked::deserialize(deserializer)?;
+        Ok(Self::from(unchecked).raw_calldata_metadata_normalized())
+    }
+}
+
+impl From<HistoryRecordUnchecked> for HistoryRecord {
+    fn from(value: HistoryRecordUnchecked) -> Self {
+        Self {
+            schema_version: value.schema_version,
+            intent: value.intent,
+            intent_snapshot: value.intent_snapshot,
+            submission: value.submission,
+            outcome: value.outcome,
+            nonce_thread: value.nonce_thread,
+            batch_metadata: value.batch_metadata,
+            abi_call_metadata: value.abi_call_metadata,
+            raw_calldata_metadata: value.raw_calldata_metadata,
+        }
+    }
+}
+
+impl HistoryRecord {
+    pub fn raw_calldata_metadata_normalized(mut self) -> Self {
+        self.normalize_raw_calldata_metadata();
+        self
+    }
+
+    pub fn normalize_raw_calldata_metadata(&mut self) {
+        if self.has_raw_calldata_shape() {
+            self.batch_metadata = None;
+            self.abi_call_metadata = None;
+        }
+    }
+
+    fn has_raw_calldata_shape(&self) -> bool {
+        self.intent.typed_transaction.transaction_type == TransactionType::RawCalldata
+            || self.submission.typed_transaction.transaction_type == TransactionType::RawCalldata
+            || self.submission.kind == SubmissionKind::RawCalldata
+            || self.raw_calldata_metadata.is_some()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
