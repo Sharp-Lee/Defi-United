@@ -864,7 +864,13 @@ fn is_sensitive_message_key(key: &str) -> bool {
 
 fn is_abi_payload_message_key(key: &str) -> bool {
     let key = normalize_key_name(key);
-    key.contains("rawabi") || key.contains("rawcalldata") || key.contains("canonicalparams")
+    key.contains("rawabi")
+        || key.contains("rawcalldata")
+        || key.contains("canonicalparams")
+        || matches!(
+            key.as_str(),
+            "calldata" | "fullcalldata" | "canonicalcalldata"
+        )
 }
 
 fn is_authorization_message_key(key: &str) -> bool {
@@ -1213,7 +1219,7 @@ mod tests {
         let raw_calldata = format!("0x12345678{}", "ab".repeat(512));
         let event = event(
             &format!(
-                "raw calldata failed selector=0x12345678 fullCalldata={raw_calldata} privateKey=secret-private-key rawTx=0xsigned"
+                "raw calldata failed selector=0x12345678 fullCalldata={raw_calldata} fullCalldata= 0xa9059cbbff next=value calldata: 0xa9059cbbff canonicalCalldata= 0xa9059cbbff nextCanonical=value privateKey=secret-private-key rawTx=0xsigned"
             ),
             serde_json::json!({
                 "sender": "rawCalldata",
@@ -1242,7 +1248,10 @@ mod tests {
         assert!(serialized.contains("0x12345678"));
         assert!(serialized.contains("calldataByteLength"));
         assert!(serialized.contains("keccak256-v1"));
+        assert!(serialized.contains("next=value"));
+        assert!(serialized.contains("nextCanonical=value"));
         assert!(!serialized.contains(&raw_calldata));
+        assert!(!serialized.contains("0xa9059cbbff"));
         assert!(!serialized.contains("abababababababababababababababababababab"));
         assert!(!serialized.contains("secret-private-key"));
         assert!(!serialized.contains("0xsigned"));
