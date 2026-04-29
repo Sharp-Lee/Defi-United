@@ -366,7 +366,8 @@ fn is_safe_tx_hash_fragment(value: &str) -> bool {
 
 fn is_suspicious_scope_text(value: &str) -> bool {
     let lower = value.to_ascii_lowercase();
-    lower.contains("://")
+    contains_sensitive_scope_calldata_alias(value)
+        || lower.contains("://")
         || lower.contains('@')
         || lower.contains('?')
         || lower.contains("token=")
@@ -397,6 +398,20 @@ fn is_suspicious_scope_text(value: &str) -> bool {
         || lower.contains("signed transaction")
         || lower.contains("rawtx")
         || lower.contains("raw transaction")
+}
+
+fn contains_sensitive_scope_calldata_alias(value: &str) -> bool {
+    let normalized = normalize_key_name(value);
+    if normalized.contains("rawcalldata")
+        || normalized.contains("fullcalldata")
+        || normalized.contains("canonicalcalldata")
+    {
+        return true;
+    }
+
+    value
+        .split(|ch: char| !ch.is_ascii_alphanumeric())
+        .any(is_calldata_alias_message_key)
 }
 
 fn minimize_safe_scope_filter_text(value: &str) -> String {
@@ -1686,6 +1701,73 @@ mod tests {
         assert!(returned.contains("[redacted]"));
         let _ = fs::remove_file(source_path);
         let _ = fs::remove_file(export_path);
+    }
+
+    #[test]
+    fn export_redacts_raw_calldata_scope_filters_in_file_and_result() {
+        let source_path = std::env::temp_dir().join(format!(
+            "wallet-workbench-diagnostics-export-calldata-scope-source-{}.jsonl",
+            std::process::id()
+        ));
+        let _ = fs::remove_file(&source_path);
+        fs::write(&source_path, "").expect("source");
+
+        let cases = [
+            DiagnosticEventQuery {
+                category: Some("fullCalldata: 0x12345678abcdef".to_string()),
+                ..DiagnosticEventQuery::default()
+            },
+            DiagnosticEventQuery {
+                account: Some("rawCalldata = 0xa9059cbbff".to_string()),
+                category: Some("rawCalldata = 0xa9059cbbff".to_string()),
+                status: Some("rawCalldata = 0xa9059cbbff".to_string()),
+                ..DiagnosticEventQuery::default()
+            },
+            DiagnosticEventQuery {
+                status: Some("fullCalldata: 0x12345678abcdef".to_string()),
+                ..DiagnosticEventQuery::default()
+            },
+        ];
+        let unsafe_fragments = [
+            "0x12345678abcdef",
+            "0xa9059cbbff",
+            "fullCalldata: 0x12345678abcdef",
+            "rawCalldata = 0xa9059cbbff",
+        ];
+
+        for (index, query) in cases.into_iter().enumerate() {
+            let export_path = std::env::temp_dir().join(format!(
+                "wallet-workbench-diagnostics-export-calldata-scope-{}-{}.json",
+                std::process::id(),
+                index
+            ));
+            let _ = fs::remove_file(&export_path);
+
+            let result = export_diagnostic_events_to_path(&source_path, &export_path, query)
+                .expect("export");
+            let exported = fs::read_to_string(&export_path).expect("read export");
+            let exported_json: Value = serde_json::from_str(&exported).expect("export json");
+            let returned_json = serde_json::to_value(&result).expect("result json");
+            let exported_scope =
+                serde_json::to_string(exported_json.pointer("/scope").expect("export scope"))
+                    .expect("serialize export scope");
+            let returned_scope =
+                serde_json::to_string(returned_json.pointer("/scope").expect("result scope"))
+                    .expect("serialize result scope");
+
+            for serialized_scope in [exported_scope.as_str(), returned_scope.as_str()] {
+                for fragment in unsafe_fragments {
+                    assert!(
+                        !serialized_scope.contains(fragment),
+                        "scope retained unsafe calldata fragment: {fragment}"
+                    );
+                }
+            }
+
+            let _ = fs::remove_file(export_path);
+        }
+
+        let _ = fs::remove_file(source_path);
     }
 
     #[test]
