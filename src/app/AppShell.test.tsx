@@ -33,6 +33,7 @@ describe("AppShell", () => {
     expect(screen.getByRole("tab", { name: "Accounts" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "ABI Library" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Tokens" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Assets & Approvals" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Orchestration" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Transfer" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Raw Calldata" })).toBeInTheDocument();
@@ -196,5 +197,36 @@ describe("AppShell", () => {
     );
     expect(screen.getByRole("heading", { name: "Raw Calldata" })).toBeInTheDocument();
     expect(screen.getByLabelText("Calldata")).toHaveValue("0x");
+  });
+
+  it("renders the desktop assets and approvals workspace tab", () => {
+    renderScreen(
+      <AppShell
+        activeTab="assets"
+        onTabChange={() => {}}
+        onUnlock={async () => {}}
+        session={{ status: "ready" }}
+        tokenWatchlistState={{
+          schemaVersion: 1,
+          watchlistTokens: [],
+          tokenMetadataCache: [],
+          tokenScanState: [],
+          erc20BalanceSnapshots: [],
+          approvalWatchlist: [],
+          assetScanJobs: [],
+          assetSnapshots: [],
+          allowanceSnapshots: [],
+          nftApprovalSnapshots: [],
+          resolvedTokenMetadata: [],
+        }}
+      />,
+    );
+
+    expect(screen.getByRole("tab", { name: "Assets & Approvals" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    expect(screen.getByRole("heading", { name: "Assets & Approvals" })).toBeInTheDocument();
+    expect(screen.getByText(/coverage is unknown\/not configured/)).toBeInTheDocument();
   });
 });

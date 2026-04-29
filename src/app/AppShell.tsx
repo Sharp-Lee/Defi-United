@@ -1,6 +1,7 @@
 import { AccountsView } from "../features/accounts/AccountsView";
 import { AbiLibraryView } from "../features/abi/AbiLibraryView";
 import type { AbiMutationHandlerResult } from "../features/abi/AbiLibraryView";
+import { AssetApprovalsView } from "../features/assets/AssetApprovalsView";
 import { DiagnosticsView } from "../features/diagnostics/DiagnosticsView";
 import { HistoryView } from "../features/history/HistoryView";
 import { AccountOrchestrationView } from "../features/orchestration/AccountOrchestrationView";
@@ -22,6 +23,7 @@ import type {
   PendingMutationRequest,
   RawCalldataSubmitInput,
   AddWatchlistTokenInput,
+  UpsertApprovalWatchlistEntryInput,
   AbiCacheEntryRecord,
   AbiCalldataPreviewInput,
   AbiCalldataPreviewResult,
@@ -44,6 +46,7 @@ export type WorkspaceTab =
   | "accounts"
   | "abi"
   | "tokens"
+  | "assets"
   | "orchestration"
   | "transfer"
   | "rawCalldata"
@@ -102,6 +105,28 @@ export interface AppShellProps {
     account: string,
     retryFailedOnly?: boolean,
   ) => Promise<boolean | void> | boolean | void;
+  onAddApprovalCandidate?: (
+    input: UpsertApprovalWatchlistEntryInput,
+  ) => Promise<boolean | void> | boolean | void;
+  onScanErc20Allowance?: (
+    owner: string,
+    chainId: number,
+    tokenContract: string,
+    spender: string,
+  ) => Promise<boolean | void> | boolean | void;
+  onScanNftOperatorApproval?: (
+    owner: string,
+    chainId: number,
+    tokenContract: string,
+    operator: string,
+  ) => Promise<boolean | void> | boolean | void;
+  onScanErc721TokenApproval?: (
+    owner: string,
+    chainId: number,
+    tokenContract: string,
+    tokenId: string,
+    operator?: string | null,
+  ) => Promise<boolean | void> | boolean | void;
   onRefreshAbiRegistry?: () => Promise<boolean | void> | boolean | void;
   onSaveAbiDataSource?: (
     input: UpsertAbiDataSourceConfigInput,
@@ -148,6 +173,7 @@ const workspaceTabs: WorkspaceTab[] = [
   "accounts",
   "abi",
   "tokens",
+  "assets",
   "orchestration",
   "transfer",
   "rawCalldata",
@@ -159,6 +185,7 @@ const workspaceTabs: WorkspaceTab[] = [
 function tabLabel(tab: WorkspaceTab) {
   if (tab === "abi") return "ABI Library";
   if (tab === "rawCalldata") return "Raw Calldata";
+  if (tab === "assets") return "Assets & Approvals";
   return tab[0].toUpperCase() + tab.slice(1);
 }
 
@@ -195,6 +222,10 @@ export function AppShell({
   onScanWatchlistTokenMetadata = async () => {},
   onScanErc20Balance = async () => {},
   onScanWatchlistBalances = async () => {},
+  onAddApprovalCandidate = async () => {},
+  onScanErc20Allowance = async () => {},
+  onScanNftOperatorApproval = async () => {},
+  onScanErc721TokenApproval = async () => {},
   onRefreshAbiRegistry = async () => {},
   onSaveAbiDataSource = async () => {},
   onRemoveAbiDataSource = async () => {},
@@ -362,6 +393,20 @@ export function AppShell({
                 onScanBalance={onScanErc20Balance}
                 onScanMetadata={onScanWatchlistTokenMetadata}
                 onScanSelectedAccount={onScanWatchlistBalances}
+                rpcReady={chainReady}
+                selectedChainId={selectedChainId}
+                state={tokenWatchlistState}
+              />
+            )}
+            {activeTab === "assets" && (
+              <AssetApprovalsView
+                accounts={accounts}
+                busy={busy}
+                error={tokenWatchlistError}
+                onAddApprovalCandidate={onAddApprovalCandidate}
+                onScanErc20Allowance={onScanErc20Allowance}
+                onScanErc721TokenApproval={onScanErc721TokenApproval}
+                onScanNftOperatorApproval={onScanNftOperatorApproval}
                 rpcReady={chainReady}
                 selectedChainId={selectedChainId}
                 state={tokenWatchlistState}

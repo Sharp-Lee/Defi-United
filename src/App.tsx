@@ -37,12 +37,16 @@ import {
   editWatchlistToken,
   removeWatchlistToken,
   scanErc20Balance,
+  scanErc20Allowance,
+  scanErc721TokenApproval,
+  scanNftOperatorApproval,
   scanWatchlistBalances,
   scanWatchlistTokenMetadata,
   removeAbiDataSourceConfig,
   submitAbiWriteCall,
   submitRawCalldata,
   upsertAbiDataSourceConfig,
+  upsertApprovalWatchlistEntry,
   unlockVault,
   validateAbiPayload,
 } from "./lib/tauri";
@@ -64,6 +68,7 @@ import type {
   StoredAccountRecord,
   TokenWatchlistState,
   UpsertAbiDataSourceConfigInput,
+  UpsertApprovalWatchlistEntryInput,
   UserAbiPayloadInput,
 } from "./lib/tauri";
 
@@ -663,7 +668,7 @@ export function App() {
   function requireTokenRpc(chainId: number) {
     const tokenRpcUrl = rpcUrl.trim();
     if (!tokenRpcUrl || settingsStatus.kind !== "ok") {
-      throw new Error("Validate an RPC before scanning token metadata or balances.");
+      throw new Error("Validate an RPC before scanning token metadata, balances, or asset approvals.");
     }
     if (chainId !== Number(selectedChainIdRef.current)) {
       throw new Error(
@@ -846,6 +851,127 @@ export function App() {
         chainId,
         accounts: [account],
         retryFailedOnly,
+        rpcProfileId: `chain-${chainId}`,
+      });
+      if (!isCurrentTokenOperation(operationGeneration)) return false;
+      setTokenWatchlistState(state);
+      return true;
+    } catch (err) {
+      const message = errorMessage(err);
+      if (isCurrentTokenOperation(operationGeneration)) {
+        setTokenWatchlistError(message);
+      }
+      return false;
+    } finally {
+      if (isCurrentTokenOperation(operationGeneration)) {
+        setBusy(false);
+      }
+    }
+  }
+
+  async function handleAddApprovalCandidate(input: UpsertApprovalWatchlistEntryInput) {
+    const operationGeneration = beginTokenOperation();
+    try {
+      const state = await upsertApprovalWatchlistEntry(input);
+      if (!isCurrentTokenOperation(operationGeneration)) return false;
+      setTokenWatchlistState(state);
+      return true;
+    } catch (err) {
+      const message = errorMessage(err);
+      if (isCurrentTokenOperation(operationGeneration)) {
+        setTokenWatchlistError(message);
+      }
+      return false;
+    } finally {
+      if (isCurrentTokenOperation(operationGeneration)) {
+        setBusy(false);
+      }
+    }
+  }
+
+  async function handleScanErc20Allowance(
+    owner: string,
+    chainId: number,
+    tokenContract: string,
+    spender: string,
+  ) {
+    const operationGeneration = beginTokenOperation();
+    try {
+      const tokenRpcUrl = requireTokenRpc(chainId);
+      const state = await scanErc20Allowance({
+        rpcUrl: tokenRpcUrl,
+        chainId,
+        owner,
+        tokenContract,
+        spender,
+        rpcProfileId: `chain-${chainId}`,
+      });
+      if (!isCurrentTokenOperation(operationGeneration)) return false;
+      setTokenWatchlistState(state);
+      return true;
+    } catch (err) {
+      const message = errorMessage(err);
+      if (isCurrentTokenOperation(operationGeneration)) {
+        setTokenWatchlistError(message);
+      }
+      return false;
+    } finally {
+      if (isCurrentTokenOperation(operationGeneration)) {
+        setBusy(false);
+      }
+    }
+  }
+
+  async function handleScanNftOperatorApproval(
+    owner: string,
+    chainId: number,
+    tokenContract: string,
+    operator: string,
+  ) {
+    const operationGeneration = beginTokenOperation();
+    try {
+      const tokenRpcUrl = requireTokenRpc(chainId);
+      const state = await scanNftOperatorApproval({
+        rpcUrl: tokenRpcUrl,
+        chainId,
+        owner,
+        tokenContract,
+        operator,
+        rpcProfileId: `chain-${chainId}`,
+      });
+      if (!isCurrentTokenOperation(operationGeneration)) return false;
+      setTokenWatchlistState(state);
+      return true;
+    } catch (err) {
+      const message = errorMessage(err);
+      if (isCurrentTokenOperation(operationGeneration)) {
+        setTokenWatchlistError(message);
+      }
+      return false;
+    } finally {
+      if (isCurrentTokenOperation(operationGeneration)) {
+        setBusy(false);
+      }
+    }
+  }
+
+  async function handleScanErc721TokenApproval(
+    owner: string,
+    chainId: number,
+    tokenContract: string,
+    tokenId: string,
+    operator?: string | null,
+  ) {
+    const operationGeneration = beginTokenOperation();
+    try {
+      const tokenRpcUrl = requireTokenRpc(chainId);
+      const state = await scanErc721TokenApproval({
+        rpcUrl: tokenRpcUrl,
+        chainId,
+        owner,
+        tokenContract,
+        tokenId,
+        operator: operator ?? null,
         rpcProfileId: `chain-${chainId}`,
       });
       if (!isCurrentTokenOperation(operationGeneration)) return false;
@@ -1359,6 +1485,7 @@ export function App() {
       historyStorage={historyStorage}
       lastHistoryQuarantine={lastHistoryQuarantine}
       onAddAccount={handleAddAccount}
+      onAddApprovalCandidate={handleAddApprovalCandidate}
       onAddWatchlistToken={handleAddWatchlistToken}
       onDeleteAbiEntry={handleDeleteAbiEntry}
       onEditWatchlistToken={handleEditWatchlistToken}
@@ -1368,7 +1495,10 @@ export function App() {
       onPasteAbiPayload={handlePasteAbiPayload}
       onRemoveWatchlistToken={handleRemoveWatchlistToken}
       onRemoveAbiDataSource={handleRemoveAbiDataSource}
+      onScanErc20Allowance={handleScanErc20Allowance}
       onScanErc20Balance={handleScanErc20Balance}
+      onScanErc721TokenApproval={handleScanErc721TokenApproval}
+      onScanNftOperatorApproval={handleScanNftOperatorApproval}
       onScanWatchlistBalances={handleScanWatchlistBalances}
       onScanWatchlistTokenMetadata={handleScanWatchlistTokenMetadata}
       onSaveAbiDataSource={handleSaveAbiDataSource}
