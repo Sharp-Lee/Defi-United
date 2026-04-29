@@ -133,7 +133,7 @@ describe("buildRawCalldataPreview", () => {
 
   it("bounds human preview rows and text", () => {
     const rows = Array.from({ length: RAW_CALLDATA_HUMAN_PREVIEW_MAX_ROWS + 3 }, (_, index) => ({
-      label: `row ${index}`,
+      label: `row ${index} ${"label".repeat(12)}`,
       value: "x".repeat(RAW_CALLDATA_HUMAN_PREVIEW_MAX_CHARS + index + 1),
     }));
     const preview = buildRawCalldataPreview("0x12345678", rows);
@@ -141,7 +141,13 @@ describe("buildRawCalldataPreview", () => {
     expect(preview.human.rows).toHaveLength(RAW_CALLDATA_HUMAN_PREVIEW_MAX_ROWS);
     expect(preview.human.truncatedRows).toBe(true);
     expect(preview.human.omittedRows).toBe(3);
-    expect(preview.human.rows[0].value).toHaveLength(RAW_CALLDATA_HUMAN_PREVIEW_MAX_CHARS);
+    expect(preview.human.rows[0].displayText).toHaveLength(RAW_CALLDATA_HUMAN_PREVIEW_MAX_CHARS);
+    expect(preview.human.rows[0].displayText).toBe(
+      `${preview.human.rows[0].label}: ${preview.human.rows[0].value}`.slice(
+        0,
+        RAW_CALLDATA_HUMAN_PREVIEW_MAX_CHARS,
+      ),
+    );
     expect(preview.human.rows[0].truncated).toBe(true);
   });
 });

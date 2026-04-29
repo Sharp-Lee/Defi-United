@@ -65,6 +65,7 @@ export interface RawCalldataHumanPreviewRowInput {
 export interface RawCalldataHumanPreviewRow {
   label: string;
   value: string;
+  displayText: string;
   truncated: boolean;
   originalCharLength: number;
 }
@@ -458,12 +459,16 @@ function isHighFee(fee: RawCalldataFeeInput) {
 
 function boundHumanPreviewRows(rows: RawCalldataHumanPreviewRowInput[]): RawCalldataHumanPreview {
   const boundedRows = rows.slice(0, RAW_CALLDATA_HUMAN_PREVIEW_MAX_ROWS).map((row) => {
-    const label = boundText(row.label, RAW_CALLDATA_HUMAN_PREVIEW_MAX_CHARS);
-    const value = boundText(row.value, RAW_CALLDATA_HUMAN_PREVIEW_MAX_CHARS);
+    const label = compactText(row.label);
+    const value = compactText(row.value);
+    const displayText = boundText(formatHumanPreviewDisplayText(label, value), RAW_CALLDATA_HUMAN_PREVIEW_MAX_CHARS);
+    const labelText = boundText(label, RAW_CALLDATA_HUMAN_PREVIEW_MAX_CHARS);
+    const valueText = boundText(value, RAW_CALLDATA_HUMAN_PREVIEW_MAX_CHARS);
     return {
-      label: label.text,
-      value: value.text,
-      truncated: label.truncated || value.truncated,
+      label: labelText.text,
+      value: valueText.text,
+      displayText: displayText.text,
+      truncated: displayText.truncated || labelText.truncated || valueText.truncated,
       originalCharLength: row.label.length + row.value.length,
     };
   });
@@ -474,8 +479,18 @@ function boundHumanPreviewRows(rows: RawCalldataHumanPreviewRowInput[]): RawCall
   };
 }
 
+function formatHumanPreviewDisplayText(label: string, value: string) {
+  if (!label) return value;
+  if (!value) return label;
+  return `${label}: ${value}`;
+}
+
+function compactText(value: string) {
+  return value.replace(/\s+/g, " ").trim();
+}
+
 function boundText(value: string, maxLength: number) {
-  const compact = value.replace(/\s+/g, " ").trim();
+  const compact = compactText(value);
   if (compact.length <= maxLength) {
     return { text: compact, truncated: false };
   }
