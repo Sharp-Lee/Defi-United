@@ -335,6 +335,47 @@ describe("buildRawCalldataDraft", () => {
     expect(overrideMismatch.blockingStatuses).toMatchObject([{ code: "maxFeeMismatch" }]);
   });
 
+  it("blocks explicit max fee overrides with malformed base fee multipliers", () => {
+    const draft = buildRawCalldataDraft({
+      ...baseInput,
+      fee: {
+        ...baseInput.fee,
+        baseFeeMultiplier: "bad",
+        maxFeePerGas: 13n,
+        maxFeeOverridePerGas: 13n,
+      },
+    });
+
+    expect(draft.submission).toBeNull();
+    expect(draft.canSubmit).toBe(false);
+    expect(draft.blockingStatuses).toMatchObject([{ code: "baseFeeMultiplier" }]);
+  });
+
+  it("canonicalizes explicit override base fee multipliers before freezing", () => {
+    const canonical = buildRawCalldataDraft({
+      ...baseInput,
+      fee: {
+        ...baseInput.fee,
+        baseFeeMultiplier: "1",
+        maxFeePerGas: 13n,
+        maxFeeOverridePerGas: 13n,
+      },
+    });
+    const whitespace = buildRawCalldataDraft({
+      ...baseInput,
+      fee: {
+        ...baseInput.fee,
+        baseFeeMultiplier: " 1 ",
+        maxFeePerGas: 13n,
+        maxFeeOverridePerGas: 13n,
+      },
+    });
+
+    expect(whitespace.canSubmit).toBe(true);
+    expect(whitespace.submission?.baseFeeMultiplier).toBe("1");
+    expect(whitespace.frozenKey).toBe(canonical.frozenKey);
+  });
+
   it("accepts max fee drafts that match auto derivation or an explicit override", () => {
     const autoDerived = buildRawCalldataDraft({
       ...baseInput,
@@ -347,6 +388,7 @@ describe("buildRawCalldataDraft", () => {
       },
     });
     expect(autoDerived.canSubmit).toBe(true);
+    expect(autoDerived.submission?.baseFeeMultiplier).toBe("1.5");
     expect(autoDerived.submission?.maxFeePerGas).toBe("19");
 
     const override = buildRawCalldataDraft({

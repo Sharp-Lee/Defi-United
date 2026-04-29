@@ -312,7 +312,12 @@ export function buildRawCalldataDraft(input: BuildRawCalldataDraftInput): RawCal
   if (input.fee.gasLimit <= 0n) {
     blockingStatuses.push(blocking("gasLimit", "Gas limit must be greater than zero.", "fee"));
   }
-  const expectedMaxFee = expectedMaxFeePerGas(input.fee, blockingStatuses);
+  const hasMaxFeeOverride =
+    input.fee.maxFeeOverridePerGas !== null && input.fee.maxFeeOverridePerGas !== undefined;
+  const baseFeeMultiplier = parseBaseFeeMultiplier(input.fee.baseFeeMultiplier, blockingStatuses, {
+    required: !hasMaxFeeOverride,
+  });
+  const expectedMaxFee = expectedMaxFeePerGas(input.fee, baseFeeMultiplier);
   if (expectedMaxFee !== null && input.fee.maxFeePerGas !== expectedMaxFee) {
     blockingStatuses.push(
       blocking("maxFeeMismatch", "Max fee must match the derived raw calldata fee draft.", "fee"),
@@ -349,7 +354,9 @@ export function buildRawCalldataDraft(input: BuildRawCalldataDraftInput): RawCal
   ) {
     return {
       draftId: compactHashKey({ kind: "rawCalldataDraftBlocked", createdAt, blockingStatuses: uniqueBlocking }),
-      frozenKey: compactHashKey(frozenPayload(input, preview, inference, uniqueWarnings)),
+      frozenKey: compactHashKey(
+        frozenPayload(input, preview, inference, uniqueWarnings, baseFeeMultiplier?.text ?? null),
+      ),
       createdAt,
       preview: preview ?? emptyBlockedPreview(),
       inference,
@@ -379,12 +386,12 @@ export function buildRawCalldataDraft(input: BuildRawCalldataDraftInput): RawCal
     estimatedGasLimit: input.fee.estimatedGasLimit?.toString() ?? null,
     latestBaseFeePerGas: input.fee.latestBaseFeePerGas?.toString() ?? null,
     baseFeePerGas: input.fee.baseFeePerGas.toString(),
-    baseFeeMultiplier: input.fee.baseFeeMultiplier ?? null,
+    baseFeeMultiplier: baseFeeMultiplier?.text ?? null,
     maxFeePerGas: input.fee.maxFeePerGas.toString(),
     maxFeeOverridePerGas: input.fee.maxFeeOverridePerGas?.toString() ?? null,
     maxPriorityFeePerGas: input.fee.maxPriorityFeePerGas.toString(),
   };
-  const frozen = frozenPayload(input, preview, inference, uniqueWarnings);
+  const frozen = frozenPayload(input, preview, inference, uniqueWarnings, baseFeeMultiplier?.text ?? null);
 
   return {
     draftId: compactHashKey({ ...frozen, createdAt }),
@@ -488,23 +495,34 @@ function isHighFee(fee: RawCalldataFeeInput) {
 
 function expectedMaxFeePerGas(
   fee: RawCalldataFeeInput,
-  blockingStatuses: RawCalldataStatus[],
+  baseFeeMultiplier: ReturnType<typeof parseBaseFeeMultiplier>,
 ): bigint | null {
   if (fee.maxFeeOverridePerGas !== null && fee.maxFeeOverridePerGas !== undefined) {
     return fee.maxFeeOverridePerGas;
   }
-  const multiplier = parseBaseFeeMultiplier(fee.baseFeeMultiplier, blockingStatuses);
-  if (!multiplier) {
+  if (!baseFeeMultiplier) {
     return null;
   }
-  return ceilMultiply(fee.baseFeePerGas, multiplier.numerator, multiplier.denominator) + fee.maxPriorityFeePerGas;
+  return (
+    ceilMultiply(fee.baseFeePerGas, baseFeeMultiplier.numerator, baseFeeMultiplier.denominator) +
+    fee.maxPriorityFeePerGas
+  );
 }
 
 function parseBaseFeeMultiplier(
   value: string | null | undefined,
   blockingStatuses: RawCalldataStatus[],
+  options: { required: boolean } = { required: true },
 ) {
-  const trimmed = value?.trim() ?? "";
+  if (value === null || value === undefined) {
+    if (options.required) {
+      blockingStatuses.push(
+        blocking("baseFeeMultiplier", "Base fee multiplier must be a non-negative decimal.", "fee"),
+      );
+    }
+    return null;
+  }
+  const trimmed = value.trim();
   if (!/^\d+(?:\.\d+)?$/.test(trimmed)) {
     blockingStatuses.push(
       blocking("baseFeeMultiplier", "Base fee multiplier must be a non-negative decimal.", "fee"),
@@ -572,6 +590,7 @@ function frozenPayload(
   preview: RawCalldataPreview | null,
   inference: RawCalldataInferenceInput,
   warnings: RawCalldataStatus[],
+  baseFeeMultiplier: string | null,
 ) {
   return {
     kind: "rawCalldataDraft",
@@ -604,7 +623,7 @@ function frozenPayload(
       manualGas: input.fee.manualGas === true,
       latestBaseFeePerGas: input.fee.latestBaseFeePerGas?.toString() ?? null,
       baseFeePerGas: input.fee.baseFeePerGas.toString(),
-      baseFeeMultiplier: input.fee.baseFeeMultiplier ?? null,
+      baseFeeMultiplier,
       maxFeePerGas: input.fee.maxFeePerGas.toString(),
       maxFeeOverridePerGas: input.fee.maxFeeOverridePerGas?.toString() ?? null,
       maxPriorityFeePerGas: input.fee.maxPriorityFeePerGas.toString(),
