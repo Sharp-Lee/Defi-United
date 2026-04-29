@@ -1695,7 +1695,11 @@ pub struct HistoryRecord {
     pub batch_metadata: Option<BatchHistoryMetadata>,
     #[serde(default)]
     pub abi_call_metadata: Option<AbiCallHistoryMetadata>,
-    #[serde(default, alias = "rawCalldataMetadata")]
+    #[serde(
+        default,
+        alias = "rawCalldataMetadata",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub raw_calldata_metadata: Option<RawCalldataHistoryMetadata>,
 }
 
@@ -1763,7 +1767,11 @@ pub struct HistoryRecoveryIntent {
     pub batch_metadata: Option<BatchHistoryMetadata>,
     #[serde(default)]
     pub abi_call_metadata: Option<AbiCallHistoryMetadata>,
-    #[serde(default)]
+    #[serde(
+        default,
+        alias = "rawCalldataMetadata",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub raw_calldata_metadata: Option<RawCalldataHistoryMetadata>,
     pub broadcasted_at: String,
     pub write_error: String,

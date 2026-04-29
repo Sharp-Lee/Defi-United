@@ -1384,13 +1384,20 @@ fn history_recovery_intent_preserves_raw_calldata_metadata_additively() {
         intent.kind,
         wallet_workbench_lib::models::SubmissionKind::RawCalldata
     );
-    let metadata = intent.raw_calldata_metadata.expect("raw calldata metadata");
+    let metadata = intent
+        .raw_calldata_metadata
+        .as_ref()
+        .expect("raw calldata metadata");
     assert_eq!(metadata.intent_kind, "rawCalldata");
     assert_eq!(metadata.calldata_byte_length, Some(4));
     assert!(metadata
         .broadcast
         .as_ref()
         .is_some_and(|placeholder| placeholder.tx_hash.is_none()));
+
+    let serialized = serde_json::to_string(&intent).expect("serialize raw recovery intent");
+    assert!(serialized.contains("rawCalldataMetadata"));
+    assert!(serialized.contains("calldataByteLength"));
 }
 
 fn start_preflight_rpc_server() -> String {
