@@ -2864,6 +2864,41 @@ async fn raw_calldata_submit_rejects_unreadable_history_before_broadcast() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn raw_calldata_preflight_error_redacts_secret_rpc_url() {
+    let _guard = test_lock().lock().expect("test lock");
+    let _app_dir_guard = TestAppDirGuard::new("raw-calldata-preflight-redaction");
+    wallet_workbench_lib::session::write_session_mnemonic(
+        "test test test test test test test test test test test junk".into(),
+    );
+    let secret = "RAW_PREFLIGHT_SECRET";
+    let intent = raw_calldata_intent(format!(
+        "http://127.0.0.1:1/v1?apiKey={secret}&token=SECOND_SECRET"
+    ));
+
+    let error = submit_raw_calldata(
+        intent,
+        raw_calldata_bytes(),
+        raw_calldata_metadata(),
+        "raw-draft-frozen-key".to_string(),
+    )
+    .await
+    .expect_err("unavailable RPC should fail preflight");
+    let events = read_diagnostic_events_from_path(&diagnostics_path().expect("diagnostics path"))
+        .expect("read diagnostics");
+    let raw_events = serde_json::to_string(&events).expect("serialize diagnostics");
+
+    assert!(events
+        .iter()
+        .any(|event| event.event == "nativeTransferPreflightChainIdFailed"));
+    for serialized in [&error, &raw_events] {
+        assert!(!serialized.contains(secret));
+        assert!(!serialized.contains("SECOND_SECRET"));
+        assert!(!serialized.contains("apiKey="));
+        assert!(!serialized.contains("token=SECOND_SECRET"));
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn broadcast_history_write_failure_records_recovery_intent_without_rpc_secret() {
     let _guard = test_lock().lock().expect("test lock");
     let _app_dir_guard = TestAppDirGuard::new("broadcast-history-recovery-intent");

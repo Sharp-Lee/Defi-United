@@ -57,43 +57,56 @@ fn history_lock() -> &'static Mutex<()> {
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
-fn abi_write_inflight_set() -> &'static Mutex<HashSet<String>> {
+fn nonce_submit_inflight_set() -> &'static Mutex<HashSet<String>> {
     static ACTIVE: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
     ACTIVE.get_or_init(|| Mutex::new(HashSet::new()))
 }
 
 #[derive(Debug)]
-struct AbiWriteInflightGuard {
+struct NonceSubmitInflightGuard {
     key: String,
 }
 
-impl Drop for AbiWriteInflightGuard {
+impl Drop for NonceSubmitInflightGuard {
     fn drop(&mut self) {
-        let mut active = abi_write_inflight_set()
+        let mut active = nonce_submit_inflight_set()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         active.remove(&self.key);
     }
 }
 
-fn acquire_abi_write_inflight_guard(
+fn acquire_nonce_submit_inflight_guard(
     intent: &NativeTransferIntent,
-) -> Result<AbiWriteInflightGuard, String> {
+    submit_label: &'static str,
+) -> Result<NonceSubmitInflightGuard, String> {
     let key = nonce_thread_key(
         intent.chain_id,
         intent.account_index,
         &intent.from,
         intent.nonce,
     );
-    let mut active = abi_write_inflight_set()
+    let mut active = nonce_submit_inflight_set()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     if !active.insert(key.clone()) {
         return Err(format!(
-            "ABI write submit already in progress for nonce thread {key}"
+            "{submit_label} submit already in progress for nonce thread {key}"
         ));
     }
-    Ok(AbiWriteInflightGuard { key })
+    Ok(NonceSubmitInflightGuard { key })
+}
+
+fn acquire_abi_write_inflight_guard(
+    intent: &NativeTransferIntent,
+) -> Result<NonceSubmitInflightGuard, String> {
+    acquire_nonce_submit_inflight_guard(intent, "ABI write")
+}
+
+fn acquire_raw_calldata_inflight_guard(
+    intent: &NativeTransferIntent,
+) -> Result<NonceSubmitInflightGuard, String> {
+    acquire_nonce_submit_inflight_guard(intent, "raw calldata")
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -4255,13 +4268,14 @@ pub async fn submit_raw_calldata(
     if intent.typed_transaction.transaction_type != TransactionType::RawCalldata {
         return Err("raw calldata submit requires transaction_type rawCalldata".to_string());
     }
+    let _inflight_guard = acquire_raw_calldata_inflight_guard(&intent)?;
     let diagnostic_selector = raw_calldata_metadata.selector.clone();
     let diagnostic_calldata_byte_length = raw_calldata_metadata.calldata_byte_length;
     let diagnostic_calldata_hash = raw_calldata_metadata.calldata_hash.clone();
     let wallet = with_session_mnemonic(|mnemonic| derive_wallet(mnemonic, intent.account_index))?
         .with_chain_id(intent.chain_id);
     let provider = Provider::<Http>::try_from(intent.rpc_url.clone()).map_err(|e| {
-        let error = e.to_string();
+        let error = sanitize_diagnostic_message(&e.to_string());
         record_transaction_diagnostic(
             DiagnosticLevel::Error,
             "rawCalldataProviderInvalid",
@@ -4277,7 +4291,9 @@ pub async fn submit_raw_calldata(
         );
         error
     })?;
-    preflight_native_transfer(&intent, wallet.address(), &provider).await?;
+    preflight_native_transfer(&intent, wallet.address(), &provider)
+        .await
+        .map_err(|error| sanitize_diagnostic_message(&error))?;
     ensure_no_pending_nonce_conflict(&intent)?;
 
     let signer = SignerMiddleware::new(provider, wallet);
@@ -4380,6 +4396,7 @@ pub async fn submit_raw_calldata(
         Some(frozen_key.clone()),
     )
     .map_err(|error| {
+        let error = sanitize_diagnostic_message(&error);
         let mut recovery_result = history_recovery_intent_from_broadcast_failure_with_frozen_key(
             &recovery_intent,
             tx_hash.clone(),
@@ -4821,6 +4838,25 @@ mod tests {
         }
     }
 
+    fn raw_calldata_intent(nonce: u64) -> NativeTransferIntent {
+        NativeTransferIntent {
+            typed_transaction: TypedTransactionFields::raw_calldata(
+                Some("0x12345678".to_string()),
+                "0",
+            ),
+            rpc_url: "http://127.0.0.1:8545".to_string(),
+            account_index: 42,
+            chain_id: 31337,
+            from: "0x1111111111111111111111111111111111111111".to_string(),
+            to: "0x2222222222222222222222222222222222222222".to_string(),
+            value_wei: "0".to_string(),
+            nonce,
+            gas_limit: "50000".to_string(),
+            max_fee_per_gas: "2000000000".to_string(),
+            max_priority_fee_per_gas: "1000000000".to_string(),
+        }
+    }
+
     fn abi_call_metadata() -> AbiCallHistoryMetadata {
         AbiCallHistoryMetadata {
             intent_kind: "abiWriteCall".to_string(),
@@ -4885,6 +4921,31 @@ mod tests {
         let _first_guard = acquire_abi_write_inflight_guard(&first).expect("first guard acquired");
         let _second_guard =
             acquire_abi_write_inflight_guard(&second).expect("different from address allowed");
+    }
+
+    #[test]
+    fn raw_calldata_inflight_guard_blocks_same_nonce_until_drop() {
+        let intent = raw_calldata_intent(9003);
+        let guard = acquire_raw_calldata_inflight_guard(&intent).expect("first guard acquired");
+
+        let error = acquire_raw_calldata_inflight_guard(&intent)
+            .expect_err("same raw calldata nonce should be blocked");
+        assert!(error.contains("already in progress"));
+
+        drop(guard);
+        let _next_guard =
+            acquire_raw_calldata_inflight_guard(&intent).expect("guard released after drop");
+    }
+
+    #[test]
+    fn abi_write_inflight_guard_blocks_raw_calldata_same_nonce_thread() {
+        let abi = abi_write_intent(9004);
+        let raw = raw_calldata_intent(9004);
+        let _abi_guard = acquire_abi_write_inflight_guard(&abi).expect("ABI guard acquired");
+
+        let error = acquire_raw_calldata_inflight_guard(&raw)
+            .expect_err("raw calldata should share ABI nonce guard");
+        assert!(error.contains("already in progress"));
     }
 
     #[test]
