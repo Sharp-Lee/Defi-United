@@ -1277,9 +1277,7 @@ fn history_recovery_intent_preserves_raw_calldata_metadata_additively() {
         intent.kind,
         wallet_workbench_lib::models::SubmissionKind::RawCalldata
     );
-    let metadata = intent
-        .raw_calldata_metadata
-        .expect("raw calldata metadata");
+    let metadata = intent.raw_calldata_metadata.expect("raw calldata metadata");
     assert_eq!(metadata.intent_kind, "rawCalldata");
     assert_eq!(metadata.calldata_byte_length, Some(4));
     assert!(metadata
@@ -3422,6 +3420,187 @@ async fn recovery_reconstructs_abi_write_call_history_record() {
     let raw_history = serde_json::to_string(&result.history).expect("serialize history");
     assert!(!raw_history.contains("canonicalParams"));
     assert!(!raw_history.contains("apiKey"));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn recovery_reconstructs_raw_calldata_history_record_without_type_fallback() {
+    let _guard = test_lock().lock().expect("test lock");
+    let _app_dir_guard = TestAppDirGuard::new("broadcast-history-recover-raw-calldata");
+    let path = wallet_workbench_lib::storage::history_recovery_intents_path()
+        .expect("recovery intents path");
+    fs::write(
+        path,
+        serde_json::to_string_pretty(&serde_json::json!([
+            {
+                "schemaVersion": 1,
+                "id": "raw-recovery-with-selector",
+                "status": "active",
+                "createdAt": "1700000000",
+                "txHash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "kind": "rawCalldata",
+                "chainId": 1,
+                "accountIndex": 3,
+                "from": "0x1111111111111111111111111111111111111111",
+                "nonce": 9,
+                "to": "0x2222222222222222222222222222222222222222",
+                "valueWei": "42",
+                "selector": "0x12345678",
+                "nativeValueWei": "42",
+                "frozenKey": "raw-draft-frozen-key",
+                "gasLimit": "100000",
+                "maxFeePerGas": "2000000000",
+                "maxPriorityFeePerGas": "1000000000",
+                "rawCalldataMetadata": {
+                    "intentKind": "rawCalldata",
+                    "chainId": 1,
+                    "accountIndex": 3,
+                    "from": "0x1111111111111111111111111111111111111111",
+                    "to": "0x2222222222222222222222222222222222222222",
+                    "valueWei": "42",
+                    "nonce": 9,
+                    "calldataHashVersion": "keccak256-v1",
+                    "calldataHash": "0xhash",
+                    "calldataByteLength": 36,
+                    "selector": "0x12345678",
+                    "selectorStatus": "unknown",
+                    "preview": { "truncated": false, "display": "0x12345678" },
+                    "futureSubmission": {
+                        "status": "broadcasted",
+                        "txHash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                        "broadcastedAt": "1700000001"
+                    },
+                    "broadcast": {
+                        "txHash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                        "broadcastedAt": "1700000001",
+                        "rpcChainId": 1,
+                        "rpcEndpointSummary": "https://rpc.example.invalid"
+                    },
+                    "recovery": {
+                        "recoveryId": "raw-recovery-with-selector",
+                        "status": "active",
+                        "createdAt": "1700000000"
+                    }
+                },
+                "broadcastedAt": "1700000001",
+                "writeError": "schema placeholder"
+            },
+            {
+                "schemaVersion": 1,
+                "id": "raw-recovery-without-selector",
+                "status": "active",
+                "createdAt": "1700000000",
+                "txHash": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "kind": "rawCalldata",
+                "chainId": 1,
+                "accountIndex": 3,
+                "from": "0x1111111111111111111111111111111111111111",
+                "nonce": 10,
+                "to": "0x2222222222222222222222222222222222222222",
+                "valueWei": "0",
+                "nativeValueWei": "0",
+                "frozenKey": "raw-empty-frozen-key",
+                "gasLimit": "100000",
+                "maxFeePerGas": "2000000000",
+                "maxPriorityFeePerGas": "1000000000",
+                "rawCalldataMetadata": {
+                    "intentKind": "rawCalldata",
+                    "chainId": 1,
+                    "accountIndex": 3,
+                    "from": "0x1111111111111111111111111111111111111111",
+                    "to": "0x2222222222222222222222222222222222222222",
+                    "valueWei": "0",
+                    "nonce": 10,
+                    "calldataHashVersion": "keccak256-v1",
+                    "calldataHash": "0xemptyhash",
+                    "calldataByteLength": 0,
+                    "selectorStatus": "none",
+                    "preview": { "truncated": false, "display": "0x" },
+                    "recovery": {
+                        "recoveryId": "raw-recovery-without-selector",
+                        "status": "active",
+                        "createdAt": "1700000000"
+                    }
+                },
+                "broadcastedAt": "1700000001",
+                "writeError": "schema placeholder"
+            }
+        ]))
+        .expect("serialize recovery intent"),
+    )
+    .expect("write recovery intent");
+
+    let with_selector = recover_broadcasted_history_record(
+        "raw-recovery-with-selector".into(),
+        start_recovery_rpc_server(
+            Box::leak(
+                receipt_json(
+                    "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    1,
+                )
+                .into_boxed_str(),
+            ),
+            "null",
+        ),
+        1,
+    )
+    .await
+    .expect("raw calldata recovery with selector should reconstruct history");
+
+    let without_selector = recover_broadcasted_history_record(
+        "raw-recovery-without-selector".into(),
+        start_recovery_rpc_server(
+            Box::leak(
+                receipt_json(
+                    "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                    1,
+                )
+                .into_boxed_str(),
+            ),
+            "null",
+        ),
+        1,
+    )
+    .await
+    .expect("raw calldata recovery without selector should reconstruct history");
+
+    for record in [&with_selector.record, &without_selector.record] {
+        assert_eq!(
+            record.submission.kind,
+            wallet_workbench_lib::models::SubmissionKind::RawCalldata
+        );
+        assert_eq!(
+            record.intent.typed_transaction.transaction_type,
+            wallet_workbench_lib::models::TransactionType::RawCalldata
+        );
+        assert_eq!(
+            record.submission.typed_transaction.transaction_type,
+            wallet_workbench_lib::models::TransactionType::RawCalldata
+        );
+        assert!(record.abi_call_metadata.is_none());
+        assert!(record.batch_metadata.is_none());
+        assert_eq!(
+            record
+                .raw_calldata_metadata
+                .as_ref()
+                .map(|metadata| metadata.intent_kind.as_str()),
+            Some("rawCalldata")
+        );
+    }
+    assert_eq!(
+        with_selector
+            .record
+            .submission
+            .typed_transaction
+            .selector
+            .as_deref(),
+        Some("0x12345678")
+    );
+    assert!(without_selector
+        .record
+        .submission
+        .typed_transaction
+        .selector
+        .is_none());
 }
 
 #[tokio::test(flavor = "current_thread")]

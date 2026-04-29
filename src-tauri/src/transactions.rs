@@ -1810,13 +1810,14 @@ fn local_same_nonce_review_result(
             SubmissionKind::Replacement
             | SubmissionKind::NativeTransfer
             | SubmissionKind::Erc20Transfer
-            | SubmissionKind::AbiWriteCall
-            | SubmissionKind::RawCalldata => Some((
+            | SubmissionKind::AbiWriteCall => Some((
                 ChainOutcomeState::Replaced,
                 candidate_hash,
                 "localReplacementSameNonce".to_string(),
             )),
-            SubmissionKind::Legacy | SubmissionKind::Unsupported => None,
+            SubmissionKind::Legacy | SubmissionKind::RawCalldata | SubmissionKind::Unsupported => {
+                None
+            }
         }
     })
 }
@@ -2605,15 +2606,26 @@ fn history_record_from_recovery_intent(
         .max_priority_fee_per_gas
         .clone()
         .unwrap_or_else(|| "unknown".to_string());
-    let is_erc20 = intent.kind == SubmissionKind::Erc20Transfer
-        || intent.token_contract.is_some()
-        || intent.amount_raw.is_some();
+    let is_raw_calldata = intent.kind == SubmissionKind::RawCalldata;
+    let is_erc20 = !is_raw_calldata
+        && (intent.kind == SubmissionKind::Erc20Transfer
+            || intent.token_contract.is_some()
+            || intent.amount_raw.is_some());
     let is_contract_call = !is_erc20
+        && !is_raw_calldata
         && (intent.kind == SubmissionKind::AbiWriteCall
             || intent.selector.is_some()
             || intent.method_name.is_some()
             || intent.batch_metadata.is_some());
-    let typed_transaction = if is_erc20 {
+    let typed_transaction = if is_raw_calldata {
+        TypedTransactionFields::raw_calldata(
+            intent.selector.clone(),
+            intent
+                .native_value_wei
+                .clone()
+                .unwrap_or_else(|| value_wei.clone()),
+        )
+    } else if is_erc20 {
         TypedTransactionFields {
             transaction_type: TransactionType::Erc20Transfer,
             token_contract: intent.token_contract.clone().or_else(|| Some(to.clone())),
@@ -2655,7 +2667,12 @@ fn history_record_from_recovery_intent(
         TypedTransactionFields::native_transfer(value_wei.clone())
     };
     let frozen_key = intent.frozen_key.clone().unwrap_or_else(|| {
-        if is_erc20 {
+        if is_raw_calldata {
+            format!(
+                "{chain_id}:{from}:{to}:{value_wei}:{nonce}:rawCalldata:{}",
+                typed_transaction.selector.as_deref().unwrap_or("unknown")
+            )
+        } else if is_erc20 {
             format!(
                 "{}:{}:{}:{}:{}:{}:{}:{}",
                 chain_id,
