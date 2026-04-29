@@ -14,12 +14,17 @@ use wallet_workbench_lib::commands::token_scanner::{
 };
 use wallet_workbench_lib::commands::token_watchlist::{
     add_watchlist_token, edit_watchlist_token, load_token_watchlist_state, remove_watchlist_token,
-    upsert_erc20_balance_snapshot, upsert_token_metadata_cache, upsert_token_scan_state,
-    AddWatchlistTokenInput, BalanceStatus, EditWatchlistTokenInput, MetadataOverrideInput,
-    RawMetadataSource, RawMetadataStatus, RemoveWatchlistTokenInput, ResolvedMetadataSource,
-    ResolvedMetadataStatus, ResolvedTokenMetadataSnapshot, TokenScanStatus,
-    UpsertErc20BalanceSnapshotInput, UpsertTokenMetadataCacheInput, UpsertTokenScanStateInput,
-    UserMetadataSource,
+    upsert_allowance_snapshot, upsert_approval_watchlist_entry, upsert_asset_scan_job,
+    upsert_asset_snapshot, upsert_erc20_balance_snapshot, upsert_nft_approval_snapshot,
+    upsert_token_metadata_cache, upsert_token_scan_state, AddWatchlistTokenInput,
+    AllowanceSnapshotStatus, ApprovalSourceKind, ApprovalWatchKind, AssetKind, AssetScanJobStatus,
+    AssetSnapshotStatus, BalanceStatus, EditWatchlistTokenInput, MetadataOverrideInput,
+    NftApprovalSnapshotStatus, RawMetadataSource, RawMetadataStatus, RemoveWatchlistTokenInput,
+    ResolvedMetadataSource, ResolvedMetadataStatus, ResolvedTokenMetadataSnapshot,
+    SourceMetadataInput, TokenScanStatus, UpsertAllowanceSnapshotInput,
+    UpsertApprovalWatchlistEntryInput, UpsertAssetScanJobInput, UpsertAssetSnapshotInput,
+    UpsertErc20BalanceSnapshotInput, UpsertNftApprovalSnapshotInput, UpsertTokenMetadataCacheInput,
+    UpsertTokenScanStateInput, UserMetadataSource,
 };
 use wallet_workbench_lib::storage::token_watchlist_path;
 
@@ -27,6 +32,8 @@ const APP_DIR_ENV: &str = "EVM_WALLET_WORKBENCH_APP_DIR";
 const USDC: &str = "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48";
 const DAI: &str = "0x6b175474e89094c44da98b954eedeac495271d0f";
 const ACCOUNT: &str = "0x70997970c51812dc3a010c7d01b50e0d17dc79c8";
+const SPENDER: &str = "0x1111111111111111111111111111111111111111";
+const OPERATOR: &str = "0x2222222222222222222222222222222222222222";
 
 fn test_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -146,6 +153,71 @@ fn balance_snapshot_input(
         clear_rpc_profile_id: false,
         resolved_metadata: None,
         clear_resolved_metadata: false,
+    }
+}
+
+fn approval_source(kind: ApprovalSourceKind) -> SourceMetadataInput {
+    SourceMetadataInput {
+        kind,
+        label: Some(" source label ".to_string()),
+        source_id: Some("source-id".to_string()),
+        summary: Some("summary".to_string()),
+        provider_hint: Some("provider".to_string()),
+        observed_at: Some("1700000000".to_string()),
+    }
+}
+
+fn asset_scan_job_input(
+    job_id: Option<&str>,
+    chain_id: u64,
+    owner: &str,
+    contract_filter: Option<&str>,
+) -> UpsertAssetScanJobInput {
+    UpsertAssetScanJobInput {
+        job_id: job_id.map(str::to_string),
+        chain_id,
+        owner: owner.to_string(),
+        status: AssetScanJobStatus::Scanning,
+        source: Some(approval_source(ApprovalSourceKind::RpcPointRead)),
+        contract_filter: contract_filter.map(str::to_string),
+        clear_contract_filter: false,
+        started_at: Some("1700000000".to_string()),
+        clear_started_at: false,
+        finished_at: None,
+        clear_finished_at: false,
+        last_error_summary: None,
+        clear_last_error_summary: false,
+        rpc_identity: None,
+        clear_rpc_identity: false,
+        rpc_profile_id: None,
+        clear_rpc_profile_id: false,
+    }
+}
+
+fn asset_snapshot_input(
+    asset_kind: AssetKind,
+    token_id: Option<&str>,
+    balance_raw: Option<&str>,
+) -> UpsertAssetSnapshotInput {
+    UpsertAssetSnapshotInput {
+        chain_id: 1,
+        owner: ACCOUNT.to_string(),
+        token_contract: DAI.to_string(),
+        asset_kind,
+        token_id: token_id.map(str::to_string),
+        balance_raw: balance_raw.map(str::to_string),
+        status: AssetSnapshotStatus::Active,
+        source: Some(approval_source(ApprovalSourceKind::RpcPointRead)),
+        last_scanned_at: Some("1700000001".to_string()),
+        clear_last_scanned_at: false,
+        last_error_summary: None,
+        clear_last_error_summary: false,
+        stale_after: None,
+        clear_stale_after: false,
+        rpc_identity: None,
+        clear_rpc_identity: false,
+        rpc_profile_id: None,
+        clear_rpc_profile_id: false,
     }
 }
 
@@ -272,8 +344,38 @@ fn missing_watchlist_file_loads_empty_default() {
         assert!(state.token_metadata_cache.is_empty());
         assert!(state.token_scan_state.is_empty());
         assert!(state.erc20_balance_snapshots.is_empty());
+        assert!(state.approval_watchlist.is_empty());
+        assert!(state.asset_scan_jobs.is_empty());
+        assert!(state.asset_snapshots.is_empty());
+        assert!(state.allowance_snapshots.is_empty());
+        assert!(state.nft_approval_snapshots.is_empty());
         assert!(state.resolved_token_metadata.is_empty());
         assert!(!token_watchlist_path().expect("path").exists());
+    });
+}
+
+#[test]
+fn old_token_watchlist_file_loads_additive_approval_defaults() {
+    with_test_app_dir("token-watchlist-additive-approval-defaults", |_| {
+        let path = token_watchlist_path().expect("path");
+        fs::write(
+            &path,
+            r#"{
+  "schemaVersion": 1,
+  "watchlistTokens": [],
+  "tokenMetadataCache": [],
+  "tokenScanState": [],
+  "erc20BalanceSnapshots": []
+}"#,
+        )
+        .expect("write old state");
+
+        let state = load_token_watchlist_state().expect("load old state");
+        assert!(state.approval_watchlist.is_empty());
+        assert!(state.asset_scan_jobs.is_empty());
+        assert!(state.asset_snapshots.is_empty());
+        assert!(state.allowance_snapshots.is_empty());
+        assert!(state.nft_approval_snapshots.is_empty());
     });
 }
 
@@ -978,6 +1080,637 @@ fn persisted_errors_and_rpc_identity_are_sanitized() {
         assert!(!raw.contains("rpc.example/path?"));
         assert!(!raw.contains("balance.example/rpc?"));
         assert!(!raw.contains("aaaaaaaaaaaaaaaa"));
+        assert!(raw.contains("[redacted"));
+    });
+}
+
+#[test]
+fn approval_asset_records_normalize_dedupe_and_sort() {
+    with_test_app_dir("token-watchlist-approval-sorting", |_| {
+        upsert_approval_watchlist_entry(UpsertApprovalWatchlistEntryInput {
+            chain_id: 1,
+            owner: ACCOUNT.to_string(),
+            token_contract: DAI.to_string(),
+            kind: ApprovalWatchKind::Erc721ApprovalForAll,
+            spender: None,
+            operator: Some(OPERATOR.to_string()),
+            token_id: None,
+            enabled: Some(true),
+            label: Some(" operator ".to_string()),
+            clear_label: false,
+            user_notes: None,
+            clear_user_notes: false,
+            source: Some(approval_source(ApprovalSourceKind::UserWatchlist)),
+        })
+        .expect("operator watch");
+        let state = upsert_approval_watchlist_entry(UpsertApprovalWatchlistEntryInput {
+            chain_id: 1,
+            owner: ACCOUNT.to_string(),
+            token_contract: USDC.to_string(),
+            kind: ApprovalWatchKind::Erc20Allowance,
+            spender: Some(SPENDER.to_string()),
+            operator: None,
+            token_id: None,
+            enabled: Some(true),
+            label: Some(" allowance ".to_string()),
+            clear_label: false,
+            user_notes: None,
+            clear_user_notes: false,
+            source: Some(approval_source(ApprovalSourceKind::ManualImport)),
+        })
+        .expect("allowance watch");
+
+        assert_eq!(state.approval_watchlist.len(), 2);
+        assert_eq!(
+            state.approval_watchlist[0].token_contract.to_lowercase(),
+            DAI
+        );
+        assert_eq!(
+            state.approval_watchlist[1].token_contract.to_lowercase(),
+            USDC
+        );
+        assert_eq!(
+            state.approval_watchlist[1].spender.as_deref(),
+            Some("0x1111111111111111111111111111111111111111")
+        );
+        assert_eq!(
+            state.approval_watchlist[1].label.as_deref(),
+            Some("allowance")
+        );
+
+        let deduped = upsert_approval_watchlist_entry(UpsertApprovalWatchlistEntryInput {
+            chain_id: 1,
+            owner: ACCOUNT.to_string(),
+            token_contract: USDC.to_string(),
+            kind: ApprovalWatchKind::Erc20Allowance,
+            spender: Some(SPENDER.to_string()),
+            operator: None,
+            token_id: None,
+            enabled: Some(false),
+            label: None,
+            clear_label: true,
+            user_notes: Some("updated".to_string()),
+            clear_user_notes: false,
+            source: None,
+        })
+        .expect("dedupe allowance watch");
+        assert_eq!(deduped.approval_watchlist.len(), 2);
+        assert!(!deduped.approval_watchlist[1].enabled);
+        assert_eq!(
+            deduped.approval_watchlist[1].user_notes.as_deref(),
+            Some("updated")
+        );
+
+        upsert_asset_scan_job(UpsertAssetScanJobInput {
+            job_id: None,
+            chain_id: 1,
+            owner: ACCOUNT.to_string(),
+            status: AssetScanJobStatus::Scanning,
+            source: Some(approval_source(ApprovalSourceKind::RpcPointRead)),
+            contract_filter: Some(DAI.to_string()),
+            clear_contract_filter: false,
+            started_at: Some("1700000000".to_string()),
+            clear_started_at: false,
+            finished_at: None,
+            clear_finished_at: false,
+            last_error_summary: None,
+            clear_last_error_summary: false,
+            rpc_identity: None,
+            clear_rpc_identity: false,
+            rpc_profile_id: None,
+            clear_rpc_profile_id: false,
+        })
+        .expect("scan job");
+        let state = upsert_asset_snapshot(UpsertAssetSnapshotInput {
+            chain_id: 1,
+            owner: ACCOUNT.to_string(),
+            token_contract: USDC.to_string(),
+            asset_kind: AssetKind::Erc20,
+            token_id: None,
+            balance_raw: Some("100".to_string()),
+            status: AssetSnapshotStatus::Active,
+            source: Some(approval_source(ApprovalSourceKind::RpcPointRead)),
+            last_scanned_at: Some("1700000001".to_string()),
+            clear_last_scanned_at: false,
+            last_error_summary: None,
+            clear_last_error_summary: false,
+            stale_after: None,
+            clear_stale_after: false,
+            rpc_identity: None,
+            clear_rpc_identity: false,
+            rpc_profile_id: None,
+            clear_rpc_profile_id: false,
+        })
+        .expect("asset snapshot");
+        assert_eq!(state.asset_scan_jobs.len(), 1);
+        assert_eq!(state.asset_snapshots.len(), 1);
+        assert_eq!(state.asset_snapshots[0].balance_raw.as_deref(), Some("100"));
+    });
+}
+
+#[test]
+fn nft_asset_snapshots_require_token_id_and_keep_holdings_distinct() {
+    with_test_app_dir("token-watchlist-nft-asset-token-id", |_| {
+        let missing_token_id =
+            upsert_asset_snapshot(asset_snapshot_input(AssetKind::Erc721, None, Some("1")));
+        assert!(missing_token_id.is_err());
+
+        let invalid_token_id = upsert_asset_snapshot(asset_snapshot_input(
+            AssetKind::Erc1155,
+            Some("-1"),
+            Some("1"),
+        ));
+        assert!(invalid_token_id.is_err());
+
+        let erc20_token_id = upsert_asset_snapshot(asset_snapshot_input(
+            AssetKind::Erc20,
+            Some("42"),
+            Some("100"),
+        ));
+        assert!(erc20_token_id.is_err());
+
+        let state = upsert_asset_snapshot(asset_snapshot_input(
+            AssetKind::Erc721,
+            Some("42"),
+            Some("1"),
+        ))
+        .expect("erc721 token 42");
+        assert_eq!(state.asset_snapshots.len(), 1);
+        assert_eq!(state.asset_snapshots[0].token_id.as_deref(), Some("42"));
+
+        let deduped = upsert_asset_snapshot(asset_snapshot_input(
+            AssetKind::Erc721,
+            Some("00042"),
+            Some("0"),
+        ))
+        .expect("erc721 token 00042 dedupe");
+        assert_eq!(deduped.asset_snapshots.len(), 1);
+        assert_eq!(deduped.asset_snapshots[0].token_id.as_deref(), Some("42"));
+        assert_eq!(deduped.asset_snapshots[0].balance_raw.as_deref(), Some("0"));
+
+        let distinct = upsert_asset_snapshot(asset_snapshot_input(
+            AssetKind::Erc721,
+            Some("43"),
+            Some("1"),
+        ))
+        .expect("erc721 token 43");
+        assert_eq!(distinct.asset_snapshots.len(), 2);
+        assert_eq!(distinct.asset_snapshots[0].token_id.as_deref(), Some("42"));
+        assert_eq!(distinct.asset_snapshots[1].token_id.as_deref(), Some("43"));
+    });
+}
+
+#[test]
+fn nft_approval_token_ids_are_canonicalized_for_identity() {
+    with_test_app_dir("token-watchlist-nft-approval-token-id", |_| {
+        upsert_approval_watchlist_entry(UpsertApprovalWatchlistEntryInput {
+            chain_id: 1,
+            owner: ACCOUNT.to_string(),
+            token_contract: DAI.to_string(),
+            kind: ApprovalWatchKind::Erc721TokenApproval,
+            spender: None,
+            operator: Some(OPERATOR.to_string()),
+            token_id: Some("42".to_string()),
+            enabled: Some(true),
+            label: Some("token approval".to_string()),
+            clear_label: false,
+            user_notes: None,
+            clear_user_notes: false,
+            source: Some(approval_source(ApprovalSourceKind::UserWatchlist)),
+        })
+        .expect("token approval watch");
+
+        let watchlist = upsert_approval_watchlist_entry(UpsertApprovalWatchlistEntryInput {
+            chain_id: 1,
+            owner: ACCOUNT.to_string(),
+            token_contract: DAI.to_string(),
+            kind: ApprovalWatchKind::Erc721TokenApproval,
+            spender: None,
+            operator: Some(OPERATOR.to_string()),
+            token_id: Some("00042".to_string()),
+            enabled: Some(false),
+            label: None,
+            clear_label: false,
+            user_notes: Some("canonical".to_string()),
+            clear_user_notes: false,
+            source: None,
+        })
+        .expect("token approval watch dedupe");
+        assert_eq!(watchlist.approval_watchlist.len(), 1);
+        assert_eq!(
+            watchlist.approval_watchlist[0].token_id.as_deref(),
+            Some("42")
+        );
+        assert!(!watchlist.approval_watchlist[0].enabled);
+
+        upsert_nft_approval_snapshot(UpsertNftApprovalSnapshotInput {
+            chain_id: 1,
+            owner: ACCOUNT.to_string(),
+            token_contract: DAI.to_string(),
+            kind: ApprovalWatchKind::Erc721TokenApproval,
+            operator: OPERATOR.to_string(),
+            token_id: Some("42".to_string()),
+            approved: Some(true),
+            status: NftApprovalSnapshotStatus::Active,
+            source: Some(approval_source(ApprovalSourceKind::RpcPointRead)),
+            last_scanned_at: Some("1700000000".to_string()),
+            clear_last_scanned_at: false,
+            last_error_summary: None,
+            clear_last_error_summary: false,
+            stale_after: None,
+            clear_stale_after: false,
+            rpc_identity: None,
+            clear_rpc_identity: false,
+            rpc_profile_id: None,
+            clear_rpc_profile_id: false,
+        })
+        .expect("token approval snapshot");
+
+        let snapshot = upsert_nft_approval_snapshot(UpsertNftApprovalSnapshotInput {
+            chain_id: 1,
+            owner: ACCOUNT.to_string(),
+            token_contract: DAI.to_string(),
+            kind: ApprovalWatchKind::Erc721TokenApproval,
+            operator: OPERATOR.to_string(),
+            token_id: Some("00042".to_string()),
+            approved: Some(false),
+            status: NftApprovalSnapshotStatus::Revoked,
+            source: Some(approval_source(ApprovalSourceKind::RpcPointRead)),
+            last_scanned_at: Some("1700000001".to_string()),
+            clear_last_scanned_at: false,
+            last_error_summary: None,
+            clear_last_error_summary: false,
+            stale_after: None,
+            clear_stale_after: false,
+            rpc_identity: None,
+            clear_rpc_identity: false,
+            rpc_profile_id: None,
+            clear_rpc_profile_id: false,
+        })
+        .expect("token approval snapshot dedupe");
+        assert_eq!(snapshot.nft_approval_snapshots.len(), 1);
+        assert_eq!(
+            snapshot.nft_approval_snapshots[0].token_id.as_deref(),
+            Some("42")
+        );
+        assert_eq!(snapshot.nft_approval_snapshots[0].approved, Some(false));
+    });
+}
+
+#[test]
+fn asset_scan_jobs_use_deterministic_identity_job_id() {
+    with_test_app_dir("token-watchlist-asset-scan-job-identity", |_| {
+        let state = upsert_asset_scan_job(asset_scan_job_input(None, 1, ACCOUNT, Some(DAI)))
+            .expect("deterministic scan job");
+        assert_eq!(state.asset_scan_jobs.len(), 1);
+        let job_id = state.asset_scan_jobs[0].job_id.clone();
+
+        let deduped =
+            upsert_asset_scan_job(asset_scan_job_input(Some(&job_id), 1, ACCOUNT, Some(DAI)))
+                .expect("matching deterministic job id");
+        assert_eq!(deduped.asset_scan_jobs.len(), 1);
+
+        let mismatch =
+            upsert_asset_scan_job(asset_scan_job_input(Some(&job_id), 1, SPENDER, Some(DAI)));
+        assert!(mismatch.is_err());
+
+        let isolated = upsert_asset_scan_job(asset_scan_job_input(None, 1, SPENDER, Some(DAI)))
+            .expect("different owner gets different deterministic job");
+        assert_eq!(isolated.asset_scan_jobs.len(), 2);
+        assert_ne!(
+            isolated.asset_scan_jobs[0].job_id,
+            isolated.asset_scan_jobs[1].job_id
+        );
+
+        let arbitrary = upsert_asset_scan_job(asset_scan_job_input(
+            Some("caller-provided-job"),
+            1,
+            ACCOUNT,
+            Some(DAI),
+        ));
+        assert!(arbitrary.is_err());
+    });
+}
+
+#[test]
+fn approval_watchlist_label_and_notes_are_sanitized() {
+    with_test_app_dir("token-watchlist-approval-label-redaction", |_| {
+        let state = upsert_approval_watchlist_entry(UpsertApprovalWatchlistEntryInput {
+            chain_id: 1,
+            owner: ACCOUNT.to_string(),
+            token_contract: USDC.to_string(),
+            kind: ApprovalWatchKind::Erc20Allowance,
+            spender: Some(SPENDER.to_string()),
+            operator: None,
+            token_id: None,
+            enabled: Some(true),
+            label: Some(" payroll apiKey=label-secret ".to_string()),
+            clear_label: false,
+            user_notes: Some(
+                "mnemonic seed phrase https://auth.example/rpc?token=note-secret".to_string(),
+            ),
+            clear_user_notes: false,
+            source: Some(approval_source(ApprovalSourceKind::UserWatchlist)),
+        })
+        .expect("approval watchlist redaction");
+
+        assert_eq!(state.approval_watchlist.len(), 1);
+        assert!(state.approval_watchlist[0]
+            .label
+            .as_deref()
+            .unwrap_or_default()
+            .starts_with("payroll"));
+
+        let raw = fs::read_to_string(token_watchlist_path().expect("path")).expect("read state");
+        assert!(!raw.contains("label-secret"));
+        assert!(!raw.contains("note-secret"));
+        assert!(!raw.contains("mnemonic seed phrase"));
+        assert!(!raw.contains("auth.example/rpc?"));
+        assert!(raw.contains("payroll"));
+        assert!(raw.contains("[redacted"));
+    });
+}
+
+#[test]
+fn failed_approval_upserts_preserve_last_confirmed_values() {
+    with_test_app_dir("token-watchlist-approval-preserve", |_| {
+        upsert_allowance_snapshot(UpsertAllowanceSnapshotInput {
+            chain_id: 1,
+            owner: ACCOUNT.to_string(),
+            token_contract: USDC.to_string(),
+            spender: SPENDER.to_string(),
+            allowance_raw: Some("100".to_string()),
+            status: AllowanceSnapshotStatus::Active,
+            source: Some(approval_source(ApprovalSourceKind::RpcPointRead)),
+            last_scanned_at: Some("1700000000".to_string()),
+            clear_last_scanned_at: false,
+            last_error_summary: None,
+            clear_last_error_summary: false,
+            stale_after: None,
+            clear_stale_after: false,
+            rpc_identity: None,
+            clear_rpc_identity: false,
+            rpc_profile_id: None,
+            clear_rpc_profile_id: false,
+        })
+        .expect("active allowance");
+        let failed_allowance = upsert_allowance_snapshot(UpsertAllowanceSnapshotInput {
+            chain_id: 1,
+            owner: ACCOUNT.to_string(),
+            token_contract: USDC.to_string(),
+            spender: SPENDER.to_string(),
+            allowance_raw: Some("999".to_string()),
+            status: AllowanceSnapshotStatus::ReadFailed,
+            source: Some(approval_source(ApprovalSourceKind::Unavailable)),
+            last_scanned_at: Some("1700000001".to_string()),
+            clear_last_scanned_at: false,
+            last_error_summary: Some("read failed".to_string()),
+            clear_last_error_summary: false,
+            stale_after: None,
+            clear_stale_after: false,
+            rpc_identity: None,
+            clear_rpc_identity: false,
+            rpc_profile_id: None,
+            clear_rpc_profile_id: false,
+        })
+        .expect("failed allowance");
+        assert_eq!(failed_allowance.allowance_snapshots[0].allowance_raw, "100");
+        assert_eq!(
+            failed_allowance.allowance_snapshots[0].status,
+            AllowanceSnapshotStatus::ReadFailed
+        );
+
+        upsert_allowance_snapshot(UpsertAllowanceSnapshotInput {
+            chain_id: 1,
+            owner: ACCOUNT.to_string(),
+            token_contract: USDC.to_string(),
+            spender: SPENDER.to_string(),
+            allowance_raw: Some("0".to_string()),
+            status: AllowanceSnapshotStatus::Zero,
+            source: Some(approval_source(ApprovalSourceKind::RpcPointRead)),
+            last_scanned_at: Some("1700000002".to_string()),
+            clear_last_scanned_at: false,
+            last_error_summary: None,
+            clear_last_error_summary: false,
+            stale_after: None,
+            clear_stale_after: false,
+            rpc_identity: None,
+            clear_rpc_identity: false,
+            rpc_profile_id: None,
+            clear_rpc_profile_id: false,
+        })
+        .expect("zero allowance");
+        let stale_allowance = upsert_allowance_snapshot(UpsertAllowanceSnapshotInput {
+            chain_id: 1,
+            owner: ACCOUNT.to_string(),
+            token_contract: USDC.to_string(),
+            spender: SPENDER.to_string(),
+            allowance_raw: Some("999".to_string()),
+            status: AllowanceSnapshotStatus::Stale,
+            source: Some(approval_source(ApprovalSourceKind::Unavailable)),
+            last_scanned_at: Some("1700000003".to_string()),
+            clear_last_scanned_at: false,
+            last_error_summary: Some("stale".to_string()),
+            clear_last_error_summary: false,
+            stale_after: None,
+            clear_stale_after: false,
+            rpc_identity: None,
+            clear_rpc_identity: false,
+            rpc_profile_id: None,
+            clear_rpc_profile_id: false,
+        })
+        .expect("stale allowance");
+        assert_eq!(stale_allowance.allowance_snapshots[0].allowance_raw, "0");
+        assert_eq!(
+            stale_allowance.allowance_snapshots[0].status,
+            AllowanceSnapshotStatus::Stale
+        );
+
+        upsert_nft_approval_snapshot(UpsertNftApprovalSnapshotInput {
+            chain_id: 1,
+            owner: ACCOUNT.to_string(),
+            token_contract: DAI.to_string(),
+            kind: ApprovalWatchKind::Erc721ApprovalForAll,
+            operator: OPERATOR.to_string(),
+            token_id: None,
+            approved: Some(true),
+            status: NftApprovalSnapshotStatus::Active,
+            source: Some(approval_source(ApprovalSourceKind::RpcPointRead)),
+            last_scanned_at: Some("1700000000".to_string()),
+            clear_last_scanned_at: false,
+            last_error_summary: None,
+            clear_last_error_summary: false,
+            stale_after: None,
+            clear_stale_after: false,
+            rpc_identity: None,
+            clear_rpc_identity: false,
+            rpc_profile_id: None,
+            clear_rpc_profile_id: false,
+        })
+        .expect("active nft approval");
+        let failed_nft = upsert_nft_approval_snapshot(UpsertNftApprovalSnapshotInput {
+            chain_id: 1,
+            owner: ACCOUNT.to_string(),
+            token_contract: DAI.to_string(),
+            kind: ApprovalWatchKind::Erc721ApprovalForAll,
+            operator: OPERATOR.to_string(),
+            token_id: None,
+            approved: Some(false),
+            status: NftApprovalSnapshotStatus::RateLimited,
+            source: Some(approval_source(ApprovalSourceKind::Unavailable)),
+            last_scanned_at: Some("1700000001".to_string()),
+            clear_last_scanned_at: false,
+            last_error_summary: Some("rate limited".to_string()),
+            clear_last_error_summary: false,
+            stale_after: None,
+            clear_stale_after: false,
+            rpc_identity: None,
+            clear_rpc_identity: false,
+            rpc_profile_id: None,
+            clear_rpc_profile_id: false,
+        })
+        .expect("failed nft approval");
+        assert_eq!(failed_nft.nft_approval_snapshots[0].approved, Some(true));
+        assert_eq!(
+            failed_nft.nft_approval_snapshots[0].status,
+            NftApprovalSnapshotStatus::RateLimited
+        );
+
+        let failed_nft_true = upsert_nft_approval_snapshot(UpsertNftApprovalSnapshotInput {
+            chain_id: 1,
+            owner: ACCOUNT.to_string(),
+            token_contract: DAI.to_string(),
+            kind: ApprovalWatchKind::Erc721ApprovalForAll,
+            operator: OPERATOR.to_string(),
+            token_id: None,
+            approved: Some(true),
+            status: NftApprovalSnapshotStatus::ReadFailed,
+            source: Some(approval_source(ApprovalSourceKind::Unavailable)),
+            last_scanned_at: Some("1700000002".to_string()),
+            clear_last_scanned_at: false,
+            last_error_summary: Some("read failed".to_string()),
+            clear_last_error_summary: false,
+            stale_after: None,
+            clear_stale_after: false,
+            rpc_identity: None,
+            clear_rpc_identity: false,
+            rpc_profile_id: None,
+            clear_rpc_profile_id: false,
+        })
+        .expect("failed nft approval true");
+        assert_eq!(
+            failed_nft_true.nft_approval_snapshots[0].approved,
+            Some(true)
+        );
+
+        upsert_nft_approval_snapshot(UpsertNftApprovalSnapshotInput {
+            chain_id: 1,
+            owner: ACCOUNT.to_string(),
+            token_contract: DAI.to_string(),
+            kind: ApprovalWatchKind::Erc721ApprovalForAll,
+            operator: OPERATOR.to_string(),
+            token_id: None,
+            approved: Some(false),
+            status: NftApprovalSnapshotStatus::Revoked,
+            source: Some(approval_source(ApprovalSourceKind::RpcPointRead)),
+            last_scanned_at: Some("1700000003".to_string()),
+            clear_last_scanned_at: false,
+            last_error_summary: None,
+            clear_last_error_summary: false,
+            stale_after: None,
+            clear_stale_after: false,
+            rpc_identity: None,
+            clear_rpc_identity: false,
+            rpc_profile_id: None,
+            clear_rpc_profile_id: false,
+        })
+        .expect("revoked nft approval");
+        let stale_nft = upsert_nft_approval_snapshot(UpsertNftApprovalSnapshotInput {
+            chain_id: 1,
+            owner: ACCOUNT.to_string(),
+            token_contract: DAI.to_string(),
+            kind: ApprovalWatchKind::Erc721ApprovalForAll,
+            operator: OPERATOR.to_string(),
+            token_id: None,
+            approved: Some(true),
+            status: NftApprovalSnapshotStatus::Stale,
+            source: Some(approval_source(ApprovalSourceKind::Unavailable)),
+            last_scanned_at: Some("1700000004".to_string()),
+            clear_last_scanned_at: false,
+            last_error_summary: Some("stale".to_string()),
+            clear_last_error_summary: false,
+            stale_after: None,
+            clear_stale_after: false,
+            rpc_identity: None,
+            clear_rpc_identity: false,
+            rpc_profile_id: None,
+            clear_rpc_profile_id: false,
+        })
+        .expect("stale nft approval");
+        assert_eq!(stale_nft.nft_approval_snapshots[0].approved, Some(false));
+        assert_eq!(
+            stale_nft.nft_approval_snapshots[0].status,
+            NftApprovalSnapshotStatus::Stale
+        );
+    });
+}
+
+#[test]
+fn approval_source_metadata_and_provider_errors_are_sanitized() {
+    with_test_app_dir("token-watchlist-approval-redaction", |_| {
+        upsert_allowance_snapshot(UpsertAllowanceSnapshotInput {
+            chain_id: 1,
+            owner: ACCOUNT.to_string(),
+            token_contract: USDC.to_string(),
+            spender: SPENDER.to_string(),
+            allowance_raw: Some("0".to_string()),
+            status: AllowanceSnapshotStatus::ReadFailed,
+            source: Some(SourceMetadataInput {
+                kind: ApprovalSourceKind::ExplorerCandidate,
+                label: Some("apiKey=label-secret".to_string()),
+                source_id: Some("token=source-secret".to_string()),
+                summary: Some(
+                    "provider failed https://provider.example/rpc?apiKey=query-secret mnemonic seed phrase"
+                        .to_string(),
+                ),
+                provider_hint: Some(
+                    "Authorization Bearer bearer-secret private_key=0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                        .to_string(),
+                ),
+                observed_at: Some(
+                    "https://provider.example/?token=observed-secret apiKey=observed-key"
+                        .to_string(),
+                ),
+            }),
+            last_scanned_at: None,
+            clear_last_scanned_at: false,
+            last_error_summary: Some(
+                "raw signed tx 0x02f8aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa apiKey=error-secret"
+                    .to_string(),
+            ),
+            clear_last_error_summary: false,
+            stale_after: None,
+            clear_stale_after: false,
+            rpc_identity: Some("https://rpc.example/?token=rpc-secret".to_string()),
+            clear_rpc_identity: false,
+            rpc_profile_id: Some("profile secret=profile-secret".to_string()),
+            clear_rpc_profile_id: false,
+        })
+        .expect("failed allowance");
+
+        let raw = fs::read_to_string(token_watchlist_path().expect("path")).expect("read state");
+        assert!(!raw.contains("label-secret"));
+        assert!(!raw.contains("source-secret"));
+        assert!(!raw.contains("query-secret"));
+        assert!(!raw.contains("bearer-secret"));
+        assert!(!raw.contains("bbbbbbbbbbbbbbbb"));
+        assert!(!raw.contains("observed-secret"));
+        assert!(!raw.contains("observed-key"));
+        assert!(!raw.contains("provider.example"));
+        assert!(!raw.contains("error-secret"));
+        assert!(!raw.contains("rpc-secret"));
+        assert!(!raw.contains("profile-secret"));
+        assert!(!raw.contains("mnemonic seed phrase"));
         assert!(raw.contains("[redacted"));
     });
 }
