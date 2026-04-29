@@ -4350,6 +4350,12 @@ pub async fn submit_native_transfer_with_history_kind(
     kind: SubmissionKind,
     replaces_tx_hash: Option<String>,
 ) -> Result<HistoryRecord, String> {
+    if intent.typed_transaction.transaction_type == TransactionType::RawCalldata {
+        return Err(
+            "rawCalldata submit is not implemented yet; use the raw calldata flow when it is available"
+                .to_string(),
+        );
+    }
     if intent.typed_transaction.transaction_type == TransactionType::Erc20Transfer {
         return submit_erc20_history_intent_with_kind(intent, kind, replaces_tx_hash).await;
     }

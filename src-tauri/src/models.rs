@@ -217,6 +217,18 @@ impl TypedTransactionFields {
             ..Self::default()
         }
     }
+
+    fn normalize_as_raw_calldata(&mut self) {
+        self.transaction_type = TransactionType::RawCalldata;
+        self.token_contract = None;
+        self.recipient = None;
+        self.amount_raw = None;
+        self.decimals = None;
+        self.token_symbol = None;
+        self.token_name = None;
+        self.token_metadata_source = None;
+        self.method_name = None;
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1776,6 +1788,11 @@ impl HistoryRecord {
 
     pub fn normalize_raw_calldata_metadata(&mut self) {
         if self.has_raw_calldata_shape() {
+            self.intent.typed_transaction.normalize_as_raw_calldata();
+            self.submission
+                .typed_transaction
+                .normalize_as_raw_calldata();
+            self.submission.kind = SubmissionKind::RawCalldata;
             self.batch_metadata = None;
             self.abi_call_metadata = None;
         }

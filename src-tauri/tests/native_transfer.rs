@@ -1236,36 +1236,52 @@ fn history_record_load_output_drops_raw_calldata_abi_and_batch_metadata() {
         let raw_record = serde_json::json!({
             "schema_version": 5,
             "intent": {
-                "transaction_type": "rawCalldata",
+                "transaction_type": "nativeTransfer",
                 "rpc_url": "history-schema-placeholder",
                 "account_index": 1,
                 "chain_id": 1,
                 "from": "0x1111111111111111111111111111111111111111",
                 "to": "0x6666666666666666666666666666666666666666",
                 "value_wei": "42",
+                "token_contract": "0x9999999999999999999999999999999999999999",
+                "recipient": "0x8888888888888888888888888888888888888888",
+                "amount_raw": "1000000",
+                "decimals": 6,
+                "token_symbol": "STALE",
+                "token_name": "Stale Token",
+                "token_metadata_source": "stale",
                 "nonce": 7,
                 "gas_limit": "120000",
                 "max_fee_per_gas": "40000000000",
                 "max_priority_fee_per_gas": "1500000000",
                 "selector": "0x12345678",
+                "method_name": "transfer(address,uint256)",
                 "native_value_wei": "42"
             },
             "submission": {
-                "transaction_type": "rawCalldata",
+                "transaction_type": "erc20Transfer",
                 "frozen_key": "raw-draft-key",
                 "tx_hash": "0xraw",
-                "kind": "rawCalldata",
+                "kind": "abiWriteCall",
                 "source": "rawCalldataDraft",
                 "chain_id": 1,
                 "account_index": 1,
                 "from": "0x1111111111111111111111111111111111111111",
                 "to": "0x6666666666666666666666666666666666666666",
                 "value_wei": "42",
+                "token_contract": "0x9999999999999999999999999999999999999999",
+                "recipient": "0x8888888888888888888888888888888888888888",
+                "amount_raw": "1000000",
+                "decimals": 6,
+                "token_symbol": "STALE",
+                "token_name": "Stale Token",
+                "token_metadata_source": "stale",
                 "nonce": 7,
                 "gas_limit": "120000",
                 "max_fee_per_gas": "40000000000",
                 "max_priority_fee_per_gas": "1500000000",
                 "selector": "0x12345678",
+                "method_name": "transfer(address,uint256)",
                 "native_value_wei": "42"
             },
             "outcome": {
@@ -1366,6 +1382,46 @@ fn history_record_load_output_drops_raw_calldata_abi_and_batch_metadata() {
             records[0].intent.typed_transaction.transaction_type,
             wallet_workbench_lib::models::TransactionType::RawCalldata
         );
+        assert_eq!(
+            records[0].submission.typed_transaction.transaction_type,
+            wallet_workbench_lib::models::TransactionType::RawCalldata
+        );
+        assert!(records[0].intent.typed_transaction.token_contract.is_none());
+        assert!(records[0].intent.typed_transaction.recipient.is_none());
+        assert!(records[0].intent.typed_transaction.amount_raw.is_none());
+        assert!(records[0].intent.typed_transaction.decimals.is_none());
+        assert!(records[0].intent.typed_transaction.token_symbol.is_none());
+        assert!(records[0].intent.typed_transaction.token_name.is_none());
+        assert!(records[0]
+            .intent
+            .typed_transaction
+            .token_metadata_source
+            .is_none());
+        assert!(records[0].intent.typed_transaction.method_name.is_none());
+        assert!(records[0]
+            .submission
+            .typed_transaction
+            .token_contract
+            .is_none());
+        assert!(records[0].submission.typed_transaction.recipient.is_none());
+        assert!(records[0].submission.typed_transaction.amount_raw.is_none());
+        assert!(records[0].submission.typed_transaction.decimals.is_none());
+        assert!(records[0]
+            .submission
+            .typed_transaction
+            .token_symbol
+            .is_none());
+        assert!(records[0].submission.typed_transaction.token_name.is_none());
+        assert!(records[0]
+            .submission
+            .typed_transaction
+            .token_metadata_source
+            .is_none());
+        assert!(records[0]
+            .submission
+            .typed_transaction
+            .method_name
+            .is_none());
         assert!(records[0].abi_call_metadata.is_none());
         assert!(records[0].batch_metadata.is_none());
         assert!(records[0].raw_calldata_metadata.is_some());
@@ -1383,6 +1439,18 @@ fn history_record_load_output_drops_raw_calldata_abi_and_batch_metadata() {
             output[0]["submission"]["kind"],
             serde_json::Value::String("rawCalldata".to_string())
         );
+        assert_eq!(
+            output[0]["intent"]["transaction_type"],
+            serde_json::Value::String("rawCalldata".to_string())
+        );
+        assert_eq!(
+            output[0]["submission"]["transaction_type"],
+            serde_json::Value::String("rawCalldata".to_string())
+        );
+        assert!(output[0]["intent"]["token_contract"].is_null());
+        assert!(output[0]["submission"]["token_contract"].is_null());
+        assert!(output[0]["intent"]["method_name"].is_null());
+        assert!(output[0]["submission"]["method_name"].is_null());
         assert_eq!(
             output[1]["abi_call_metadata"]["draftId"],
             serde_json::Value::String("valid-abi-metadata".to_string())
@@ -2542,6 +2610,25 @@ async fn submit_refuses_to_broadcast_when_history_is_unreadable() {
         "unexpected error: {error}; requests={joined_requests}"
     );
     assert!(!joined_requests.contains("eth_sendRawTransaction"));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn submit_rejects_raw_calldata_intent_before_broadcast_or_history_write() {
+    let _guard = test_lock().lock().expect("test lock");
+    let _app_dir_guard = TestAppDirGuard::new("submit-raw-calldata-deferred");
+    let mut intent = native_transfer_intent(0, "1");
+    intent.typed_transaction = wallet_workbench_lib::models::TypedTransactionFields::raw_calldata(
+        Some("0x12345678".into()),
+        "1",
+    );
+
+    let error = wallet_workbench_lib::transactions::submit_native_transfer(intent)
+        .await
+        .expect_err("raw calldata submit is deferred");
+
+    assert!(error.contains("rawCalldata"));
+    assert!(error.contains("not implemented"));
+    assert!(!history_path().expect("history path").exists());
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -4694,6 +4781,84 @@ fn pending_mutation_refuses_abi_write_contract_call_records() {
 
         assert!(replace_error.contains("contractCall"));
         assert!(cancel_error.contains("contractCall"));
+    });
+}
+
+#[test]
+fn pending_mutation_refuses_raw_calldata_records() {
+    with_test_app_dir("pending-mutation-raw-calldata-blocked", |_| {
+        let mut record = history_record(9, ChainOutcomeState::Pending, "0xraw");
+        record.intent.typed_transaction =
+            wallet_workbench_lib::models::TypedTransactionFields::native_transfer("200");
+        record.intent.typed_transaction.token_contract =
+            Some("0x9999999999999999999999999999999999999999".into());
+        record.intent.typed_transaction.recipient =
+            Some("0x8888888888888888888888888888888888888888".into());
+        record.intent.typed_transaction.amount_raw = Some("1000000".into());
+        record.intent.typed_transaction.decimals = Some(6);
+        record.submission.typed_transaction =
+            wallet_workbench_lib::models::TypedTransactionFields::erc20_transfer(
+                "0x9999999999999999999999999999999999999999",
+                "0x8888888888888888888888888888888888888888",
+                "1000000",
+                6,
+                Some("STALE".into()),
+                Some("Stale Token".into()),
+                "stale",
+            );
+        record.submission.kind = wallet_workbench_lib::models::SubmissionKind::AbiWriteCall;
+        record.abi_call_metadata = Some(
+            serde_json::from_value(serde_json::json!({
+                "intentKind": "abiWriteCall",
+                "sourceKind": "provider",
+                "functionSignature": "transfer(address,uint256)",
+                "selector": "0xa9059cbb"
+            }))
+            .expect("abi metadata"),
+        );
+        record.raw_calldata_metadata = Some(
+            serde_json::from_value(serde_json::json!({
+                "intentKind": "rawCalldata",
+                "calldataHashVersion": "keccak256-v1",
+                "calldataHash": "0xrawhash",
+                "calldataByteLength": 4,
+                "selector": "0x12345678"
+            }))
+            .expect("raw calldata metadata"),
+        );
+        fs::write(
+            history_path().expect("history path"),
+            serde_json::to_string_pretty(&vec![record]).expect("serialize history"),
+        )
+        .expect("write history");
+
+        let request = wallet_workbench_lib::commands::transactions::PendingMutationRequest {
+            tx_hash: "0xraw".into(),
+            rpc_url: "http://127.0.0.1:8545".into(),
+            account_index: 1,
+            chain_id: 1,
+            from: "0x1111111111111111111111111111111111111111".into(),
+            nonce: 9,
+            gas_limit: "21000".into(),
+            max_fee_per_gas: "50000000000".into(),
+            max_priority_fee_per_gas: "2000000000".into(),
+            to: Some("0x3333333333333333333333333333333333333333".into()),
+            value_wei: Some("200".into()),
+        };
+
+        let replace_error =
+            wallet_workbench_lib::commands::transactions::build_replace_intent_from_pending_request(
+                request.clone(),
+            )
+            .expect_err("replace must reject raw calldata records");
+        let cancel_error =
+            wallet_workbench_lib::commands::transactions::build_cancel_intent_from_pending_request(
+                request,
+            )
+            .expect_err("cancel must reject raw calldata records");
+
+        assert!(replace_error.contains("rawCalldata"));
+        assert!(cancel_error.contains("rawCalldata"));
     });
 }
 

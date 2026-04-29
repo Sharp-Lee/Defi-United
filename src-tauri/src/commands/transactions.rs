@@ -607,6 +607,15 @@ fn validate_pending_mutation_supported(
                 .to_string(),
         );
     }
+    if record.raw_calldata_metadata.is_some()
+        || record.submission.kind == SubmissionKind::RawCalldata
+        || record.intent.typed_transaction.transaction_type == TransactionType::RawCalldata
+        || record.submission.typed_transaction.transaction_type == TransactionType::RawCalldata
+    {
+        return Err(
+            "replace/cancel for rawCalldata history records is not implemented".to_string(),
+        );
+    }
     Ok(())
 }
 

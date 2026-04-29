@@ -560,6 +560,21 @@ function normalizeTypedTransactionFields(
   };
 }
 
+function canonicalRawCalldataTypedFields<T extends TypedTransactionFields>(value: T): T {
+  return {
+    ...value,
+    transaction_type: "rawCalldata",
+    token_contract: null,
+    recipient: null,
+    amount_raw: null,
+    decimals: null,
+    token_symbol: null,
+    token_name: null,
+    token_metadata_source: null,
+    method_name: null,
+  };
+}
+
 function transactionTypeFallbackForSubmission(kind: SubmissionKind): TransactionType {
   if (kind === "abiWriteCall") return "contractCall";
   if (kind === "rawCalldata") return "rawCalldata";
@@ -1058,14 +1073,18 @@ export function normalizeHistoryRecord(rawRecord: unknown): HistoryRecord {
     submission.kind === "rawCalldata" ||
     submission.transaction_type === "rawCalldata" ||
     rawCalldataMetadata != null;
+  const normalizedIntent = isRawCalldata ? canonicalRawCalldataTypedFields(intent) : intent;
+  const normalizedSubmission = isRawCalldata
+    ? { ...canonicalRawCalldataTypedFields(submission), kind: "rawCalldata" as const }
+    : submission;
   return {
     schema_version: numberOrNull(record.schema_version) ?? 1,
-    intent,
+    intent: normalizedIntent,
     intent_snapshot: {
       source: stringOrDefault(intentSnapshot.source, LEGACY),
       captured_at: stringOrNull(intentSnapshot.captured_at),
     },
-    submission,
+    submission: normalizedSubmission,
     outcome: normalizeOutcome(record.outcome),
     nonce_thread: normalizeNonceThread(record.nonce_thread),
     batch_metadata: isRawCalldata ? null : normalizeBatchMetadata(record.batch_metadata ?? record.batchMetadata),

@@ -431,28 +431,44 @@ describe("history schema normalization", () => {
         schema_version: 5,
         intent: {
           ...legacyIntent,
-          transaction_type: "rawCalldata",
+          transaction_type: "nativeTransfer",
+          token_contract: "0x9999999999999999999999999999999999999999",
+          recipient: "0x8888888888888888888888888888888888888888",
+          amount_raw: "1000000",
+          decimals: 6,
+          token_symbol: "STALE",
+          token_name: "Stale Token",
+          token_metadata_source: "stale",
           to: "0x6666666666666666666666666666666666666666",
           value_wei: "42",
           selector: "0x12345678",
+          method_name: "transfer(address,uint256)",
           native_value_wei: "42",
         },
         submission: {
           frozen_key: "raw-draft-key",
           tx_hash: "0xraw",
-          kind: "rawCalldata",
-          transaction_type: "rawCalldata",
+          kind: "abiWriteCall",
+          transaction_type: "erc20Transfer",
           source: "rawCalldataDraft",
           chain_id: 1,
           account_index: 1,
           from: legacyIntent.from,
           to: "0x6666666666666666666666666666666666666666",
           value_wei: "42",
+          token_contract: "0x9999999999999999999999999999999999999999",
+          recipient: "0x8888888888888888888888888888888888888888",
+          amount_raw: "1000000",
+          decimals: 6,
+          token_symbol: "STALE",
+          token_name: "Stale Token",
+          token_metadata_source: "stale",
           nonce: 12,
           gas_limit: "120000",
           max_fee_per_gas: "40000000000",
           max_priority_fee_per_gas: "1500000000",
           selector: "0x12345678",
+          method_name: "transfer(address,uint256)",
           native_value_wei: "42",
         },
         outcome: { state: "Pending", tx_hash: "0xraw" },
@@ -536,6 +552,22 @@ describe("history schema normalization", () => {
     expect(records[0].intent.transaction_type).toBe("rawCalldata");
     expect(records[0].submission.kind).toBe("rawCalldata");
     expect(records[0].submission.transaction_type).toBe("rawCalldata");
+    expect(records[0].intent.token_contract).toBeNull();
+    expect(records[0].intent.recipient).toBeNull();
+    expect(records[0].intent.amount_raw).toBeNull();
+    expect(records[0].intent.decimals).toBeNull();
+    expect(records[0].intent.token_symbol).toBeNull();
+    expect(records[0].intent.token_name).toBeNull();
+    expect(records[0].intent.token_metadata_source).toBeNull();
+    expect(records[0].intent.method_name).toBeNull();
+    expect(records[0].submission.token_contract).toBeNull();
+    expect(records[0].submission.recipient).toBeNull();
+    expect(records[0].submission.amount_raw).toBeNull();
+    expect(records[0].submission.decimals).toBeNull();
+    expect(records[0].submission.token_symbol).toBeNull();
+    expect(records[0].submission.token_name).toBeNull();
+    expect(records[0].submission.token_metadata_source).toBeNull();
+    expect(records[0].submission.method_name).toBeNull();
     expect(records[0].raw_calldata_metadata).toMatchObject({
       intent_kind: "rawCalldata",
       calldata_hash_version: "keccak256-v1",
