@@ -1072,6 +1072,9 @@ fn is_sensitive_key_name(key: &str) -> bool {
         || key.contains("rawtransaction")
         || key.contains("rawabi")
         || key.contains("rawcalldata")
+        || key == "calldata"
+        || key == "fullcalldata"
+        || key == "canonicalcalldata"
         || key.contains("canonicalparams")
         || key.contains("payload")
         || key.contains("apikey")
@@ -1203,6 +1206,51 @@ mod tests {
         assert!(serialized.contains(&tx_hash));
         assert!(!serialized.contains(&raw_payload));
         assert!(event.message.as_deref().unwrap().contains("[redacted_hex]"));
+    }
+
+    #[test]
+    fn redacts_raw_calldata_sender_payloads_and_keeps_bounded_labels() {
+        let raw_calldata = format!("0x12345678{}", "ab".repeat(512));
+        let event = event(
+            &format!(
+                "raw calldata failed selector=0x12345678 fullCalldata={raw_calldata} privateKey=secret-private-key rawTx=0xsigned"
+            ),
+            serde_json::json!({
+                "sender": "rawCalldata",
+                "selector": "0x12345678",
+                "calldataByteLength": 516,
+                "calldataHashVersion": "keccak256-v1",
+                "calldataHash": "0xhash",
+                "previewPrefix": "0x12345678",
+                "previewSuffix": "0xabab",
+                "rawCalldata": raw_calldata,
+                "fullCalldata": raw_calldata,
+                "canonicalCalldata": raw_calldata,
+                "calldata": raw_calldata,
+                "privateKey": "secret-private-key",
+                "mnemonic": "abandon abandon abandon",
+                "signedTx": "0xsigned",
+                "signature": "0xsig",
+                "rpc": "https://rpc.example/?api_key=SECRET_TOKEN",
+                "error": format!("giant {}", "x".repeat(2000))
+            }),
+        );
+        let serialized = serde_json::to_string(&event).expect("serialize");
+
+        assert!(serialized.contains("rawCalldata"));
+        assert!(serialized.contains("selector"));
+        assert!(serialized.contains("0x12345678"));
+        assert!(serialized.contains("calldataByteLength"));
+        assert!(serialized.contains("keccak256-v1"));
+        assert!(!serialized.contains(&raw_calldata));
+        assert!(!serialized.contains("abababababababababababababababababababab"));
+        assert!(!serialized.contains("secret-private-key"));
+        assert!(!serialized.contains("0xsigned"));
+        assert!(!serialized.contains("0xsig"));
+        assert!(!serialized.contains("abandon abandon"));
+        assert!(!serialized.contains("SECRET_TOKEN"));
+        assert!(!serialized.contains(&"x".repeat(900)));
+        assert!(serialized.contains("[redacted]"));
     }
 
     #[test]

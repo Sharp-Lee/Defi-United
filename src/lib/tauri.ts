@@ -3,11 +3,13 @@ import {
   normalizeHistoryRecord,
   normalizeAbiCallMetadata,
   normalizeBatchMetadata,
+  normalizeRawCalldataMetadata,
   parseTransactionHistoryPayload,
   type AbiCallHistoryMetadata,
   type BatchHistoryMetadata,
   type HistoryRecord as NormalizedHistoryRecord,
   type NativeTransferIntent as NormalizedNativeTransferIntent,
+  type RawCalldataHistoryMetadata,
 } from "../core/history/schema";
 import {
   DISPERSE_ETHER_METHOD,
@@ -27,6 +29,7 @@ export type {
   ChainOutcomeState,
   HistoryRecord,
   NativeTransferIntent,
+  RawCalldataHistoryMetadata,
   SubmissionKind,
   TransactionType,
 } from "../core/history/schema";
@@ -767,6 +770,7 @@ export interface HistoryRecoveryIntent {
     | "nativeTransfer"
     | "erc20Transfer"
     | "abiWriteCall"
+    | "rawCalldata"
     | "replacement"
     | "cancellation"
     | "unsupported";
@@ -793,6 +797,7 @@ export interface HistoryRecoveryIntent {
   replacesTxHash: string | null;
   batchMetadata?: BatchHistoryMetadata | null;
   abiCallMetadata?: AbiCallHistoryMetadata | null;
+  rawCalldataMetadata?: RawCalldataHistoryMetadata | null;
   broadcastedAt: string;
   writeError: string;
   lastRecoveryError: string | null;
@@ -806,11 +811,16 @@ function normalizeHistoryRecoveryIntent(rawIntent: unknown): HistoryRecoveryInte
     abiCallMetadata?: unknown;
     batch_metadata?: unknown;
     batchMetadata?: unknown;
+    raw_calldata_metadata?: unknown;
+    rawCalldataMetadata?: unknown;
   };
   return {
     ...intent,
     abiCallMetadata: normalizeAbiCallMetadata(intent.abiCallMetadata ?? intent.abi_call_metadata),
     batchMetadata: normalizeBatchMetadata(intent.batchMetadata ?? intent.batch_metadata),
+    rawCalldataMetadata: normalizeRawCalldataMetadata(
+      intent.rawCalldataMetadata ?? intent.raw_calldata_metadata,
+    ),
   };
 }
 

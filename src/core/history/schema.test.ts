@@ -424,6 +424,165 @@ describe("history schema normalization", () => {
     expect(records[0].outcome.state).toBe("Unknown");
   });
 
+  it("normalizes raw calldata metadata without disguising it or retaining full payloads", () => {
+    const rawCalldata = `0x12345678${"ab".repeat(256)}`;
+    const records = normalizeHistoryRecords([
+      {
+        schema_version: 5,
+        intent: {
+          ...legacyIntent,
+          transaction_type: "rawCalldata",
+          to: "0x6666666666666666666666666666666666666666",
+          value_wei: "42",
+          selector: "0x12345678",
+          native_value_wei: "42",
+        },
+        submission: {
+          frozen_key: "raw-draft-key",
+          tx_hash: "0xraw",
+          kind: "rawCalldata",
+          transaction_type: "rawCalldata",
+          source: "rawCalldataDraft",
+          chain_id: 1,
+          account_index: 1,
+          from: legacyIntent.from,
+          to: "0x6666666666666666666666666666666666666666",
+          value_wei: "42",
+          nonce: 12,
+          gas_limit: "120000",
+          max_fee_per_gas: "40000000000",
+          max_priority_fee_per_gas: "1500000000",
+          selector: "0x12345678",
+          native_value_wei: "42",
+        },
+        outcome: { state: "Pending", tx_hash: "0xraw" },
+        nonce_thread: {
+          source: "rawCalldataDraft",
+          key: "1:1:0x1111111111111111111111111111111111111111:12",
+          chain_id: 1,
+          account_index: 1,
+          from: legacyIntent.from,
+          nonce: 12,
+        },
+        rawCalldataMetadata: {
+          intentKind: "rawCalldata",
+          draftId: "draft-raw-1",
+          createdAt: "2026-04-29T01:02:03.000Z",
+          chainId: 1,
+          accountIndex: 1,
+          from: legacyIntent.from,
+          to: "0x6666666666666666666666666666666666666666",
+          valueWei: "42",
+          gasLimit: "120000",
+          maxFeePerGas: "40000000000",
+          maxPriorityFeePerGas: "1500000000",
+          nonce: 12,
+          calldataHashVersion: "keccak256-v1",
+          calldataHash: "0xhash",
+          calldataByteLength: 260,
+          selector: "0x12345678",
+          selectorStatus: "matched",
+          preview: {
+            previewPrefixBytes: 32,
+            previewSuffixBytes: 32,
+            truncated: true,
+            omittedBytes: 196,
+            display: "0x12345678...abab",
+            prefix: "0x12345678",
+            suffix: "0xabab",
+            fullCalldata: rawCalldata,
+          },
+          warningAcknowledgements: [
+            { level: "warning", code: "unknownSelector", message: "ack token=SECRET_TOKEN", source: "user" },
+          ],
+          warningSummaries: [
+            { level: "warning", code: "largeCalldata", message: "payload is large", source: "preview" },
+          ],
+          blockingStatuses: [
+            { level: "blocking", code: "missingAck", message: "privateKey=0xabc", source: "preview" },
+          ],
+          inference: {
+            inferenceStatus: "matched",
+            matchedSourceKind: "explorerFetched",
+            matchedSourceId: "etherscan-mainnet",
+            matchedVersionId: "v1",
+            matchedSourceFingerprint: "0xfingerprint",
+            matchedAbiHash: "0xabi",
+            selectorMatchCount: 1,
+            conflictSummary: "none",
+            staleStatus: "fresh",
+            sourceStatus: "ok",
+          },
+          frozenKey: "raw-draft-key",
+          futureSubmission: {
+            txHash: null,
+            errorSummary: "failed signedTx=0xsigned mnemonic=abandon abandon next=value",
+          },
+          rawCalldata,
+          calldata: rawCalldata,
+          canonicalCalldata: rawCalldata,
+          fullCalldata: rawCalldata,
+          privateKey: "0xabc",
+        },
+        abi_call_metadata: {
+          intentKind: "abiWriteCall",
+        },
+        batchMetadata: {
+          batchId: "should-not-render-as-batch",
+        },
+      },
+    ]);
+
+    expect(records[0].intent.transaction_type).toBe("rawCalldata");
+    expect(records[0].submission.kind).toBe("rawCalldata");
+    expect(records[0].submission.transaction_type).toBe("rawCalldata");
+    expect(records[0].raw_calldata_metadata).toMatchObject({
+      intent_kind: "rawCalldata",
+      calldata_hash_version: "keccak256-v1",
+      calldata_hash: "0xhash",
+      calldata_byte_length: 260,
+      selector: "0x12345678",
+      selector_status: "matched",
+      preview: {
+        preview_prefix_bytes: 32,
+        preview_suffix_bytes: 32,
+        truncated: true,
+        omitted_bytes: 196,
+        display: "0x12345678...abab",
+        prefix: "0x12345678",
+        suffix: "0xabab",
+      },
+      inference: {
+        inference_status: "matched",
+        matched_source_kind: "explorerFetched",
+        selector_match_count: 1,
+      },
+      frozen_key: "raw-draft-key",
+    });
+    expect(records[0].raw_calldata_metadata?.warning_acknowledgements[0].message).toBe(
+      "ack [redacted_secret]",
+    );
+    expect(records[0].raw_calldata_metadata?.blocking_statuses[0].message).toBe(
+      "[redacted_secret]",
+    );
+    expect(records[0].raw_calldata_metadata?.future_submission?.error_summary).toBe(
+      "failed [redacted_secret] [redacted_secret] next=value",
+    );
+    expect(records[0].abi_call_metadata?.intent_kind).toBe("abiWriteCall");
+    expect(records[0].batch_metadata?.batch_id).toBe("should-not-render-as-batch");
+
+    const durable = JSON.stringify(records[0]);
+    expect(durable).not.toContain(rawCalldata);
+    expect(durable).not.toContain("rawCalldata\":\"");
+    expect(durable).not.toContain("fullCalldata");
+    expect(durable).not.toContain("canonicalCalldata");
+    expect(durable).not.toContain("calldata\":\"");
+    expect(durable).not.toContain("SECRET_TOKEN");
+    expect(durable).not.toContain("0xabc");
+    expect(durable).not.toContain("0xsigned");
+    expect(durable).not.toContain("abandon abandon");
+  });
+
   it("normalizes arbitrary ABI write call metadata without raw ABI, calldata, params, or RPC secrets", () => {
     const rawCalldata = `0xa9059cbb${"0".repeat(512)}`;
     const overlongKind = `kind-${"x".repeat(220)}`;

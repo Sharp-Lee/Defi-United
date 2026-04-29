@@ -101,6 +101,7 @@ pub enum SubmissionKind {
     NativeTransfer,
     Erc20Transfer,
     AbiWriteCall,
+    RawCalldata,
     Replacement,
     Cancellation,
     #[serde(other)]
@@ -120,6 +121,7 @@ pub enum TransactionType {
     NativeTransfer,
     Erc20Transfer,
     ContractCall,
+    RawCalldata,
     #[serde(other)]
     Unknown,
 }
@@ -198,6 +200,15 @@ impl TypedTransactionFields {
             transaction_type: TransactionType::ContractCall,
             selector: Some(selector.into()),
             method_name: Some(method_name.into()),
+            native_value_wei: Some(native_value_wei.into()),
+            ..Self::default()
+        }
+    }
+
+    pub fn raw_calldata(selector: Option<String>, native_value_wei: impl Into<String>) -> Self {
+        Self {
+            transaction_type: TransactionType::RawCalldata,
+            selector,
             native_value_wei: Some(native_value_wei.into()),
             ..Self::default()
         }
@@ -640,6 +651,126 @@ pub struct AbiCallHistoryMetadata {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct RawCalldataPreviewSummary {
+    #[serde(default, alias = "preview_prefix_bytes")]
+    pub preview_prefix_bytes: Option<u64>,
+    #[serde(default, alias = "preview_suffix_bytes")]
+    pub preview_suffix_bytes: Option<u64>,
+    #[serde(default)]
+    pub truncated: bool,
+    #[serde(default, alias = "omitted_bytes")]
+    pub omitted_bytes: Option<u64>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_sanitized_text_option_256",
+        serialize_with = "serialize_sanitized_text_option_256"
+    )]
+    pub display: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_sanitized_text_option_160",
+        serialize_with = "serialize_sanitized_text_option_160"
+    )]
+    pub prefix: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_sanitized_text_option_160",
+        serialize_with = "serialize_sanitized_text_option_160"
+    )]
+    pub suffix: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RawCalldataInferenceSummary {
+    #[serde(default = "unknown_string", alias = "inference_status")]
+    pub inference_status: String,
+    #[serde(default, alias = "matched_source_kind")]
+    pub matched_source_kind: Option<String>,
+    #[serde(default, alias = "matched_source_id")]
+    pub matched_source_id: Option<String>,
+    #[serde(default, alias = "matched_version_id")]
+    pub matched_version_id: Option<String>,
+    #[serde(default, alias = "matched_source_fingerprint")]
+    pub matched_source_fingerprint: Option<String>,
+    #[serde(default, alias = "matched_abi_hash")]
+    pub matched_abi_hash: Option<String>,
+    #[serde(default, alias = "selector_match_count")]
+    pub selector_match_count: Option<u64>,
+    #[serde(
+        default,
+        alias = "conflict_summary",
+        deserialize_with = "deserialize_sanitized_text_option_256",
+        serialize_with = "serialize_sanitized_text_option_256"
+    )]
+    pub conflict_summary: Option<String>,
+    #[serde(default, alias = "stale_status")]
+    pub stale_status: Option<String>,
+    #[serde(default, alias = "source_status")]
+    pub source_status: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RawCalldataHistoryMetadata {
+    #[serde(default = "unknown_string", alias = "intent_kind")]
+    pub intent_kind: String,
+    #[serde(default, alias = "draft_id")]
+    pub draft_id: Option<String>,
+    #[serde(default, alias = "created_at")]
+    pub created_at: Option<String>,
+    #[serde(default, alias = "chain_id")]
+    pub chain_id: Option<u64>,
+    #[serde(default, alias = "account_index")]
+    pub account_index: Option<u32>,
+    #[serde(default)]
+    pub from: Option<String>,
+    #[serde(default)]
+    pub to: Option<String>,
+    #[serde(default, alias = "value_wei")]
+    pub value_wei: Option<String>,
+    #[serde(default, alias = "gas_limit")]
+    pub gas_limit: Option<String>,
+    #[serde(default, alias = "max_fee_per_gas")]
+    pub max_fee_per_gas: Option<String>,
+    #[serde(default, alias = "max_priority_fee_per_gas")]
+    pub max_priority_fee_per_gas: Option<String>,
+    #[serde(default)]
+    pub nonce: Option<u64>,
+    #[serde(default = "unknown_string", alias = "calldata_hash_version")]
+    pub calldata_hash_version: String,
+    #[serde(default, alias = "calldata_hash")]
+    pub calldata_hash: Option<String>,
+    #[serde(default, alias = "calldata_byte_length")]
+    pub calldata_byte_length: Option<u64>,
+    #[serde(default)]
+    pub selector: Option<String>,
+    #[serde(default, alias = "selector_status")]
+    pub selector_status: Option<String>,
+    #[serde(default)]
+    pub preview: Option<RawCalldataPreviewSummary>,
+    #[serde(default, alias = "warning_acknowledgements")]
+    pub warning_acknowledgements: Vec<AbiCallStatusSummary>,
+    #[serde(default, alias = "warning_summaries")]
+    pub warning_summaries: Vec<AbiCallStatusSummary>,
+    #[serde(default, alias = "blocking_statuses")]
+    pub blocking_statuses: Vec<AbiCallStatusSummary>,
+    #[serde(default)]
+    pub inference: Option<RawCalldataInferenceSummary>,
+    #[serde(default, alias = "frozen_key")]
+    pub frozen_key: Option<String>,
+    #[serde(default, alias = "future_submission")]
+    pub future_submission: Option<AbiCallSubmissionPlaceholder>,
+    #[serde(default, alias = "future_outcome")]
+    pub future_outcome: Option<AbiCallOutcomePlaceholder>,
+    #[serde(default)]
+    pub broadcast: Option<AbiCallBroadcastPlaceholder>,
+    #[serde(default)]
+    pub recovery: Option<AbiCallRecoveryPlaceholder>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct NativeBatchSubmitChild {
     pub child_id: String,
     pub child_index: u32,
@@ -845,6 +976,7 @@ pub struct Erc20BatchSubmitResult {
 
 const ABI_HISTORY_VALUE_MAX_CHARS: usize = 256;
 const ABI_HISTORY_LABEL_MAX_CHARS: usize = 96;
+const RAW_CALLDATA_PREVIEW_HEX_MAX_CHARS: usize = 160;
 const ABI_HISTORY_RPC_NAME_MAX_CHARS: usize = 120;
 const ABI_HISTORY_RPC_SUMMARY_MAX_CHARS: usize = 200;
 const ABI_HISTORY_HASH_MAX_CHARS: usize = 128;
@@ -983,6 +1115,29 @@ where
     let sanitized = value
         .as_deref()
         .map(|value| sanitize_abi_history_text(value, ABI_HISTORY_LABEL_MAX_CHARS).0);
+    sanitized.serialize(serializer)
+}
+
+fn deserialize_sanitized_text_option_160<'de, D>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<String>::deserialize(deserializer)?;
+    Ok(sanitize_abi_history_text_option(value, RAW_CALLDATA_PREVIEW_HEX_MAX_CHARS).0)
+}
+
+fn serialize_sanitized_text_option_160<S>(
+    value: &Option<String>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    let sanitized = value
+        .as_deref()
+        .map(|value| sanitize_abi_history_text(value, RAW_CALLDATA_PREVIEW_HEX_MAX_CHARS).0);
     sanitized.serialize(serializer)
 }
 
@@ -1388,6 +1543,8 @@ pub struct HistoryRecord {
     pub batch_metadata: Option<BatchHistoryMetadata>,
     #[serde(default)]
     pub abi_call_metadata: Option<AbiCallHistoryMetadata>,
+    #[serde(default, alias = "rawCalldataMetadata")]
+    pub raw_calldata_metadata: Option<RawCalldataHistoryMetadata>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1454,6 +1611,8 @@ pub struct HistoryRecoveryIntent {
     pub batch_metadata: Option<BatchHistoryMetadata>,
     #[serde(default)]
     pub abi_call_metadata: Option<AbiCallHistoryMetadata>,
+    #[serde(default)]
+    pub raw_calldata_metadata: Option<RawCalldataHistoryMetadata>,
     pub broadcasted_at: String,
     pub write_error: String,
     #[serde(default)]

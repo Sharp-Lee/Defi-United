@@ -485,6 +485,7 @@ fn history_record(nonce: u64, state: ChainOutcomeState, tx_hash: &str) -> Histor
         },
         batch_metadata: None,
         abi_call_metadata: None,
+        raw_calldata_metadata: None,
         intent,
     }
 }
@@ -1022,6 +1023,269 @@ fn history_recovery_intent_preserves_abi_write_placeholders_additively() {
         future.kind,
         wallet_workbench_lib::models::SubmissionKind::Unsupported
     );
+}
+
+#[test]
+fn history_record_roundtrips_raw_calldata_metadata_without_raw_payloads() {
+    let raw_calldata = format!("0x12345678{}", "ab".repeat(512));
+    let with_raw = serde_json::json!({
+        "schema_version": 5,
+        "intent": {
+            "transaction_type": "rawCalldata",
+            "rpc_url": "history-schema-placeholder",
+            "account_index": 1,
+            "chain_id": 1,
+            "from": "0x1111111111111111111111111111111111111111",
+            "to": "0x6666666666666666666666666666666666666666",
+            "value_wei": "42",
+            "nonce": 7,
+            "gas_limit": "120000",
+            "max_fee_per_gas": "40000000000",
+            "max_priority_fee_per_gas": "1500000000",
+            "selector": "0x12345678",
+            "native_value_wei": "42"
+        },
+        "intent_snapshot": {
+            "source": "rawCalldataDraft",
+            "captured_at": "2026-04-29T01:02:03.000Z"
+        },
+        "submission": {
+            "transaction_type": "rawCalldata",
+            "frozen_key": "raw-draft-key",
+            "tx_hash": "0xraw",
+            "kind": "rawCalldata",
+            "source": "rawCalldataDraft",
+            "chain_id": 1,
+            "account_index": 1,
+            "from": "0x1111111111111111111111111111111111111111",
+            "to": "0x6666666666666666666666666666666666666666",
+            "value_wei": "42",
+            "nonce": 7,
+            "gas_limit": "120000",
+            "max_fee_per_gas": "40000000000",
+            "max_priority_fee_per_gas": "1500000000",
+            "selector": "0x12345678",
+            "native_value_wei": "42",
+            "broadcasted_at": null
+        },
+        "outcome": {
+            "state": "Pending",
+            "tx_hash": "0xraw"
+        },
+        "nonce_thread": {
+            "source": "rawCalldataDraft",
+            "key": "1:1:0x1111111111111111111111111111111111111111:7",
+            "chain_id": 1,
+            "account_index": 1,
+            "from": "0x1111111111111111111111111111111111111111",
+            "nonce": 7
+        },
+        "raw_calldata_metadata": {
+            "intentKind": "rawCalldata",
+            "draftId": "draft-raw-1",
+            "createdAt": "2026-04-29T01:02:03.000Z",
+            "chainId": 1,
+            "accountIndex": 1,
+            "from": "0x1111111111111111111111111111111111111111",
+            "to": "0x6666666666666666666666666666666666666666",
+            "valueWei": "42",
+            "gasLimit": "120000",
+            "maxFeePerGas": "40000000000",
+            "maxPriorityFeePerGas": "1500000000",
+            "nonce": 7,
+            "calldataHashVersion": "keccak256-v1",
+            "calldataHash": "0xhash",
+            "calldataByteLength": 516,
+            "selector": "0x12345678",
+            "selectorStatus": "matched",
+            "preview": {
+                "previewPrefixBytes": 32,
+                "previewSuffixBytes": 32,
+                "truncated": true,
+                "omittedBytes": 452,
+                "display": "0x12345678...abab",
+                "prefix": "0x12345678",
+                "suffix": "0xabab",
+                "fullCalldata": raw_calldata
+            },
+            "warningAcknowledgements": [
+                { "level": "warning", "code": "unknownSelector", "message": "ack token=SECRET_TOKEN", "source": "user" }
+            ],
+            "warningSummaries": [
+                { "level": "warning", "code": "largeCalldata", "message": "payload is large", "source": "preview" }
+            ],
+            "blockingStatuses": [
+                { "level": "blocking", "code": "missingAck", "message": "privateKey=0xabc", "source": "preview" }
+            ],
+            "inference": {
+                "inferenceStatus": "matched",
+                "matchedSourceKind": "explorerFetched",
+                "matchedSourceId": "etherscan-mainnet",
+                "matchedVersionId": "v1",
+                "matchedSourceFingerprint": "0xfingerprint",
+                "matchedAbiHash": "0xabi",
+                "selectorMatchCount": 1,
+                "conflictSummary": "none",
+                "staleStatus": "fresh",
+                "sourceStatus": "ok"
+            },
+            "frozenKey": "raw-draft-key",
+            "futureSubmission": {
+                "status": "pending",
+                "txHash": null,
+                "errorSummary": "failed signedTx=0xsigned mnemonic=abandon abandon next=value"
+            },
+            "broadcast": {
+                "txHash": null,
+                "rpcEndpointSummary": "https://rpc.example/?api_key=SECRET_TOKEN"
+            },
+            "recovery": {
+                "recoveryId": null,
+                "lastError": "recover failed rawTx=0xsigned"
+            },
+            "rawCalldata": raw_calldata,
+            "calldata": raw_calldata,
+            "canonicalCalldata": raw_calldata,
+            "fullCalldata": raw_calldata,
+            "privateKey": "0xabc"
+        }
+    });
+
+    let record: HistoryRecord = serde_json::from_value(with_raw).expect("raw calldata record");
+    assert_eq!(
+        record.submission.kind,
+        wallet_workbench_lib::models::SubmissionKind::RawCalldata
+    );
+    assert_eq!(
+        record.submission.typed_transaction.transaction_type,
+        wallet_workbench_lib::models::TransactionType::RawCalldata
+    );
+    assert!(record.abi_call_metadata.is_none());
+    assert!(record.batch_metadata.is_none());
+    let metadata = record
+        .raw_calldata_metadata
+        .as_ref()
+        .expect("raw calldata metadata");
+    assert_eq!(metadata.intent_kind, "rawCalldata");
+    assert_eq!(metadata.calldata_hash_version, "keccak256-v1");
+    assert_eq!(metadata.calldata_hash.as_deref(), Some("0xhash"));
+    assert_eq!(metadata.calldata_byte_length, Some(516));
+    assert_eq!(metadata.selector.as_deref(), Some("0x12345678"));
+    assert_eq!(metadata.selector_status.as_deref(), Some("matched"));
+    assert_eq!(
+        metadata
+            .preview
+            .as_ref()
+            .and_then(|preview| preview.omitted_bytes),
+        Some(452)
+    );
+    assert_eq!(
+        metadata
+            .inference
+            .as_ref()
+            .map(|inference| inference.selector_match_count),
+        Some(Some(1))
+    );
+    assert_eq!(
+        metadata
+            .warning_acknowledgements
+            .first()
+            .and_then(|warning| warning.message.as_deref()),
+        Some("ack [redacted_secret]")
+    );
+    assert_eq!(
+        metadata
+            .blocking_statuses
+            .first()
+            .and_then(|status| status.message.as_deref()),
+        Some("[redacted_secret]")
+    );
+    assert_eq!(
+        metadata
+            .future_submission
+            .as_ref()
+            .and_then(|future| future.error_summary.as_deref()),
+        Some("failed [redacted_secret] [redacted_secret] [redacted] next=value")
+    );
+    assert_eq!(
+        metadata
+            .broadcast
+            .as_ref()
+            .and_then(|broadcast| broadcast.rpc_endpoint_summary.as_deref()),
+        Some("[redacted_endpoint]")
+    );
+
+    let serialized = serde_json::to_string(&record).expect("serialize raw calldata record");
+    assert!(serialized.contains("rawCalldata"));
+    assert!(serialized.contains("raw_calldata_metadata"));
+    assert!(!serialized.contains(&raw_calldata));
+    assert!(!serialized.contains("rawCalldata\":\""));
+    assert!(!serialized.contains("fullCalldata"));
+    assert!(!serialized.contains("canonicalCalldata"));
+    assert!(!serialized.contains("calldata\":\""));
+    assert!(!serialized.contains("SECRET_TOKEN"));
+    assert!(!serialized.contains("api_key"));
+    assert!(!serialized.contains("0xabc"));
+    assert!(!serialized.contains("0xsigned"));
+    assert!(!serialized.contains("abandon abandon"));
+}
+
+#[test]
+fn history_recovery_intent_preserves_raw_calldata_metadata_additively() {
+    let intent: wallet_workbench_lib::models::HistoryRecoveryIntent =
+        serde_json::from_value(serde_json::json!({
+            "schemaVersion": 1,
+            "id": "raw-recovery-1",
+            "status": "active",
+            "createdAt": "2026-04-29T01:02:03.000Z",
+            "txHash": "0xraw",
+            "kind": "rawCalldata",
+            "chainId": 1,
+            "accountIndex": 1,
+            "from": "0x1111111111111111111111111111111111111111",
+            "nonce": 7,
+            "to": "0x6666666666666666666666666666666666666666",
+            "valueWei": "42",
+            "selector": "0x12345678",
+            "nativeValueWei": "42",
+            "frozenKey": "raw-draft-key",
+            "gasLimit": "120000",
+            "maxFeePerGas": "40000000000",
+            "maxPriorityFeePerGas": "1500000000",
+            "rawCalldataMetadata": {
+                "intentKind": "rawCalldata",
+                "chainId": 1,
+                "accountIndex": 1,
+                "from": "0x1111111111111111111111111111111111111111",
+                "to": "0x6666666666666666666666666666666666666666",
+                "calldataHashVersion": "keccak256-v1",
+                "calldataHash": "0xhash",
+                "calldataByteLength": 4,
+                "selector": "0x12345678",
+                "selectorStatus": "unknown",
+                "preview": { "truncated": false, "display": "0x12345678" },
+                "futureSubmission": { "txHash": null },
+                "broadcast": { "txHash": null },
+                "recovery": { "recoveryId": null }
+            },
+            "broadcastedAt": "2026-04-29T01:02:04.000Z",
+            "writeError": "schema placeholder"
+        }))
+        .expect("recovery intent with raw calldata metadata");
+
+    assert_eq!(
+        intent.kind,
+        wallet_workbench_lib::models::SubmissionKind::RawCalldata
+    );
+    let metadata = intent
+        .raw_calldata_metadata
+        .expect("raw calldata metadata");
+    assert_eq!(metadata.intent_kind, "rawCalldata");
+    assert_eq!(metadata.calldata_byte_length, Some(4));
+    assert!(metadata
+        .broadcast
+        .as_ref()
+        .is_some_and(|placeholder| placeholder.tx_hash.is_none()));
 }
 
 fn start_preflight_rpc_server() -> String {

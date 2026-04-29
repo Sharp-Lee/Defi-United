@@ -688,6 +688,7 @@ fn history_recovery_intent_from_broadcast_failure_with_frozen_key(
         replaces_tx_hash,
         batch_metadata,
         abi_call_metadata: None,
+        raw_calldata_metadata: None,
         broadcasted_at,
         write_error: sanitize_recovery_error(&write_error),
         last_recovery_error: None,
@@ -1218,6 +1219,7 @@ fn persist_pending_history_with_kind_at_and_batch(
         nonce_thread,
         batch_metadata,
         abi_call_metadata,
+        raw_calldata_metadata: None,
     };
 
     let mut records = load_history_records()?;
@@ -1808,7 +1810,8 @@ fn local_same_nonce_review_result(
             SubmissionKind::Replacement
             | SubmissionKind::NativeTransfer
             | SubmissionKind::Erc20Transfer
-            | SubmissionKind::AbiWriteCall => Some((
+            | SubmissionKind::AbiWriteCall
+            | SubmissionKind::RawCalldata => Some((
                 ChainOutcomeState::Replaced,
                 candidate_hash,
                 "localReplacementSameNonce".to_string(),
@@ -2760,6 +2763,7 @@ fn history_record_from_recovery_intent(
         },
         batch_metadata: intent.batch_metadata.clone(),
         abi_call_metadata,
+        raw_calldata_metadata: intent.raw_calldata_metadata.clone(),
     })
 }
 

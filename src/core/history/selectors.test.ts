@@ -206,6 +206,51 @@ describe("history selectors", () => {
     expect(group.statusCounts.replaced).toBe(1);
   });
 
+  it("treats raw calldata as a normal submission in nonce groups", () => {
+    const records = normalizeHistoryRecords([
+      rawRecord({ txHash: "0xnative", nonce: 11, kind: "nativeTransfer" }),
+      {
+        ...rawRecord({ txHash: "0xraw", nonce: 11, kind: "rawCalldata" }),
+        intent: {
+          ...rawRecord({ txHash: "0xraw", nonce: 11 }).intent,
+          transaction_type: "rawCalldata",
+          selector: "0x12345678",
+          native_value_wei: "0",
+        },
+        submission: {
+          ...rawRecord({ txHash: "0xraw", nonce: 11, kind: "rawCalldata" }).submission,
+          transaction_type: "rawCalldata",
+          selector: "0x12345678",
+          native_value_wei: "0",
+        },
+        rawCalldataMetadata: {
+          intentKind: "rawCalldata",
+          chainId: 1,
+          accountIndex: 1,
+          from: accountA,
+          to: recipient,
+          nonce: 11,
+          calldataHashVersion: "keccak256-v1",
+          calldataHash: "0xhash",
+          calldataByteLength: 4,
+          selector: "0x12345678",
+          selectorStatus: "unknown",
+          preview: { truncated: false, display: "0x12345678" },
+        },
+      },
+    ]);
+
+    const [group] = groupHistoryByNonce(records);
+
+    expect(group.key).toBe(`account=index:1|from:${accountA}|chainId=1|nonce=11`);
+    expect(group.submissions.map((entry) => [entry.txHash, entry.submissionRole])).toEqual([
+      ["0xnative", "submission"],
+      ["0xraw", "submission"],
+    ]);
+    expect(group.submissions[1].record.submission.transaction_type).toBe("rawCalldata");
+    expect(group.submissions[1].record.raw_calldata_metadata?.intent_kind).toBe("rawCalldata");
+  });
+
   it("summarizes identity issues from later submissions at the group level", () => {
     const records = normalizeHistoryRecords([
       rawRecord({

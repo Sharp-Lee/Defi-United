@@ -12,6 +12,7 @@ export type TransactionType =
   | "nativeTransfer"
   | "erc20Transfer"
   | "contractCall"
+  | "rawCalldata"
   | "unknown";
 
 export type SubmissionKind =
@@ -19,6 +20,7 @@ export type SubmissionKind =
   | "nativeTransfer"
   | "erc20Transfer"
   | "abiWriteCall"
+  | "rawCalldata"
   | "replacement"
   | "cancellation"
   | "unsupported";
@@ -300,6 +302,93 @@ export interface AbiCallHistoryMetadata {
   recovery: AbiCallRecoveryPlaceholder | null;
 }
 
+export interface RawCalldataPreviewSummary {
+  preview_prefix_bytes: number | null;
+  preview_suffix_bytes: number | null;
+  truncated: boolean;
+  omitted_bytes: number | null;
+  display: string | null;
+  prefix: string | null;
+  suffix: string | null;
+}
+
+export interface RawCalldataInferenceSummary {
+  inference_status: string;
+  matched_source_kind: string | null;
+  matched_source_id: string | null;
+  matched_version_id: string | null;
+  matched_source_fingerprint: string | null;
+  matched_abi_hash: string | null;
+  selector_match_count: number | null;
+  conflict_summary: string | null;
+  stale_status: string | null;
+  source_status: string | null;
+}
+
+export interface RawCalldataSubmissionPlaceholder {
+  status: string | null;
+  tx_hash: string | null;
+  submitted_at: string | null;
+  broadcasted_at: string | null;
+  error_summary: string | null;
+}
+
+export interface RawCalldataOutcomePlaceholder {
+  state: ChainOutcomeState | null;
+  checked_at: string | null;
+  receipt_status: number | null;
+  block_number: number | null;
+  gas_used: string | null;
+  error_summary: string | null;
+}
+
+export interface RawCalldataBroadcastPlaceholder {
+  tx_hash: string | null;
+  broadcasted_at: string | null;
+  rpc_chain_id: number | null;
+  rpc_endpoint_summary: string | null;
+  error_summary: string | null;
+}
+
+export interface RawCalldataRecoveryPlaceholder {
+  recovery_id: string | null;
+  status: string | null;
+  created_at: string | null;
+  recovered_at: string | null;
+  last_error: string | null;
+  replacement_tx_hash: string | null;
+}
+
+export interface RawCalldataHistoryMetadata {
+  intent_kind: "rawCalldata" | "unknown";
+  draft_id: string | null;
+  created_at: string | null;
+  chain_id: number | null;
+  account_index: number | null;
+  from: string | null;
+  to: string | null;
+  value_wei: string | null;
+  gas_limit: string | null;
+  max_fee_per_gas: string | null;
+  max_priority_fee_per_gas: string | null;
+  nonce: number | null;
+  calldata_hash_version: "keccak256-v1" | "unknown";
+  calldata_hash: string | null;
+  calldata_byte_length: number | null;
+  selector: string | null;
+  selector_status: string | null;
+  preview: RawCalldataPreviewSummary | null;
+  warning_acknowledgements: AbiCallStatusSummary[];
+  warning_summaries: AbiCallStatusSummary[];
+  blocking_statuses: AbiCallStatusSummary[];
+  inference: RawCalldataInferenceSummary | null;
+  frozen_key: string | null;
+  future_submission: RawCalldataSubmissionPlaceholder | null;
+  future_outcome: RawCalldataOutcomePlaceholder | null;
+  broadcast: RawCalldataBroadcastPlaceholder | null;
+  recovery: RawCalldataRecoveryPlaceholder | null;
+}
+
 export interface HistoryRecord {
   schema_version: number;
   intent: HistoryTransactionIntent;
@@ -309,6 +398,7 @@ export interface HistoryRecord {
   nonce_thread: NonceThread;
   batch_metadata?: BatchHistoryMetadata | null;
   abi_call_metadata?: AbiCallHistoryMetadata | null;
+  raw_calldata_metadata?: RawCalldataHistoryMetadata | null;
 }
 
 const LEGACY = "legacy";
@@ -318,6 +408,7 @@ const TRANSACTION_TYPES = new Set<TransactionType>([
   "nativeTransfer",
   "erc20Transfer",
   "contractCall",
+  "rawCalldata",
   "unknown",
 ]);
 const SUBMISSION_KINDS = new Set<SubmissionKind>([
@@ -325,6 +416,7 @@ const SUBMISSION_KINDS = new Set<SubmissionKind>([
   "nativeTransfer",
   "erc20Transfer",
   "abiWriteCall",
+  "rawCalldata",
   "replacement",
   "cancellation",
   "unsupported",
@@ -440,6 +532,7 @@ function normalizeTypedTransactionFields(
 
 function transactionTypeFallbackForSubmission(kind: SubmissionKind): TransactionType {
   if (kind === "abiWriteCall") return "contractCall";
+  if (kind === "rawCalldata") return "rawCalldata";
   return kind === "erc20Transfer" ? "erc20Transfer" : "nativeTransfer";
 }
 
@@ -820,6 +913,97 @@ export function normalizeAbiCallMetadata(rawMetadata: unknown): AbiCallHistoryMe
   };
 }
 
+function normalizeRawCalldataIntentKind(value: unknown): RawCalldataHistoryMetadata["intent_kind"] {
+  return value === "rawCalldata" ? value : "unknown";
+}
+
+function normalizeRawCalldataHashVersion(
+  value: unknown,
+): RawCalldataHistoryMetadata["calldata_hash_version"] {
+  return value === "keccak256-v1" ? value : "unknown";
+}
+
+function normalizeRawCalldataPreview(rawPreview: unknown): RawCalldataPreviewSummary | null {
+  if (rawPreview == null) return null;
+  const preview = objectOrEmpty(rawPreview);
+  return {
+    preview_prefix_bytes: numberOrNull(preview.preview_prefix_bytes ?? preview.previewPrefixBytes),
+    preview_suffix_bytes: numberOrNull(preview.preview_suffix_bytes ?? preview.previewSuffixBytes),
+    truncated: booleanOrNull(preview.truncated) ?? false,
+    omitted_bytes: numberOrNull(preview.omitted_bytes ?? preview.omittedBytes),
+    display: sanitizeDurableRpcSummary(preview.display, 256),
+    prefix: boundedStringOrNull(preview.prefix, 160),
+    suffix: boundedStringOrNull(preview.suffix, 160),
+  };
+}
+
+function normalizeRawCalldataInference(
+  rawInference: unknown,
+): RawCalldataInferenceSummary | null {
+  if (rawInference == null) return null;
+  const inference = objectOrEmpty(rawInference);
+  return {
+    inference_status: stringOrDefault(inference.inference_status ?? inference.inferenceStatus),
+    matched_source_kind: stringOrNull(inference.matched_source_kind ?? inference.matchedSourceKind),
+    matched_source_id: stringOrNull(inference.matched_source_id ?? inference.matchedSourceId),
+    matched_version_id: stringOrNull(inference.matched_version_id ?? inference.matchedVersionId),
+    matched_source_fingerprint: stringOrNull(
+      inference.matched_source_fingerprint ?? inference.matchedSourceFingerprint,
+    ),
+    matched_abi_hash: stringOrNull(inference.matched_abi_hash ?? inference.matchedAbiHash),
+    selector_match_count: numberOrNull(inference.selector_match_count ?? inference.selectorMatchCount),
+    conflict_summary: sanitizeDurableRpcSummary(inference.conflict_summary ?? inference.conflictSummary, 256),
+    stale_status: stringOrNull(inference.stale_status ?? inference.staleStatus),
+    source_status: stringOrNull(inference.source_status ?? inference.sourceStatus),
+  };
+}
+
+export function normalizeRawCalldataMetadata(rawMetadata: unknown): RawCalldataHistoryMetadata | null {
+  if (rawMetadata == null) return null;
+  const metadata = objectOrEmpty(rawMetadata);
+  return {
+    intent_kind: normalizeRawCalldataIntentKind(metadata.intent_kind ?? metadata.intentKind),
+    draft_id: stringOrNull(metadata.draft_id ?? metadata.draftId),
+    created_at: stringOrNull(metadata.created_at ?? metadata.createdAt),
+    chain_id: numberOrNull(metadata.chain_id ?? metadata.chainId),
+    account_index: numberOrNull(metadata.account_index ?? metadata.accountIndex),
+    from: stringOrNull(metadata.from),
+    to: stringOrNull(metadata.to),
+    value_wei: stringOrNull(metadata.value_wei ?? metadata.valueWei),
+    gas_limit: stringOrNull(metadata.gas_limit ?? metadata.gasLimit),
+    max_fee_per_gas: stringOrNull(metadata.max_fee_per_gas ?? metadata.maxFeePerGas),
+    max_priority_fee_per_gas: stringOrNull(
+      metadata.max_priority_fee_per_gas ?? metadata.maxPriorityFeePerGas,
+    ),
+    nonce: numberOrNull(metadata.nonce),
+    calldata_hash_version: normalizeRawCalldataHashVersion(
+      metadata.calldata_hash_version ?? metadata.calldataHashVersion,
+    ),
+    calldata_hash: stringOrNull(metadata.calldata_hash ?? metadata.calldataHash),
+    calldata_byte_length: numberOrNull(metadata.calldata_byte_length ?? metadata.calldataByteLength),
+    selector: stringOrNull(metadata.selector),
+    selector_status: stringOrNull(metadata.selector_status ?? metadata.selectorStatus),
+    preview: normalizeRawCalldataPreview(metadata.preview),
+    warning_acknowledgements: normalizeAbiStatusSummaries(
+      metadata.warning_acknowledgements ?? metadata.warningAcknowledgements,
+    ),
+    warning_summaries: normalizeAbiStatusSummaries(
+      metadata.warning_summaries ?? metadata.warningSummaries,
+    ),
+    blocking_statuses: normalizeAbiStatusSummaries(
+      metadata.blocking_statuses ?? metadata.blockingStatuses,
+    ),
+    inference: normalizeRawCalldataInference(metadata.inference),
+    frozen_key: stringOrNull(metadata.frozen_key ?? metadata.frozenKey),
+    future_submission: normalizeAbiSubmissionPlaceholder(
+      metadata.future_submission ?? metadata.futureSubmission,
+    ),
+    future_outcome: normalizeAbiOutcomePlaceholder(metadata.future_outcome ?? metadata.futureOutcome),
+    broadcast: normalizeAbiBroadcastPlaceholder(metadata.broadcast),
+    recovery: normalizeAbiRecoveryPlaceholder(metadata.recovery),
+  };
+}
+
 export function normalizeHistoryRecord(rawRecord: unknown): HistoryRecord {
   const record = objectOrEmpty(rawRecord);
   const intentSnapshot = objectOrEmpty(record.intent_snapshot);
@@ -835,6 +1019,9 @@ export function normalizeHistoryRecord(rawRecord: unknown): HistoryRecord {
     nonce_thread: normalizeNonceThread(record.nonce_thread),
     batch_metadata: normalizeBatchMetadata(record.batch_metadata ?? record.batchMetadata),
     abi_call_metadata: normalizeAbiCallMetadata(record.abi_call_metadata ?? record.abiCallMetadata),
+    raw_calldata_metadata: normalizeRawCalldataMetadata(
+      record.raw_calldata_metadata ?? record.rawCalldataMetadata,
+    ),
   };
 }
 

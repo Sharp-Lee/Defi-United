@@ -172,6 +172,8 @@ function transactionTypeLabel(type: TransactionType) {
       return "ERC-20 transfer";
     case "contractCall":
       return "Contract call";
+    case "rawCalldata":
+      return "Raw calldata";
     case "unknown":
       return "Unsupported/unknown";
   }
@@ -201,6 +203,7 @@ function primaryTransactionTarget(record: HistoryRecord) {
         record.intent.to
       );
     case "contractCall":
+    case "rawCalldata":
       return (
         record.submission.to ??
         record.intent.to ??
@@ -220,6 +223,7 @@ function primaryTransactionValue(record: HistoryRecord) {
     case "erc20Transfer":
       return `${formatOptional(record.submission.amount_raw ?? record.intent.amount_raw)} raw`;
     case "contractCall":
+    case "rawCalldata":
       return `${formatOptional(
         record.submission.native_value_wei ??
           record.intent.native_value_wei ??
@@ -1451,6 +1455,16 @@ function typedIntentRows(record: HistoryRecord): DetailRow[] {
         ["Native value", `${formatOptional(record.intent.native_value_wei ?? record.intent.value_wei)} wei`],
         ["Typed display", "Unsupported typed contract call"],
       ];
+    case "rawCalldata":
+      return [
+        ...baseRows,
+        ["Transaction to", record.intent.to],
+        ["Selector", record.intent.selector],
+        ["Native value", `${formatOptional(record.intent.native_value_wei ?? record.intent.value_wei)} wei`],
+        ["Calldata hash", record.raw_calldata_metadata?.calldata_hash],
+        ["Calldata bytes", record.raw_calldata_metadata?.calldata_byte_length],
+        ["Selector status", record.raw_calldata_metadata?.selector_status],
+      ];
     case "unknown":
       return [
         ...baseRows,
@@ -1534,6 +1548,17 @@ function typedSubmissionRows(
         ["Method name", record.submission.method_name],
         ["Native value", `${formatOptional(record.submission.native_value_wei ?? record.submission.value_wei)} wei`],
         ["Typed display", "Unsupported typed contract call"],
+        ...tailRows,
+      ];
+    case "rawCalldata":
+      return [
+        ...baseRows,
+        ["Transaction to", record.submission.to],
+        ["Selector", record.submission.selector],
+        ["Native value", `${formatOptional(record.submission.native_value_wei ?? record.submission.value_wei)} wei`],
+        ["Calldata hash", record.raw_calldata_metadata?.calldata_hash],
+        ["Calldata bytes", record.raw_calldata_metadata?.calldata_byte_length],
+        ["Selector status", record.raw_calldata_metadata?.selector_status],
         ...tailRows,
       ];
     case "unknown":
