@@ -288,6 +288,17 @@ export function buildRawCalldataDraft(input: BuildRawCalldataDraftInput): RawCal
         "rpc",
       ),
     );
+  } else {
+    if (!hasFrozenRpcField(input.selectedRpc.endpointSummary)) {
+      blockingStatuses.push(
+        blocking("unfrozenRpcEndpointSummary", "Validate the selected RPC endpoint before drafting.", "rpc"),
+      );
+    }
+    if (!hasFrozenRpcField(input.selectedRpc.endpointFingerprint)) {
+      blockingStatuses.push(
+        blocking("unfrozenRpcEndpointFingerprint", "Validate the selected RPC endpoint fingerprint before drafting.", "rpc"),
+      );
+    }
   }
   if (!input.from) {
     blockingStatuses.push(blocking("missingFrom", "Select a sender account.", "account"));
@@ -300,6 +311,12 @@ export function buildRawCalldataDraft(input: BuildRawCalldataDraftInput): RawCal
   }
   if (input.fee.gasLimit <= 0n) {
     blockingStatuses.push(blocking("gasLimit", "Gas limit must be greater than zero.", "fee"));
+  }
+  const expectedMaxFee = expectedMaxFeePerGas(input.fee, blockingStatuses);
+  if (expectedMaxFee !== null && input.fee.maxFeePerGas !== expectedMaxFee) {
+    blockingStatuses.push(
+      blocking("maxFeeMismatch", "Max fee must match the derived raw calldata fee draft.", "fee"),
+    );
   }
   if (input.fee.maxFeePerGas < input.fee.maxPriorityFeePerGas) {
     blockingStatuses.push(
@@ -469,6 +486,47 @@ function isHighFee(fee: RawCalldataFeeInput) {
   return highFee || highBaseFee || highTip || highGasLimit;
 }
 
+function expectedMaxFeePerGas(
+  fee: RawCalldataFeeInput,
+  blockingStatuses: RawCalldataStatus[],
+): bigint | null {
+  if (fee.maxFeeOverridePerGas !== null && fee.maxFeeOverridePerGas !== undefined) {
+    return fee.maxFeeOverridePerGas;
+  }
+  const multiplier = parseBaseFeeMultiplier(fee.baseFeeMultiplier, blockingStatuses);
+  if (!multiplier) {
+    return null;
+  }
+  return ceilMultiply(fee.baseFeePerGas, multiplier.numerator, multiplier.denominator) + fee.maxPriorityFeePerGas;
+}
+
+function parseBaseFeeMultiplier(
+  value: string | null | undefined,
+  blockingStatuses: RawCalldataStatus[],
+) {
+  const trimmed = value?.trim() ?? "";
+  if (!/^\d+(?:\.\d+)?$/.test(trimmed)) {
+    blockingStatuses.push(
+      blocking("baseFeeMultiplier", "Base fee multiplier must be a non-negative decimal.", "fee"),
+    );
+    return null;
+  }
+  const [whole, fraction = ""] = trimmed.split(".");
+  if (fraction.length > 18) {
+    blockingStatuses.push(
+      blocking("baseFeeMultiplier", "Base fee multiplier supports at most 18 decimal places.", "fee"),
+    );
+    return null;
+  }
+  const denominator = 10n ** BigInt(fraction.length);
+  const numerator = BigInt(`${whole}${fraction}` || "0");
+  return { numerator, denominator, text: trimmed };
+}
+
+function ceilMultiply(value: bigint, numerator: bigint, denominator: bigint) {
+  return (value * numerator + denominator - 1n) / denominator;
+}
+
 function boundHumanPreviewRows(rows: RawCalldataHumanPreviewRowInput[]): RawCalldataHumanPreview {
   const boundedRows = rows.slice(0, RAW_CALLDATA_HUMAN_PREVIEW_MAX_ROWS).map((row) => {
     const label = compactText(row.label);
@@ -609,6 +667,10 @@ function sanitizeRpcIdentity(input: RawCalldataRpcIdentityInput | null): RawCall
     endpointSummary: input.endpointSummary ?? null,
     endpointFingerprint: input.endpointFingerprint ?? null,
   };
+}
+
+function hasFrozenRpcField(value: string | null | undefined) {
+  return typeof value === "string" && value.trim().length > 0;
 }
 
 function emptyBlockedPreview(): RawCalldataPreview {

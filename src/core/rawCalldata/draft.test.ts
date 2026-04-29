@@ -237,6 +237,28 @@ describe("buildRawCalldataDraft", () => {
     expect(draft.blockingStatuses).toMatchObject([{ code: "unvalidatedRpcChain" }]);
   });
 
+  it("blocks selected RPCs without frozen endpoint identity", () => {
+    const missingSummary = buildRawCalldataDraft({
+      ...baseInput,
+      selectedRpc: { ...baseInput.selectedRpc, endpointSummary: null },
+    });
+    expect(missingSummary.submission).toBeNull();
+    expect(missingSummary.canSubmit).toBe(false);
+    expect(missingSummary.blockingStatuses).toMatchObject([
+      { code: "unfrozenRpcEndpointSummary" },
+    ]);
+
+    const missingFingerprint = buildRawCalldataDraft({
+      ...baseInput,
+      selectedRpc: { ...baseInput.selectedRpc, endpointFingerprint: "" },
+    });
+    expect(missingFingerprint.submission).toBeNull();
+    expect(missingFingerprint.canSubmit).toBe(false);
+    expect(missingFingerprint.blockingStatuses).toMatchObject([
+      { code: "unfrozenRpcEndpointFingerprint" },
+    ]);
+  });
+
   it("normalizes RPC chain id to JSON-safe number in submission and frozen key", () => {
     const bigintRpcDraft = buildRawCalldataDraft(baseInput);
     const numberRpcDraft = buildRawCalldataDraft({
@@ -259,6 +281,7 @@ describe("buildRawCalldataDraft", () => {
         manualGas: true,
         gasLimit: 50_000n,
         maxFeePerGas: 100n,
+        maxFeeOverridePerGas: 100n,
         liveMaxFeePerGas: 10n,
       },
     };
@@ -292,6 +315,46 @@ describe("buildRawCalldataDraft", () => {
     expect(draft.preview.suffix).toHaveLength(66);
     expect(draft.submission?.calldataByteLength).toBe(RAW_CALLDATA_MAX_BYTES / 2 + 1);
     expect(draft.canSubmit).toBe(false);
+  });
+
+  it("blocks max fee drafts that do not match the derived fee model", () => {
+    const autoMismatch = buildRawCalldataDraft({
+      ...baseInput,
+      fee: { ...baseInput.fee, maxFeePerGas: 13n },
+    });
+    expect(autoMismatch.submission).toBeNull();
+    expect(autoMismatch.canSubmit).toBe(false);
+    expect(autoMismatch.blockingStatuses).toMatchObject([{ code: "maxFeeMismatch" }]);
+
+    const overrideMismatch = buildRawCalldataDraft({
+      ...baseInput,
+      fee: { ...baseInput.fee, maxFeePerGas: 12n, maxFeeOverridePerGas: 13n },
+    });
+    expect(overrideMismatch.submission).toBeNull();
+    expect(overrideMismatch.canSubmit).toBe(false);
+    expect(overrideMismatch.blockingStatuses).toMatchObject([{ code: "maxFeeMismatch" }]);
+  });
+
+  it("accepts max fee drafts that match auto derivation or an explicit override", () => {
+    const autoDerived = buildRawCalldataDraft({
+      ...baseInput,
+      fee: {
+        ...baseInput.fee,
+        baseFeePerGas: 11n,
+        baseFeeMultiplier: "1.5",
+        maxFeePerGas: 19n,
+        maxPriorityFeePerGas: 2n,
+      },
+    });
+    expect(autoDerived.canSubmit).toBe(true);
+    expect(autoDerived.submission?.maxFeePerGas).toBe("19");
+
+    const override = buildRawCalldataDraft({
+      ...baseInput,
+      fee: { ...baseInput.fee, maxFeePerGas: 13n, maxFeeOverridePerGas: 13n },
+    });
+    expect(override.canSubmit).toBe(true);
+    expect(override.submission?.maxFeeOverridePerGas).toBe("13");
   });
 
   it("blocks malformed calldata drafts", () => {

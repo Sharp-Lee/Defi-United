@@ -543,20 +543,29 @@ fn validate_selected_rpc_endpoint(
     selected_rpc: &AbiCallSelectedRpcSummary,
     rpc_url: &str,
 ) -> Result<(), String> {
-    if let Some(endpoint_summary) = selected_rpc.endpoint_summary.as_deref() {
-        if endpoint_summary != summarize_rpc_endpoint(rpc_url) {
-            return Err(
-                "submitted rpcUrl does not match frozen selectedRpc endpointSummary".to_string(),
-            );
-        }
+    let endpoint_summary = selected_rpc
+        .endpoint_summary
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| {
+            "selectedRpc.endpointSummary is required for raw calldata submit".to_string()
+        })?;
+    if endpoint_summary != summarize_rpc_endpoint(rpc_url) {
+        return Err(
+            "submitted rpcUrl does not match frozen selectedRpc endpointSummary".to_string(),
+        );
     }
-    if let Some(endpoint_fingerprint) = selected_rpc.endpoint_fingerprint.as_deref() {
-        if endpoint_fingerprint != rpc_endpoint_fingerprint(rpc_url) {
-            return Err(
-                "submitted rpcUrl does not match frozen selectedRpc endpointFingerprint"
-                    .to_string(),
-            );
-        }
+    let endpoint_fingerprint = selected_rpc
+        .endpoint_fingerprint
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| {
+            "selectedRpc.endpointFingerprint is required for raw calldata submit".to_string()
+        })?;
+    if endpoint_fingerprint != rpc_endpoint_fingerprint(rpc_url) {
+        return Err(
+            "submitted rpcUrl does not match frozen selectedRpc endpointFingerprint".to_string(),
+        );
     }
     Ok(())
 }
@@ -1679,12 +1688,41 @@ mod tests {
         assert!(!error.contains("other-rpc.example"), "{error}");
 
         let mut input = base_input();
-        input.selected_rpc.as_mut().unwrap().endpoint_summary = None;
-        input.rpc_url = "https://rpc.example/alternate?api_key=secret".to_string();
+        input.selected_rpc.as_mut().unwrap().endpoint_fingerprint =
+            Some(rpc_endpoint_fingerprint("https://other-rpc.example"));
+        refresh_frozen_key(&mut input);
         let error = validate_raw_calldata_submit_input(input)
             .expect_err("swapped rpc fingerprint rejected");
         assert!(error.contains("endpointFingerprint"), "{error}");
-        assert!(!error.contains("secret"), "{error}");
+        assert!(!error.contains("other-rpc.example"), "{error}");
+    }
+
+    #[test]
+    fn raw_calldata_submit_requires_frozen_rpc_endpoint_identity() {
+        let mut input = base_input();
+        input.selected_rpc.as_mut().unwrap().endpoint_summary = None;
+        refresh_frozen_key(&mut input);
+        let error = validate_raw_calldata_submit_input(input)
+            .expect_err("missing rpc endpoint summary rejected");
+        assert!(error.contains("endpointSummary"), "{error}");
+
+        let mut input = base_input();
+        input.selected_rpc.as_mut().unwrap().endpoint_fingerprint = None;
+        refresh_frozen_key(&mut input);
+        let error = validate_raw_calldata_submit_input(input)
+            .expect_err("missing rpc endpoint fingerprint rejected");
+        assert!(error.contains("endpointFingerprint"), "{error}");
+
+        let mut input = base_input();
+        let selected_rpc = input.selected_rpc.as_mut().unwrap();
+        selected_rpc.endpoint_summary = None;
+        selected_rpc.endpoint_fingerprint = None;
+        input.rpc_url = "https://other-rpc.example".to_string();
+        refresh_frozen_key(&mut input);
+        let error = validate_raw_calldata_submit_input(input)
+            .expect_err("omitted rpc identity cannot authorize alternate rpcUrl");
+        assert!(error.contains("endpointSummary"), "{error}");
+        assert!(!error.contains("other-rpc.example"), "{error}");
     }
 
     #[test]
