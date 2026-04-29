@@ -1169,15 +1169,29 @@ fn is_hex_payload(value: &str) -> bool {
     !hex.is_empty() && hex.chars().all(|ch| ch.is_ascii_hexdigit())
 }
 
+fn contains_raw_calldata_payload(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    let mut index = 0;
+    while index + 1 < bytes.len() {
+        if bytes[index] == b'0' && matches!(bytes[index + 1], b'x' | b'X') {
+            let hex_len = value[index + 2..]
+                .chars()
+                .take_while(|ch| ch.is_ascii_hexdigit())
+                .count();
+            if hex_len > 8 {
+                return true;
+            }
+        }
+        index += 1;
+    }
+    false
+}
+
 fn sanitize_raw_calldata_text(value: &str, max_chars: usize) -> String {
     let compact = value.trim();
     if (is_hex_payload(compact) && compact.len() > max_chars)
         || (is_hex_payload(compact) && compact.len() > 10)
-        || compact
-            .split(|ch: char| {
-                ch.is_whitespace() || matches!(ch, '"' | '\'' | '<' | '>' | ';' | ',')
-            })
-            .any(|token| token.len() > 10 && is_hex_payload(token))
+        || contains_raw_calldata_payload(compact)
     {
         return "[redacted_payload]".to_string();
     }

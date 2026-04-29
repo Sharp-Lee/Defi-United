@@ -773,6 +773,65 @@ describe("history schema normalization", () => {
     expect(durable).not.toContain("SECRET_TOKEN");
   });
 
+  it("redacts colon and equal delimited raw calldata in raw-shaped frozen keys", () => {
+    const embeddedRawCalldata =
+      "0xa9059cbb0000000000000000000000001111111111111111111111111111111111111111";
+    const records = normalizeHistoryRecords([
+      {
+        intent: {
+          ...legacyIntent,
+          transaction_type: "rawCalldata",
+          selector: "0xa9059cbb",
+        },
+        submission: {
+          frozen_key: `raw:${embeddedRawCalldata}`,
+          tx_hash: "0xraw-colon",
+          kind: "rawCalldata",
+          transaction_type: "rawCalldata",
+          selector: "0xa9059cbb",
+        },
+        outcome: { state: "Pending", tx_hash: "0xraw-colon" },
+        rawCalldataMetadata: {
+          intentKind: "rawCalldata",
+          calldataHashVersion: "keccak256-v1",
+          selector: "0xa9059cbb",
+          frozenKey: `raw=${embeddedRawCalldata}`,
+        },
+      },
+      {
+        intent: {
+          ...legacyIntent,
+          transaction_type: "rawCalldata",
+          selector: "0xa9059cbb",
+        },
+        submission: {
+          frozen_key: "raw:0xa9059cbb",
+          tx_hash: "0xraw-selector",
+          kind: "rawCalldata",
+          transaction_type: "rawCalldata",
+          selector: "0xa9059cbb",
+        },
+        outcome: { state: "Pending", tx_hash: "0xraw-selector" },
+        rawCalldataMetadata: {
+          intentKind: "rawCalldata",
+          calldataHashVersion: "keccak256-v1",
+          selector: "0xa9059cbb",
+          frozenKey: "raw=0xa9059cbb",
+        },
+      },
+    ]);
+
+    expect(records[0].submission.frozen_key).toBe("[redacted_payload]");
+    expect(records[0].raw_calldata_metadata?.frozen_key).toBe("[redacted_payload]");
+    expect(records[1].submission.frozen_key).toBe("raw:0xa9059cbb");
+    expect(records[1].raw_calldata_metadata?.frozen_key).toBe("raw=0xa9059cbb");
+
+    const durable = JSON.stringify(records);
+    expect(durable).not.toContain(embeddedRawCalldata);
+    expect(durable).not.toContain(`raw:${embeddedRawCalldata}`);
+    expect(durable).not.toContain(`raw=${embeddedRawCalldata}`);
+  });
+
   it("normalizes arbitrary ABI write call metadata without raw ABI, calldata, params, or RPC secrets", () => {
     const rawCalldata = `0xa9059cbb${"0".repeat(512)}`;
     const overlongKind = `kind-${"x".repeat(220)}`;

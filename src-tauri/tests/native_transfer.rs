@@ -1670,6 +1670,8 @@ fn history_record_redacts_short_full_raw_calldata_summary_fields() {
 fn history_record_redacts_raw_calldata_frozen_keys() {
     let short_raw_calldata =
         "0xa9059cbb0000000000000000000000001111111111111111111111111111111111111111";
+    let colon_delimited_raw_calldata = format!("raw:{short_raw_calldata}");
+    let equal_delimited_raw_calldata = format!("raw={short_raw_calldata}");
     let with_raw = serde_json::json!({
         "intent": {
             "transaction_type": "rawCalldata",
@@ -1688,7 +1690,7 @@ fn history_record_redacts_raw_calldata_frozen_keys() {
         },
         "submission": {
             "transaction_type": "rawCalldata",
-            "frozen_key": short_raw_calldata,
+            "frozen_key": colon_delimited_raw_calldata,
             "tx_hash": "0xraw",
             "kind": "rawCalldata",
             "selector": "0xa9059cbb"
@@ -1701,7 +1703,7 @@ fn history_record_redacts_raw_calldata_frozen_keys() {
             "intentKind": "rawCalldata",
             "calldataHashVersion": "keccak256-v1",
             "selector": "0xa9059cbb",
-            "frozenKey": short_raw_calldata
+            "frozenKey": equal_delimited_raw_calldata
         }
     });
 
@@ -1717,6 +1719,8 @@ fn history_record_redacts_raw_calldata_frozen_keys() {
 
     let serialized = serde_json::to_string(&record).expect("serialize raw calldata record");
     assert!(!serialized.contains(short_raw_calldata));
+    assert!(!serialized.contains(&colon_delimited_raw_calldata));
+    assert!(!serialized.contains(&equal_delimited_raw_calldata));
 }
 
 #[test]
@@ -1838,6 +1842,8 @@ fn history_recovery_intent_output_redacts_raw_calldata_frozen_keys() {
     with_test_app_dir("raw-calldata-recovery-frozen-key-redaction", |_| {
         let short_raw_calldata =
             "0xa9059cbb0000000000000000000000001111111111111111111111111111111111111111";
+        let colon_delimited_raw_calldata = format!("raw:{short_raw_calldata}");
+        let equal_delimited_raw_calldata = format!("raw={short_raw_calldata}");
         let intent: wallet_workbench_lib::models::HistoryRecoveryIntent =
             serde_json::from_value(serde_json::json!({
                 "schemaVersion": 1,
@@ -1847,12 +1853,12 @@ fn history_recovery_intent_output_redacts_raw_calldata_frozen_keys() {
                 "txHash": "0xraw",
                 "kind": "rawCalldata",
                 "selector": "0xa9059cbb",
-                "frozenKey": short_raw_calldata,
+                "frozenKey": colon_delimited_raw_calldata,
                 "rawCalldataMetadata": {
                     "intentKind": "rawCalldata",
                     "calldataHashVersion": "keccak256-v1",
                     "selector": "0xa9059cbb",
-                    "frozenKey": short_raw_calldata
+                    "frozenKey": equal_delimited_raw_calldata
                 },
                 "broadcastedAt": "2026-04-29T01:02:04.000Z",
                 "writeError": "schema placeholder"
@@ -1864,6 +1870,8 @@ fn history_recovery_intent_output_redacts_raw_calldata_frozen_keys() {
             .expect("recovery intents path");
         let raw = fs::read_to_string(path).expect("read recovery intents");
         assert!(!raw.contains(short_raw_calldata));
+        assert!(!raw.contains(&colon_delimited_raw_calldata));
+        assert!(!raw.contains(&equal_delimited_raw_calldata));
 
         let intents = load_history_recovery_intents().expect("load recovery intents");
         assert_eq!(

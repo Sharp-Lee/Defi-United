@@ -404,6 +404,7 @@ export interface HistoryRecord {
 const LEGACY = "legacy";
 const UNKNOWN = "unknown";
 const RAW_FROZEN_KEY_MAX_LENGTH = 160;
+const RAW_CALLDATA_PAYLOAD_RE = /0x[0-9a-f]{9,}/i;
 const TRANSACTION_TYPES = new Set<TransactionType>([
   "legacy",
   "nativeTransfer",
@@ -499,7 +500,7 @@ function sanitizeRawCalldataSummaryText(value: unknown, maxLength = 160) {
   const compact = value.replace(/\s+/g, " ").trim();
   if (
     (/^0x[0-9a-f]+$/i.test(compact) && compact.length > 10) ||
-    /0x[0-9a-f]{9,}/i.test(compact)
+    RAW_CALLDATA_PAYLOAD_RE.test(compact)
   ) {
     return "[redacted_payload]";
   }
@@ -511,7 +512,7 @@ function sanitizeRawFrozenKey(value: unknown) {
   const compact = value.replace(/\s+/g, " ").trim();
   if (
     (/^0x[0-9a-f]+$/i.test(compact) && compact.length > 10) ||
-    /(?:^|[\s"'<>;,])0x[0-9a-f]{9,}(?=$|[\s"'<>;,])/i.test(compact)
+    RAW_CALLDATA_PAYLOAD_RE.test(compact)
   ) {
     return "[redacted_payload]";
   }
