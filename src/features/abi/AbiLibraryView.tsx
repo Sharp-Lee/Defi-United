@@ -1,4 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { formatUnits, JsonRpcProvider } from "ethers";
+import {
+  buildAbiWriteDraft,
+  type AbiWriteDraftReadModel,
+  type AbiWriteDraftStatus,
+} from "../../core/abi/readModel";
 import type {
   AbiCacheEntryRecord,
   AbiCalldataPreviewInput,
@@ -12,16 +18,21 @@ import type {
   AbiProviderKind,
   AbiRegistryMutationResult,
   AbiRegistryState,
+  AccountRecord,
   FetchExplorerAbiInput,
   UpsertAbiDataSourceConfigInput,
   UserAbiPayloadInput,
 } from "../../lib/tauri";
+import type { AccountChainState } from "../../lib/rpc";
 
 export type AbiMutationHandlerResult = AbiRegistryMutationResult | boolean | void;
 
 export interface AbiLibraryViewProps {
+  accounts?: Array<AccountRecord & AccountChainState>;
   busy?: boolean;
+  chainName?: string;
   error?: string | null;
+  rpcUrl?: string;
   selectedChainId: bigint;
   state: AbiRegistryState | null;
   onRefresh: () => Promise<boolean | void> | boolean | void;
@@ -75,10 +86,75 @@ const statusLabels: Record<string, string> = {
   unselected: "Unselected",
   sourceConflict: "Source conflict",
   needsUserChoice: "Needs user choice",
+  baseFeeMultiplier: "Base fee multiplier",
+  baseFeeUnavailable: "Base fee unavailable",
+  blocked: "Blocked",
+  gasEstimationUnavailable: "Gas estimation unavailable",
+  gasLimit: "Gas limit",
+  latestBaseFeeUnavailable: "Latest base fee unavailable",
+  maxFeeBelowPriorityFee: "Max fee below priority fee",
+  missingAbiEntry: "Missing ABI entry",
+  missingFunction: "Missing function",
+  missingPreview: "Missing preview",
+  missingRpc: "Missing RPC",
+  missingSelectedAccount: "Missing selected account",
+  nativeValue: "Native value",
+  nonce: "Nonce",
+  nonpayableValue: "Nonpayable value",
+  previewIdentityMismatch: "Preview identity mismatch",
+  priorityFee: "Priority fee",
+  readFunction: "Read function",
+  rpcFeeLookupFailed: "RPC fee lookup failed",
+  unsupportedFunction: "Unsupported function",
+  unsupportedFunctionKind: "Unsupported function kind",
 };
 
 function compact(value: string, head = 10, tail = 6) {
   return value.length > head + tail + 3 ? `${value.slice(0, head)}...${value.slice(-tail)}` : value;
+}
+
+function boundedText(value: string, maxLength = 96) {
+  const compacted = value.replace(/\s+/g, " ").trim();
+  return compacted.length > maxLength ? `${compacted.slice(0, maxLength)}...[truncated]` : compacted;
+}
+
+function sanitizeRpcErrorMessage(value: string) {
+  return boundedText(value, 240)
+    .replace(/\b(?:https?|wss?):\/\/[^\s"'<>;,]+/gi, (match) => {
+      try {
+        return new URL(match).origin;
+      } catch {
+        return "[redacted_endpoint]";
+      }
+    })
+    .replace(/\bBearer\s+[^\s"'<>;,]+/gi, "Bearer [redacted]")
+    .replace(
+      /\b[^\s"'<>;,]*(?:api[_-]?key|apikey|token|auth|authorization|password|secret|private[_-]?key|access[_-]?token)[^\s"'<>;,]*\s*[:=]\s*[^\s"'<>;,]+/gi,
+      "[redacted_secret]",
+    );
+}
+
+function formatGweiWei(value: string | null) {
+  if (value === null) return "Unavailable";
+  try {
+    return `${formatUnits(BigInt(value), "gwei")} gwei (${value} wei)`;
+  } catch {
+    return value;
+  }
+}
+
+function formatGweiInput(value: bigint) {
+  return formatUnits(value, "gwei");
+}
+
+function rpcIdentitySummary(rpcUrl: string, chainId: bigint) {
+  if (!rpcUrl.trim()) return null;
+  try {
+    const url = new URL(rpcUrl.trim());
+    return `${url.protocol}//${url.host} / chainId ${chainId.toString()}`;
+  } catch {
+    return `Configured RPC / chainId ${chainId.toString()}`;
+  }
 }
 
 function formatTimestamp(value?: string | null) {
@@ -119,6 +195,24 @@ function cacheIdentity(entry: AbiCacheEntryRecord) {
     entry.providerConfigId ?? "",
     entry.userSourceId ?? "",
     entry.versionId,
+  ].join(":");
+}
+
+function previewIdentityKey(preview: AbiCalldataPreviewResult | null) {
+  if (!preview) return "";
+  return [
+    preview.status,
+    preview.functionSignature,
+    preview.contractAddress ?? "",
+    preview.sourceKind,
+    preview.providerConfigId ?? "",
+    preview.userSourceId ?? "",
+    preview.versionId,
+    preview.abiHash,
+    preview.sourceFingerprint,
+    preview.selector ?? "",
+    preview.calldata?.hash ?? "",
+    preview.calldata?.byteLength?.toString() ?? "",
   ].join(":");
 }
 
@@ -222,7 +316,8 @@ function functionPreviewModeLabel(fn: AbiFunctionSchema) {
 function summaryLine(summary: AbiDecodedValueSummary): string {
   const parts = [summary.type, summary.kind];
   if (summary.value !== null && summary.value !== undefined) {
-    parts.push(summary.truncated ? `${summary.value}...` : summary.value);
+    const value = boundedText(summary.value);
+    parts.push(summary.truncated ? `${value}...` : value);
   }
   if (summary.byteLength !== null && summary.byteLength !== undefined) {
     parts.push(`${summary.byteLength} bytes`);
@@ -257,6 +352,28 @@ function renderSummary(summary: AbiDecodedValueSummary, key: string) {
   );
 }
 
+function renderDraftStatuses(statuses: AbiWriteDraftStatus[], label: string) {
+  if (statuses.length === 0) return null;
+  return (
+    <div className="abi-validation-summary" aria-label={label}>
+      {statuses.map((item) => (
+        <span key={`${item.level}-${item.source}-${item.code}`}>
+          {statusLabel(item.code)}: {item.message}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function draftRow(label: string, value: string | number | null | undefined) {
+  return (
+    <>
+      <div>{label}</div>
+      <div className="mono">{value === null || value === undefined || value === "" ? "none" : value}</div>
+    </>
+  );
+}
+
 function validationDetails(validation: AbiPayloadValidationReadModel) {
   const diagnostics = validation.diagnostics;
   return [
@@ -271,8 +388,11 @@ function validationDetails(validation: AbiPayloadValidationReadModel) {
 }
 
 export function AbiLibraryView({
+  accounts = [],
   busy = false,
+  chainName = "Unknown chain",
   error = null,
+  rpcUrl = "",
   selectedChainId,
   state,
   onRefresh,
@@ -330,6 +450,21 @@ export function AbiLibraryView({
   const [selectedFunctionSignature, setSelectedFunctionSignature] = useState("");
   const [paramsText, setParamsText] = useState("[]");
   const [preview, setPreview] = useState<AbiCalldataPreviewResult | null>(null);
+  const [selectedAccountIndex, setSelectedAccountIndex] = useState("");
+  const [nativeValueWei, setNativeValueWei] = useState("0");
+  const [nonce, setNonce] = useState("");
+  const [gasLimit, setGasLimit] = useState("");
+  const [latestBaseFeeGwei, setLatestBaseFeeGwei] = useState("");
+  const [baseFeeGwei, setBaseFeeGwei] = useState("");
+  const [baseFeeMultiplier, setBaseFeeMultiplier] = useState("2");
+  const [maxFeeOverrideGwei, setMaxFeeOverrideGwei] = useState("");
+  const [priorityFeeGwei, setPriorityFeeGwei] = useState("");
+  const [writeDraft, setWriteDraft] = useState<AbiWriteDraftReadModel | null>(null);
+  const [draftAttempted, setDraftAttempted] = useState(false);
+  const [draftStatuses, setDraftStatuses] = useState<{
+    warnings: AbiWriteDraftStatus[];
+    blockingStatuses: AbiWriteDraftStatus[];
+  } | null>(null);
   const [previewBusy, setPreviewBusy] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
   const [localMessage, setLocalMessage] = useState<string | null>(null);
@@ -338,8 +473,26 @@ export function AbiLibraryView({
     functionSignature: "",
     paramsText: "[]",
   });
+  const latestDraftStateRef = useRef({
+    accountIndex: "",
+    baseFeeGwei: "",
+    baseFeeMultiplier: "2",
+    chainId: selectedChainId.toString(),
+    entryKey: "",
+    functionSignature: "",
+    gasLimit: "",
+    latestBaseFeeGwei: "",
+    maxFeeOverrideGwei: "",
+    nativeValueWei: "0",
+    nonce: "",
+    paramsText: "[]",
+    previewKey: "",
+    priorityFeeGwei: "",
+    rpcUrl: "",
+  });
   const catalogRequestIdRef = useRef(0);
   const previewRequestIdRef = useRef(0);
+  const draftRequestIdRef = useRef(0);
 
   useEffect(() => {
     setTargetChainId(selectedChainId.toString());
@@ -378,6 +531,10 @@ export function AbiLibraryView({
       ) ?? null,
     [functionCatalog, selectedFunctionSignature],
   );
+  const selectedAccount = useMemo(
+    () => accounts.find((account) => account.index.toString() === selectedAccountIndex) ?? null,
+    [accounts, selectedAccountIndex],
+  );
   const selectedEntryReasons = selectedPreviewEntry ? blockingReasons(selectedPreviewEntry) : [];
   const selectedEntryCallable = selectedPreviewEntry ? isCallableEntry(selectedPreviewEntry) : false;
   const previewDisabled =
@@ -401,6 +558,57 @@ export function AbiLibraryView({
     }
     return Array.from(counts.entries()).sort(([left], [right]) => left.localeCompare(right));
   }, [state]);
+  const selectedRpcSummary = useMemo(
+    () => rpcIdentitySummary(rpcUrl, selectedChainId),
+    [rpcUrl, selectedChainId],
+  );
+  const liveDraftState = useMemo(
+    () =>
+      buildAbiWriteDraft({
+        selectedChainId: Number(selectedChainId),
+        chainLabel: chainName,
+        accountIndex: selectedAccount?.index ?? null,
+        from: selectedAccount?.address ?? null,
+        rpcConfigured: rpcUrl.trim().length > 0,
+        selectedRpc: selectedRpcSummary
+          ? {
+              chainId: Number(selectedChainId),
+              endpointSummary: selectedRpcSummary,
+            }
+          : null,
+        entry: selectedPreviewEntry,
+        fn: selectedFunction,
+        preview,
+        nativeValueWei,
+        gasLimit,
+        latestBaseFeeGwei,
+        baseFeeGwei,
+        baseFeeMultiplier,
+        maxFeeOverrideGwei,
+        priorityFeeGwei,
+        nonce,
+        createdAt: "",
+      }),
+    [
+      baseFeeGwei,
+      baseFeeMultiplier,
+      chainName,
+      gasLimit,
+      latestBaseFeeGwei,
+      maxFeeOverrideGwei,
+      nativeValueWei,
+      nonce,
+      preview,
+      priorityFeeGwei,
+      rpcUrl,
+      selectedAccount,
+      selectedChainId,
+      selectedFunction,
+      selectedPreviewEntry,
+      selectedRpcSummary,
+    ],
+  );
+  const visibleDraftStatuses = draftAttempted ? draftStatuses ?? liveDraftState : liveDraftState;
 
   useEffect(() => {
     latestPreviewStateRef.current = {
@@ -409,6 +617,61 @@ export function AbiLibraryView({
       paramsText,
     };
   }, [paramsText, selectedFunctionSignature, selectedPreviewEntryKey]);
+
+  useLayoutEffect(() => {
+    latestDraftStateRef.current = {
+      accountIndex: selectedAccountIndex,
+      baseFeeGwei,
+      baseFeeMultiplier,
+      chainId: selectedChainId.toString(),
+      entryKey: selectedPreviewEntryKey,
+      functionSignature: selectedFunctionSignature,
+      gasLimit,
+      latestBaseFeeGwei,
+      maxFeeOverrideGwei,
+      nativeValueWei,
+      nonce,
+      paramsText,
+      previewKey: previewIdentityKey(preview),
+      priorityFeeGwei,
+      rpcUrl,
+    };
+  }, [
+    baseFeeGwei,
+    baseFeeMultiplier,
+    gasLimit,
+    latestBaseFeeGwei,
+    maxFeeOverrideGwei,
+    nativeValueWei,
+    nonce,
+    paramsText,
+    preview,
+    priorityFeeGwei,
+    rpcUrl,
+    selectedAccountIndex,
+    selectedChainId,
+    selectedFunctionSignature,
+    selectedPreviewEntryKey,
+  ]);
+
+  function clearWriteDraft() {
+    setWriteDraft(null);
+    setDraftAttempted(false);
+    setDraftStatuses(null);
+  }
+
+  useEffect(() => {
+    if (!selectedAccountIndex && accounts.length > 0) {
+      setSelectedAccountIndex(accounts[0].index.toString());
+    }
+  }, [accounts, selectedAccountIndex]);
+
+  useEffect(() => {
+    if (!selectedAccount) return;
+    if (!nonce && selectedAccount.nonce !== null && selectedAccount.nonce !== undefined) {
+      setNonce(selectedAccount.nonce.toString());
+    }
+  }, [nonce, selectedAccount]);
 
   useEffect(() => {
     if (selectedPreviewEntryKey && selectedPreviewEntry) return;
@@ -421,6 +684,7 @@ export function AbiLibraryView({
     setSelectedFunctionSignature("");
     setParamsText("[]");
     setPreview(null);
+    clearWriteDraft();
   }, [selectedPreviewEntryKey]);
 
   useEffect(() => {
@@ -544,6 +808,7 @@ export function AbiLibraryView({
     setFunctionCatalog(null);
     setSelectedFunctionSignature("");
     setPreview(null);
+    clearWriteDraft();
     if (!selectedPreviewEntry) {
       setLocalError("Select a managed ABI entry.");
       return;
@@ -585,6 +850,7 @@ export function AbiLibraryView({
     setLocalError(null);
     setLocalMessage(null);
     setPreview(null);
+    clearWriteDraft();
     if (!selectedPreviewEntry || !selectedFunction) {
       setLocalError("Select a managed ABI entry and function.");
       return;
@@ -652,6 +918,103 @@ export function AbiLibraryView({
       if (previewRequestIdRef.current === requestId) {
         setPreviewBusy(false);
       }
+    }
+  }
+
+  async function handleBuildWriteDraft() {
+    setLocalError(null);
+    setLocalMessage(null);
+    const requestId = draftRequestIdRef.current + 1;
+    draftRequestIdRef.current = requestId;
+    const requestState = { ...latestDraftStateRef.current };
+    const isCurrentDraftRequest = () =>
+      draftRequestIdRef.current === requestId &&
+      JSON.stringify(latestDraftStateRef.current) === JSON.stringify(requestState);
+    let nextLatestBaseFeeGwei = latestBaseFeeGwei;
+    let nextPriorityFeeGwei = priorityFeeGwei;
+    let rpcChainId: number | null = selectedRpcSummary ? Number(selectedChainId) : null;
+
+    if (rpcUrl.trim()) {
+      try {
+        const provider = new JsonRpcProvider(rpcUrl);
+        const [network, latestBlock, feeData] = await Promise.all([
+          provider.getNetwork(),
+          provider.getBlock("latest"),
+          provider.getFeeData(),
+        ]);
+        rpcChainId = Number(network.chainId);
+        if (latestBlock?.baseFeePerGas !== null && latestBlock?.baseFeePerGas !== undefined) {
+          nextLatestBaseFeeGwei = formatGweiInput(latestBlock.baseFeePerGas);
+        }
+        const livePriorityFee = feeData.maxPriorityFeePerGas ?? null;
+        if (!nextPriorityFeeGwei.trim() && livePriorityFee !== null) {
+          nextPriorityFeeGwei = formatGweiInput(livePriorityFee);
+        }
+      } catch (err) {
+        if (!isCurrentDraftRequest()) {
+          return;
+        }
+        const message = sanitizeRpcErrorMessage(err instanceof Error ? err.message : String(err));
+        setDraftAttempted(true);
+        setDraftStatuses({
+          warnings: [],
+          blockingStatuses: [
+            {
+              level: "blocking",
+              code: "rpcFeeLookupFailed",
+              message,
+              source: "rpc",
+            },
+          ],
+        });
+        setWriteDraft(null);
+        setLocalError(`Write draft blocked: ${statusLabel("rpcFeeLookupFailed")}.`);
+        return;
+      }
+    }
+    if (!isCurrentDraftRequest()) {
+      return;
+    }
+    if (nextLatestBaseFeeGwei !== latestBaseFeeGwei) {
+      setLatestBaseFeeGwei(nextLatestBaseFeeGwei);
+    }
+    if (nextPriorityFeeGwei !== priorityFeeGwei) {
+      setPriorityFeeGwei(nextPriorityFeeGwei);
+    }
+
+    const result = buildAbiWriteDraft({
+      selectedChainId: Number(selectedChainId),
+      chainLabel: chainName,
+      accountIndex: selectedAccount?.index ?? null,
+      from: selectedAccount?.address ?? null,
+      rpcConfigured: rpcUrl.trim().length > 0,
+      selectedRpc: selectedRpcSummary
+        ? {
+            chainId: rpcChainId,
+            endpointSummary: selectedRpcSummary,
+          }
+        : null,
+      entry: selectedPreviewEntry,
+      fn: selectedFunction,
+      preview,
+      nativeValueWei,
+      gasLimit,
+      latestBaseFeeGwei: nextLatestBaseFeeGwei,
+      baseFeeGwei,
+      baseFeeMultiplier,
+      maxFeeOverrideGwei,
+      priorityFeeGwei: nextPriorityFeeGwei,
+      nonce,
+      createdAt: new Date().toISOString(),
+    });
+    setDraftAttempted(true);
+    setDraftStatuses({
+      warnings: result.warnings,
+      blockingStatuses: result.blockingStatuses,
+    });
+    setWriteDraft(result.draft);
+    if (result.blockingStatuses.length > 0) {
+      setLocalError(`Write draft blocked: ${result.blockingStatuses.map((item) => statusLabel(item.code)).join(", ")}.`);
     }
   }
 
@@ -992,6 +1355,7 @@ export function AbiLibraryView({
                 setSelectedFunctionSignature(functionSignature);
                 setParamsText("[]");
                 setPreview(null);
+                clearWriteDraft();
               }}
               value={selectedFunctionSignature}
             >
@@ -1069,6 +1433,7 @@ export function AbiLibraryView({
               };
               setParamsText(nextParamsText);
               setPreview(null);
+              clearWriteDraft();
             }}
             rows={7}
             value={paramsText}
@@ -1081,9 +1446,6 @@ export function AbiLibraryView({
           </button>
           <button disabled type="button">
             Read Call
-          </button>
-          <button disabled type="button">
-            Submit Transaction
           </button>
         </div>
 
@@ -1109,6 +1471,186 @@ export function AbiLibraryView({
             )}
           </div>
         )}
+
+        <section className="abi-write-draft" aria-label="ABI write confirmation">
+          <header className="abi-panel-header">
+            <h3>Write Draft</h3>
+            <span className={statusClass(writeDraft ? "ok" : visibleDraftStatuses.blockingStatuses.length > 0 ? "blocked" : "notConfigured")}>
+              {writeDraft ? "Ready" : visibleDraftStatuses.blockingStatuses.length > 0 ? "Blocked" : "Draft"}
+            </span>
+          </header>
+          <div className="abi-write-controls">
+            <label>
+              From
+              <select
+                disabled={accounts.length === 0}
+                onChange={(event) => {
+                  const nextIndex = event.target.value;
+                  const nextAccount =
+                    accounts.find((account) => account.index.toString() === nextIndex) ?? null;
+                  setSelectedAccountIndex(nextIndex);
+                  setNonce(nextAccount?.nonce?.toString() ?? "");
+                  clearWriteDraft();
+                }}
+                value={selectedAccountIndex}
+              >
+                <option value="">Select account</option>
+                {accounts.map((account) => (
+                  <option key={account.index} value={account.index.toString()}>
+                    {account.label} / {compact(account.address, 12, 8)} / index {account.index}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Native value (wei)
+              <input
+                inputMode="numeric"
+                onChange={(event) => {
+                  setNativeValueWei(event.target.value);
+                  clearWriteDraft();
+                }}
+                value={nativeValueWei}
+              />
+            </label>
+            <label>
+              Nonce
+              <input
+                inputMode="numeric"
+                onChange={(event) => {
+                  setNonce(event.target.value);
+                  clearWriteDraft();
+                }}
+                value={nonce}
+              />
+            </label>
+            <label>
+              Gas limit
+              <input
+                inputMode="numeric"
+                onChange={(event) => {
+                  setGasLimit(event.target.value);
+                  clearWriteDraft();
+                }}
+                value={gasLimit}
+              />
+            </label>
+            <label>
+              Latest base fee (gwei)
+              <input
+                inputMode="decimal"
+                onChange={(event) => {
+                  setLatestBaseFeeGwei(event.target.value);
+                  clearWriteDraft();
+                }}
+                value={latestBaseFeeGwei}
+              />
+            </label>
+            <label>
+              Base fee (gwei)
+              <input
+                inputMode="decimal"
+                onChange={(event) => {
+                  setBaseFeeGwei(event.target.value);
+                  clearWriteDraft();
+                }}
+                value={baseFeeGwei}
+              />
+            </label>
+            <label>
+              Base fee multiplier
+              <input
+                inputMode="decimal"
+                onChange={(event) => {
+                  setBaseFeeMultiplier(event.target.value);
+                  clearWriteDraft();
+                }}
+                value={baseFeeMultiplier}
+              />
+            </label>
+            <label>
+              Priority fee (gwei)
+              <input
+                inputMode="decimal"
+                onChange={(event) => {
+                  setPriorityFeeGwei(event.target.value);
+                  clearWriteDraft();
+                }}
+                value={priorityFeeGwei}
+              />
+            </label>
+            <label>
+              Max fee override (gwei)
+              <input
+                inputMode="decimal"
+                onChange={(event) => {
+                  setMaxFeeOverrideGwei(event.target.value);
+                  clearWriteDraft();
+                }}
+                value={maxFeeOverrideGwei}
+              />
+            </label>
+            <button disabled={busy} onClick={() => void handleBuildWriteDraft()} type="button">
+              Build Draft
+            </button>
+          </div>
+          {renderDraftStatuses(visibleDraftStatuses.blockingStatuses, "ABI write blocking statuses")}
+          {renderDraftStatuses(visibleDraftStatuses.warnings, "ABI write warning statuses")}
+          <div className="confirmation-grid" aria-label="ABI write draft context">
+            {draftRow("Contract", selectedPreviewEntry?.contractAddress)}
+            {draftRow("Chain", `${chainName} (chainId ${selectedChainId.toString()})`)}
+            {draftRow("Function", selectedFunction?.signature)}
+            {draftRow("Selector", preview?.selector ?? selectedFunction?.selector)}
+            {draftRow("RPC", selectedRpcSummary ?? "missing")}
+            {draftRow("ABI source", selectedPreviewEntry ? sourceDisplay(selectedPreviewEntry) : null)}
+            {draftRow("ABI status", selectedPreviewEntry ? [
+              statusLabel(selectedPreviewEntry.fetchSourceStatus),
+              statusLabel(selectedPreviewEntry.validationStatus),
+              statusLabel(selectedPreviewEntry.cacheStatus),
+              statusLabel(selectedPreviewEntry.selectionStatus),
+            ].join(" / ") : null)}
+          </div>
+          {writeDraft && (
+            <div className="abi-preview-result" aria-label="ABI write draft confirmation">
+              <div className="confirmation-grid">
+                {draftRow("Created", writeDraft.createdAt)}
+                {draftRow("Chain", `${writeDraft.chainLabel} (chainId ${writeDraft.chainId})`)}
+                {draftRow("From", `${writeDraft.from} / index ${writeDraft.accountIndex}`)}
+                {draftRow("Contract", writeDraft.contractAddress)}
+                {draftRow("Source identity", `${writeDraft.sourceKind} / provider ${writeDraft.providerConfigId ?? "none"} / user ${writeDraft.userSourceId ?? "none"} / version ${writeDraft.versionId}`)}
+                {draftRow("ABI hash", compact(writeDraft.abiHash, 18, 10))}
+                {draftRow("Source fingerprint", compact(writeDraft.sourceFingerprint, 18, 10))}
+                {draftRow("Function", writeDraft.functionSignature)}
+                {draftRow("Selector", writeDraft.selector)}
+                {draftRow("Args hash", writeDraft.argumentHash)}
+                {draftRow("Calldata hash", writeDraft.calldataHash)}
+                {draftRow("Calldata bytes", writeDraft.calldataByteLength)}
+                {draftRow("Native value", `${writeDraft.nativeValueWei} wei`)}
+                {draftRow("Gas limit", writeDraft.gasLimit)}
+                {draftRow("Latest base fee reference", formatGweiWei(writeDraft.latestBaseFeePerGas))}
+                {draftRow("Base fee used", formatGweiWei(writeDraft.baseFeePerGas))}
+                {draftRow("Base fee multiplier", writeDraft.baseFeeMultiplier)}
+                {draftRow("Max fee", formatGweiWei(writeDraft.maxFeePerGas))}
+                {draftRow("Priority fee", formatGweiWei(writeDraft.maxPriorityFeePerGas))}
+                {draftRow("Nonce", writeDraft.nonce)}
+                {draftRow("Selected RPC", writeDraft.selectedRpc?.endpointSummary ?? "none")}
+                {draftRow("Frozen key", writeDraft.frozenKey)}
+              </div>
+              {writeDraft.argumentSummary.length > 0 && (
+                <ul className="abi-summary-tree" aria-label="ABI write argument summary">
+                  {writeDraft.argumentSummary.map((summary, index) =>
+                    renderSummary(summary, `draft-param-${index}`),
+                  )}
+                </ul>
+              )}
+            </div>
+          )}
+          <div className="button-row abi-payload-actions">
+            <button disabled type="button">
+              Submit Transaction
+            </button>
+          </div>
+        </section>
       </section>
 
       <section className="abi-panel" aria-label="ABI cache entries">

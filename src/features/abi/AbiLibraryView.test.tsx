@@ -1,5 +1,5 @@
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   AbiCacheEntryRecord,
   AbiCalldataPreviewInput,
@@ -13,6 +13,20 @@ import type {
 } from "../../lib/tauri";
 import { renderScreen } from "../../test/render";
 import { AbiLibraryView } from "./AbiLibraryView";
+
+const provider = vi.hoisted(() => ({
+  getBlock: vi.fn(),
+  getFeeData: vi.fn(),
+  getNetwork: vi.fn(),
+}));
+
+vi.mock("ethers", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("ethers")>();
+  return {
+    ...actual,
+    JsonRpcProvider: vi.fn(() => provider),
+  };
+});
 
 const contract = "0x1111111111111111111111111111111111111111";
 
@@ -268,6 +282,19 @@ function renderAbi(
   };
   renderScreen(
     <AbiLibraryView
+      accounts={[
+        {
+          index: 0,
+          address: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          label: "Account 0",
+          nativeBalanceWei: 1000000000000000000n,
+          nonce: 7,
+          lastSyncedAt: null,
+          lastSyncError: null,
+        },
+      ]}
+      chainName="Ethereum"
+      rpcUrl="https://rpc.example.invalid/mainnet?apikey=secret"
       selectedChainId={1n}
       state={state}
       {...props}
@@ -276,7 +303,101 @@ function renderAbi(
   return props;
 }
 
+function writeFunctionCatalog(
+  input: AbiManagedEntryInput,
+  fn: Partial<AbiFunctionCatalogResult["functions"][number]> = {},
+): AbiFunctionCatalogResult {
+  return {
+    status: "success",
+    reasons: [],
+    contractAddress: input.contractAddress,
+    sourceKind: input.sourceKind,
+    providerConfigId: input.providerConfigId ?? null,
+    userSourceId: input.userSourceId ?? null,
+    versionId: input.versionId,
+    abiHash: input.abiHash,
+    sourceFingerprint: input.sourceFingerprint,
+    unsupportedItemCount: 0,
+    functions: [
+      {
+        name: "deposit",
+        signature: "deposit(uint256)",
+        selector: "0xb6b55f25",
+        stateMutability: "payable",
+        callKind: "writeDraft",
+        supported: true,
+        unsupportedReason: null,
+        inputs: [{ name: "amount", type: "uint256", kind: "uint", arrayLength: null, components: null }],
+        outputs: [],
+        ...fn,
+      },
+    ],
+  };
+}
+
+function successfulWritePreview(
+  input: AbiCalldataPreviewInput,
+  parameterSummary: AbiCalldataPreviewResult["parameterSummary"] = [
+    {
+      kind: "uint",
+      type: "uint256",
+      value: "42",
+      byteLength: null,
+      hash: null,
+      items: null,
+      fields: null,
+      truncated: false,
+    },
+  ],
+): AbiCalldataPreviewResult {
+  return {
+    status: "success",
+    reasons: [],
+    functionSignature: input.functionSignature,
+    selector: "0xb6b55f25",
+    contractAddress: input.contractAddress,
+    sourceKind: input.sourceKind,
+    providerConfigId: input.providerConfigId ?? null,
+    userSourceId: input.userSourceId ?? null,
+    versionId: input.versionId,
+    abiHash: input.abiHash,
+    sourceFingerprint: input.sourceFingerprint,
+    parameterSummary,
+    calldata: {
+      byteLength: 36,
+      hash: "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    },
+  };
+}
+
+async function buildSuccessfulWriteDraft() {
+  fireEvent.click(screen.getByRole("button", { name: "Load Functions" }));
+  await waitFor(() => expect(screen.getByLabelText("Function signature")).toHaveValue("deposit(uint256)"));
+  fireEvent.change(screen.getByLabelText("Canonical params JSON array"), {
+    target: { value: "[42]" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Preview Encoding" }));
+  await waitFor(() => expect(screen.getByLabelText("ABI calldata preview result")).toBeInTheDocument());
+  fireEvent.change(screen.getByLabelText("Native value (wei)"), { target: { value: "123" } });
+  fireEvent.change(screen.getByLabelText("Gas limit"), { target: { value: "80000" } });
+  fireEvent.click(screen.getByRole("button", { name: "Build Draft" }));
+  await screen.findByLabelText("ABI write draft confirmation");
+}
+
 describe("AbiLibraryView", () => {
+  beforeEach(() => {
+    provider.getNetwork.mockReset();
+    provider.getFeeData.mockReset();
+    provider.getBlock.mockReset();
+    provider.getNetwork.mockResolvedValue({ chainId: 1n });
+    provider.getFeeData.mockResolvedValue({
+      gasPrice: 30_000_000_000n,
+      maxFeePerGas: 40_000_000_000n,
+      maxPriorityFeePerGas: 1_500_000_000n,
+    });
+    provider.getBlock.mockResolvedValue({ baseFeePerGas: 20_000_000_000n });
+  });
+
   it("renders configured source/cache rows and important failure statuses", () => {
     renderAbi();
 
@@ -610,6 +731,251 @@ describe("AbiLibraryView", () => {
     expect(preview).toHaveTextContent("36");
     expect(preview).toHaveTextContent("0xaaaaaaaaaa");
     expect(preview).not.toHaveTextContent("0xf23a6e61000000000000000000000000");
+  });
+
+  it("allows payable value and shows bounded ABI write confirmation with submit stubbed", async () => {
+    const onListFunctions = vi.fn(async (input: AbiManagedEntryInput) => writeFunctionCatalog(input));
+    const onPreviewCalldata = vi.fn(async (input: AbiCalldataPreviewInput) =>
+      successfulWritePreview(input),
+    );
+    renderAbi(registryState({ cacheEntries: [cacheEntry("v1")] }), {
+      onListFunctions,
+      onPreviewCalldata,
+    });
+
+    await buildSuccessfulWriteDraft();
+
+    const confirmation = await screen.findByLabelText("ABI write draft confirmation");
+    expect(provider.getBlock).toHaveBeenCalledWith("latest");
+    expect(provider.getFeeData).toHaveBeenCalled();
+    expect(confirmation).toHaveTextContent("deposit(uint256)");
+    expect(confirmation).toHaveTextContent("123 wei");
+    expect(confirmation).toHaveTextContent("80000");
+    expect(confirmation).toHaveTextContent("20.0 gwei");
+    expect(confirmation).toHaveTextContent("1.5 gwei");
+    expect(confirmation).toHaveTextContent("0xcccccccccccc");
+    expect(confirmation).toHaveTextContent("https://rpc.example.invalid");
+    expect(confirmation).not.toHaveTextContent("apikey=secret");
+    expect(screen.getByRole("button", { name: "Submit Transaction" })).toBeDisabled();
+  });
+
+  it("ignores stale write draft fee lookups when draft inputs change in flight", async () => {
+    const latestBlock = deferred<{ baseFeePerGas: bigint | null }>();
+    provider.getBlock.mockReturnValueOnce(latestBlock.promise);
+    const onListFunctions = vi.fn(async (input: AbiManagedEntryInput) => writeFunctionCatalog(input));
+    const onPreviewCalldata = vi.fn(async (input: AbiCalldataPreviewInput) =>
+      successfulWritePreview(input),
+    );
+    renderAbi(registryState({ cacheEntries: [cacheEntry("v1")] }), {
+      onListFunctions,
+      onPreviewCalldata,
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Load Functions" }));
+    await waitFor(() => expect(screen.getByLabelText("Function signature")).toHaveValue("deposit(uint256)"));
+    fireEvent.change(screen.getByLabelText("Canonical params JSON array"), {
+      target: { value: "[42]" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Preview Encoding" }));
+    await waitFor(() => expect(screen.getByLabelText("ABI calldata preview result")).toBeInTheDocument());
+    fireEvent.change(screen.getByLabelText("Gas limit"), { target: { value: "80000" } });
+    fireEvent.click(screen.getByRole("button", { name: "Build Draft" }));
+    await waitFor(() => expect(provider.getBlock).toHaveBeenCalledWith("latest"));
+
+    fireEvent.change(screen.getByLabelText("Canonical params JSON array"), {
+      target: { value: "[43]" },
+    });
+    await act(async () => {
+      latestBlock.resolve({ baseFeePerGas: 20_000_000_000n });
+      await latestBlock.promise;
+    });
+
+    await waitFor(() =>
+      expect(screen.queryByLabelText("ABI write draft confirmation")).not.toBeInTheDocument(),
+    );
+    expect(screen.getByLabelText("Latest base fee (gwei)")).toHaveValue("");
+    expect(screen.queryByText("20.0 gwei")).not.toBeInTheDocument();
+  });
+
+  it("redacts RPC fee lookup errors before rendering draft statuses", async () => {
+    provider.getBlock.mockRejectedValueOnce(
+      new Error(
+        "failed https://rpc.example.invalid/path?apikey=SECRET Bearer SECRET token=SECRET",
+      ),
+    );
+    const onListFunctions = vi.fn(async (input: AbiManagedEntryInput) => writeFunctionCatalog(input));
+    const onPreviewCalldata = vi.fn(async (input: AbiCalldataPreviewInput) =>
+      successfulWritePreview(input),
+    );
+    renderAbi(registryState({ cacheEntries: [cacheEntry("v1")] }), {
+      onListFunctions,
+      onPreviewCalldata,
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Load Functions" }));
+    await waitFor(() => expect(screen.getByLabelText("Function signature")).toHaveValue("deposit(uint256)"));
+    fireEvent.click(screen.getByRole("button", { name: "Preview Encoding" }));
+    await waitFor(() => expect(screen.getByLabelText("ABI calldata preview result")).toBeInTheDocument());
+    fireEvent.change(screen.getByLabelText("Gas limit"), { target: { value: "80000" } });
+    fireEvent.click(screen.getByRole("button", { name: "Build Draft" }));
+
+    const blockers = await screen.findByLabelText("ABI write blocking statuses");
+    expect(screen.getByRole("alert")).toHaveTextContent("RPC fee lookup failed");
+    expect(blockers).toHaveTextContent("https://rpc.example.invalid");
+    expect(blockers).toHaveTextContent("Bearer [redacted]");
+    expect(blockers).not.toHaveTextContent("SECRET");
+    expect(blockers).not.toHaveTextContent("apikey=SECRET");
+    expect(blockers).not.toHaveTextContent("token=SECRET");
+  });
+
+  it("blocks nonpayable functions with nonzero native value", async () => {
+    const onListFunctions = vi.fn(async (input: AbiManagedEntryInput) =>
+      writeFunctionCatalog(input, {
+        name: "setValue",
+        signature: "setValue(uint256)",
+        stateMutability: "nonpayable",
+      }),
+    );
+    const onPreviewCalldata = vi.fn(async (input: AbiCalldataPreviewInput) =>
+      successfulWritePreview(input),
+    );
+    renderAbi(registryState({ cacheEntries: [cacheEntry("v1")] }), {
+      onListFunctions,
+      onPreviewCalldata,
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Load Functions" }));
+    await waitFor(() => expect(screen.getByLabelText("Function signature")).toHaveValue("setValue(uint256)"));
+    fireEvent.click(screen.getByRole("button", { name: "Preview Encoding" }));
+    await waitFor(() => expect(screen.getByLabelText("ABI calldata preview result")).toBeInTheDocument());
+    fireEvent.change(screen.getByLabelText("Native value (wei)"), { target: { value: "1" } });
+    fireEvent.change(screen.getByLabelText("Gas limit"), { target: { value: "80000" } });
+    fireEvent.change(screen.getByLabelText("Latest base fee (gwei)"), { target: { value: "10" } });
+    fireEvent.change(screen.getByLabelText("Priority fee (gwei)"), { target: { value: "1" } });
+    fireEvent.click(screen.getByRole("button", { name: "Build Draft" }));
+
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Nonpayable value"));
+    expect(screen.getByLabelText("ABI write blocking statuses")).toHaveTextContent(
+      "Nonpayable functions require native value 0",
+    );
+    expect(screen.queryByLabelText("ABI write draft confirmation")).not.toBeInTheDocument();
+  });
+
+  it("does not build write drafts for view functions", async () => {
+    const onListFunctions = vi.fn(async (input: AbiManagedEntryInput) =>
+      writeFunctionCatalog(input, {
+        name: "balanceOf",
+        signature: "balanceOf(address)",
+        selector: "0x70a08231",
+        stateMutability: "view",
+        callKind: "read",
+      }),
+    );
+    const onPreviewCalldata = vi.fn(async (input: AbiCalldataPreviewInput) =>
+      successfulWritePreview(input),
+    );
+    renderAbi(registryState({ cacheEntries: [cacheEntry("v1")] }), {
+      onListFunctions,
+      onPreviewCalldata,
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Load Functions" }));
+    await waitFor(() => expect(screen.getByLabelText("Function signature")).toHaveValue("balanceOf(address)"));
+    fireEvent.click(screen.getByRole("button", { name: "Preview Encoding" }));
+    await waitFor(() => expect(screen.getByLabelText("ABI calldata preview result")).toBeInTheDocument());
+    fireEvent.change(screen.getByLabelText("Gas limit"), { target: { value: "80000" } });
+    fireEvent.change(screen.getByLabelText("Latest base fee (gwei)"), { target: { value: "10" } });
+    fireEvent.change(screen.getByLabelText("Priority fee (gwei)"), { target: { value: "1" } });
+    fireEvent.click(screen.getByRole("button", { name: "Build Draft" }));
+
+    expect(await screen.findByLabelText("ABI write blocking statuses")).toHaveTextContent(
+      "Read/view/pure functions do not create write drafts",
+    );
+    expect(screen.queryByLabelText("ABI write draft confirmation")).not.toBeInTheDocument();
+  });
+
+  it("keeps stale ABI cache entries blocked for write drafts", async () => {
+    const stale = cacheEntry("stale", {
+      selected: true,
+      cacheStatus: "cacheStale",
+      selectionStatus: "selected",
+    });
+    renderAbi(registryState({ cacheEntries: [stale] }));
+
+    expect(screen.getByLabelText("ABI write blocking statuses")).toHaveTextContent("cacheStale");
+    expect(screen.getByRole("button", { name: "Preview Encoding" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Submit Transaction" })).toBeDisabled();
+  });
+
+  it("bounds large ABI argument summaries in the write confirmation", async () => {
+    const largePayload = "raw-argument-".repeat(80);
+    const onListFunctions = vi.fn(async (input: AbiManagedEntryInput) => writeFunctionCatalog(input));
+    const onPreviewCalldata = vi.fn(async (input: AbiCalldataPreviewInput) =>
+      successfulWritePreview(input, [
+        {
+          kind: "string",
+          type: "string",
+          value: largePayload,
+          byteLength: largePayload.length,
+          hash: "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          items: null,
+          fields: null,
+          truncated: true,
+        },
+      ]),
+    );
+    renderAbi(registryState({ cacheEntries: [cacheEntry("v1")] }), {
+      onListFunctions,
+      onPreviewCalldata,
+    });
+
+    await buildSuccessfulWriteDraft();
+
+    const summary = screen.getByLabelText("ABI write argument summary");
+    expect(summary).toHaveTextContent("[truncated]");
+    expect(summary).not.toHaveTextContent(largePayload);
+  });
+
+  it("shows recoverable gas fee nonce blockers and builds after correction", async () => {
+    provider.getBlock.mockResolvedValueOnce({ baseFeePerGas: null });
+    provider.getFeeData.mockResolvedValueOnce({
+      gasPrice: null,
+      maxFeePerGas: null,
+      maxPriorityFeePerGas: null,
+    });
+    const onListFunctions = vi.fn(async (input: AbiManagedEntryInput) => writeFunctionCatalog(input));
+    const onPreviewCalldata = vi.fn(async (input: AbiCalldataPreviewInput) =>
+      successfulWritePreview(input),
+    );
+    renderAbi(registryState({ cacheEntries: [cacheEntry("v1")] }), {
+      onListFunctions,
+      onPreviewCalldata,
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Load Functions" }));
+    await waitFor(() => expect(screen.getByLabelText("Function signature")).toHaveValue("deposit(uint256)"));
+    fireEvent.click(screen.getByRole("button", { name: "Preview Encoding" }));
+    await waitFor(() => expect(screen.getByLabelText("ABI calldata preview result")).toBeInTheDocument());
+    fireEvent.change(screen.getByLabelText("Gas limit"), { target: { value: "abc" } });
+    fireEvent.change(screen.getByLabelText("Latest base fee (gwei)"), { target: { value: "" } });
+    fireEvent.change(screen.getByLabelText("Priority fee (gwei)"), { target: { value: "" } });
+    fireEvent.change(screen.getByLabelText("Nonce"), { target: { value: "bad" } });
+    fireEvent.click(screen.getByRole("button", { name: "Build Draft" }));
+
+    const blockers = await screen.findByLabelText("ABI write blocking statuses");
+    expect(blockers).toHaveTextContent("gasLimit must");
+    expect(blockers).toHaveTextContent("Latest base fee unavailable");
+    expect(blockers).toHaveTextContent("priorityFee must");
+    expect(blockers).toHaveTextContent("Nonce must");
+
+    fireEvent.change(screen.getByLabelText("Gas limit"), { target: { value: "80000" } });
+    fireEvent.change(screen.getByLabelText("Base fee (gwei)"), { target: { value: "10" } });
+    fireEvent.change(screen.getByLabelText("Priority fee (gwei)"), { target: { value: "1" } });
+    fireEvent.change(screen.getByLabelText("Nonce"), { target: { value: "8" } });
+    fireEvent.click(screen.getByRole("button", { name: "Build Draft" }));
+
+    expect(await screen.findByLabelText("ABI write draft confirmation")).toHaveTextContent("Nonce");
+    expect(screen.getByLabelText("ABI write draft confirmation")).toHaveTextContent("8");
   });
 
   it("keeps preview call and submit disabled for selector-conflict entries", async () => {

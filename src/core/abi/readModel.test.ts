@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { AbiCacheEntryRecord, AbiRegistryState } from "../../lib/tauri";
-import type { AbiReadModelReason } from "./readModel";
+import type { AbiReadModelReason, AbiWriteDraftInput } from "./readModel";
 import {
+  buildAbiWriteDraft,
   buildAbiContractReadModel,
   findAbiReadModelEntry,
   listAbiReadModelEntries,
@@ -375,5 +376,264 @@ describe("ABI read model", () => {
     expect(model.selectedEntry).toBeNull();
     expect(model.entries).toEqual([]);
     expect(model.reasons).toEqual(["unknown"]);
+  });
+
+  it("builds an ABI write draft from managed ABI identity and bounded preview summaries", () => {
+    const entry = cacheEntry("usable", {
+      selected: true,
+      selectionStatus: "selected",
+    });
+    const longValue = "value-".repeat(80);
+    const result = buildAbiWriteDraft({
+      selectedChainId: 1,
+      chainLabel: "Ethereum",
+      accountIndex: 0,
+      from: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      rpcConfigured: true,
+      selectedRpc: {
+        chainId: 1,
+        endpointSummary: "https://rpc.example.invalid/mainnet?apikey=secret-token / chainId 1",
+      },
+      entry,
+      fn: {
+        name: "deposit",
+        signature: "deposit(string)",
+        selector: "0xdeadbeef",
+        stateMutability: "payable",
+        callKind: "writeDraft",
+        supported: true,
+        unsupportedReason: null,
+        inputs: [{ name: "memo", type: "string", kind: "string", arrayLength: null, components: null }],
+        outputs: [],
+      },
+      preview: {
+        status: "success",
+        reasons: [],
+        functionSignature: "deposit(string)",
+        selector: "0xdeadbeef",
+        contractAddress: contract,
+        sourceKind: entry.sourceKind,
+        providerConfigId: entry.providerConfigId,
+        userSourceId: entry.userSourceId,
+        versionId: entry.versionId,
+        abiHash: entry.abiHash,
+        sourceFingerprint: entry.sourceFingerprint,
+        parameterSummary: [
+          {
+            kind: "string",
+            type: "string",
+            value: longValue,
+            byteLength: longValue.length,
+            hash: "0xargs",
+            items: null,
+            fields: null,
+            truncated: true,
+          },
+        ],
+        calldata: { byteLength: 68, hash: "0xcalldata" },
+      },
+      nativeValueWei: "5",
+      gasLimit: "90000",
+      latestBaseFeeGwei: "10",
+      baseFeeGwei: "",
+      baseFeeMultiplier: "2",
+      maxFeeOverrideGwei: "",
+      priorityFeeGwei: "1",
+      nonce: "7",
+      createdAt: "2026-04-29T01:02:03.000Z",
+    });
+
+    expect(result.blockingStatuses).toEqual([]);
+    expect(result.draft).toMatchObject({
+      chainId: 1,
+      accountIndex: 0,
+      contractAddress: contract,
+      functionSignature: "deposit(string)",
+      selector: "0xdeadbeef",
+      nativeValueWei: "5",
+      gasLimit: "90000",
+      latestBaseFeePerGas: "10000000000",
+      baseFeePerGas: "10000000000",
+      maxFeePerGas: "21000000000",
+      maxPriorityFeePerGas: "1000000000",
+      nonce: 7,
+      canSubmit: false,
+    });
+    expect(result.draft?.argumentSummary[0].value).toContain("[truncated]");
+    expect(JSON.stringify(result.draft)).not.toContain(longValue);
+    expect(JSON.stringify(result.draft)).not.toContain("secret-token");
+    expect(result.draft?.selectedRpc?.endpointSummary).toContain("https://rpc.example.invalid");
+  });
+
+  it("blocks read functions, cacheStale entries, selector conflicts, missing preview, and nonpayable value", () => {
+    const staleConflict = cacheEntry("blocked", {
+      selected: true,
+      cacheStatus: "cacheStale",
+      validationStatus: "selectorConflict",
+      selectionStatus: "selected",
+    });
+    const result = buildAbiWriteDraft({
+      selectedChainId: 1,
+      chainLabel: "Ethereum",
+      accountIndex: 0,
+      from: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      rpcConfigured: true,
+      selectedRpc: { chainId: 1, endpointSummary: "Configured RPC / chainId 1" },
+      entry: staleConflict,
+      fn: {
+        name: "balanceOf",
+        signature: "balanceOf(address)",
+        selector: "0x70a08231",
+        stateMutability: "view",
+        callKind: "read",
+        supported: true,
+        unsupportedReason: null,
+        inputs: [],
+        outputs: [],
+      },
+      preview: null,
+      nativeValueWei: "1",
+      gasLimit: "90000",
+      latestBaseFeeGwei: "10",
+      baseFeeGwei: "",
+      baseFeeMultiplier: "2",
+      maxFeeOverrideGwei: "",
+      priorityFeeGwei: "1",
+      nonce: "7",
+      createdAt: "2026-04-29T01:02:03.000Z",
+    });
+
+    expect(result.draft).toBeNull();
+    expect(result.blockingStatuses.map((item) => item.code)).toEqual(
+      expect.arrayContaining([
+        "selectorConflict",
+        "cacheStale",
+        "readFunction",
+        "missingPreview",
+        "nonpayableValue",
+      ]),
+    );
+  });
+
+  it("blocks drafts when successful calldata preview identity differs from selected ABI entry or function", () => {
+    const entry = cacheEntry("usable", { selected: true, selectionStatus: "selected" });
+    const result = buildAbiWriteDraft({
+      selectedChainId: 1,
+      chainLabel: "Ethereum",
+      accountIndex: 0,
+      from: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      rpcConfigured: true,
+      selectedRpc: { chainId: 1, endpointSummary: "Configured RPC / chainId 1" },
+      entry,
+      fn: {
+        name: "deposit",
+        signature: "deposit(uint256)",
+        selector: "0xb6b55f25",
+        stateMutability: "payable",
+        callKind: "writeDraft",
+        supported: true,
+        unsupportedReason: null,
+        inputs: [],
+        outputs: [],
+      },
+      preview: {
+        status: "success",
+        reasons: [],
+        functionSignature: "withdraw(uint256)",
+        selector: "0x2e1a7d4d",
+        contractAddress: otherContract,
+        sourceKind: "userPasted",
+        providerConfigId: null,
+        userSourceId: "other-source",
+        versionId: "other-version",
+        abiHash: "other-abi-hash",
+        sourceFingerprint: "other-fingerprint",
+        parameterSummary: [],
+        calldata: { byteLength: 36, hash: "0xpreviewhash" },
+      },
+      nativeValueWei: "0",
+      gasLimit: "90000",
+      latestBaseFeeGwei: "10",
+      baseFeeGwei: "",
+      baseFeeMultiplier: "2",
+      maxFeeOverrideGwei: "",
+      priorityFeeGwei: "1",
+      nonce: "7",
+      createdAt: "2026-04-29T01:02:03.000Z",
+    });
+
+    expect(result.draft).toBeNull();
+    expect(result.blockingStatuses).toContainEqual(
+      expect.objectContaining({
+        code: "previewIdentityMismatch",
+        message: expect.stringContaining("function signature"),
+      }),
+    );
+    expect(result.blockingStatuses[0]?.message).toEqual(expect.stringContaining("selector"));
+  });
+
+  it("keeps gas fee nonce validation recoverable without dangerous defaults", () => {
+    const entry = cacheEntry("usable", { selected: true, selectionStatus: "selected" });
+    const baseInput: AbiWriteDraftInput = {
+      selectedChainId: 1,
+      chainLabel: "Ethereum",
+      accountIndex: 0,
+      from: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      rpcConfigured: true,
+      selectedRpc: { chainId: 1, endpointSummary: "Configured RPC / chainId 1" },
+      entry,
+      fn: {
+        name: "deposit",
+        signature: "deposit()",
+        selector: "0xd0e30db0",
+        stateMutability: "payable",
+        callKind: "writeDraft",
+        supported: true,
+        unsupportedReason: null,
+        inputs: [],
+        outputs: [],
+      },
+      preview: {
+        status: "success",
+        reasons: [],
+        functionSignature: "deposit()",
+        selector: "0xd0e30db0",
+        contractAddress: contract,
+        sourceKind: entry.sourceKind,
+        providerConfigId: entry.providerConfigId,
+        userSourceId: entry.userSourceId,
+        versionId: entry.versionId,
+        abiHash: entry.abiHash,
+        sourceFingerprint: entry.sourceFingerprint,
+        parameterSummary: [],
+        calldata: { byteLength: 4, hash: "0xhash" },
+      },
+      nativeValueWei: "0",
+      gasLimit: "",
+      latestBaseFeeGwei: "",
+      baseFeeGwei: "",
+      baseFeeMultiplier: "bad",
+      maxFeeOverrideGwei: "",
+      priorityFeeGwei: "",
+      nonce: "",
+      createdAt: "2026-04-29T01:02:03.000Z",
+    };
+
+    const blocked = buildAbiWriteDraft(baseInput);
+    expect(blocked.draft).toBeNull();
+    expect(blocked.blockingStatuses.map((item) => item.code)).toEqual(
+      expect.arrayContaining(["gasLimit", "baseFeeUnavailable", "baseFeeMultiplier", "priorityFee", "nonce"]),
+    );
+
+    const recovered = buildAbiWriteDraft({
+      ...baseInput,
+      gasLimit: "90000",
+      baseFeeGwei: "10",
+      baseFeeMultiplier: "2",
+      priorityFeeGwei: "1",
+      nonce: "8",
+    });
+    expect(recovered.blockingStatuses).toEqual([]);
+    expect(recovered.draft?.nonce).toBe(8);
   });
 });

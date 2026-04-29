@@ -332,7 +332,9 @@ export function AppShell({
             )}
             {activeTab === "abi" && (
               <AbiLibraryView
+                accounts={accounts}
                 busy={busy}
+                chainName={selectedChain?.name ?? "Unknown chain"}
                 error={abiRegistryError}
                 onDeleteEntry={onDeleteAbiEntry}
                 onFetchExplorerAbi={onFetchExplorerAbi}
@@ -345,6 +347,7 @@ export function AppShell({
                 onRemoveDataSource={onRemoveAbiDataSource}
                 onSaveDataSource={onSaveAbiDataSource}
                 onValidatePayload={onValidateAbiPayload}
+                rpcUrl={rpcUrl}
                 selectedChainId={selectedChainId}
                 state={abiRegistryState}
               />

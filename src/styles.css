@@ -350,6 +350,20 @@ td {
   align-items: end;
 }
 
+.abi-write-draft {
+  display: grid;
+  gap: 10px;
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+}
+
+.abi-write-controls {
+  display: grid;
+  grid-template-columns: minmax(210px, 1fr) repeat(4, minmax(120px, 0.55fr)) auto;
+  gap: 10px;
+  align-items: end;
+}
+
 .abi-function-detail,
 .abi-preview-result {
   display: grid;
@@ -1145,6 +1159,7 @@ td {
   .diagnostics-controls,
   .abi-target-grid,
   .abi-caller-grid,
+  .abi-write-controls,
   .abi-source-form,
   .abi-payload-grid {
     grid-template-columns: 1fr;
