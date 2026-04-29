@@ -1195,6 +1195,30 @@ fn persist_pending_history_with_kind_at_and_batch(
     abi_call_metadata: Option<AbiCallHistoryMetadata>,
     frozen_key_override: Option<String>,
 ) -> Result<HistoryRecord, String> {
+    persist_pending_history_with_kind_at_and_metadata(
+        intent,
+        tx_hash,
+        kind,
+        replaces_tx_hash,
+        broadcasted_at,
+        batch_metadata,
+        abi_call_metadata,
+        None,
+        frozen_key_override,
+    )
+}
+
+fn persist_pending_history_with_kind_at_and_metadata(
+    intent: NativeTransferIntent,
+    tx_hash: String,
+    kind: SubmissionKind,
+    replaces_tx_hash: Option<String>,
+    broadcasted_at: String,
+    batch_metadata: Option<BatchHistoryMetadata>,
+    abi_call_metadata: Option<AbiCallHistoryMetadata>,
+    raw_calldata_metadata: Option<RawCalldataHistoryMetadata>,
+    frozen_key_override: Option<String>,
+) -> Result<HistoryRecord, String> {
     let _guard = history_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -1231,7 +1255,7 @@ fn persist_pending_history_with_kind_at_and_batch(
         nonce_thread,
         batch_metadata,
         abi_call_metadata,
-        raw_calldata_metadata: None,
+        raw_calldata_metadata,
     };
 
     let mut records = load_history_records()?;
@@ -4135,6 +4159,46 @@ fn abi_metadata_for_broadcast(
     metadata
 }
 
+fn raw_calldata_metadata_for_broadcast(
+    mut metadata: RawCalldataHistoryMetadata,
+    tx_hash: &str,
+    broadcasted_at: &str,
+    rpc_chain_id: u64,
+    rpc_url: &str,
+) -> RawCalldataHistoryMetadata {
+    metadata.future_submission = Some(AbiCallSubmissionPlaceholder {
+        status: Some("broadcasted".to_string()),
+        tx_hash: Some(tx_hash.to_string()),
+        submitted_at: Some(broadcasted_at.to_string()),
+        broadcasted_at: Some(broadcasted_at.to_string()),
+        error_summary: None,
+    });
+    metadata.future_outcome = Some(AbiCallOutcomePlaceholder {
+        state: Some(AbiCallOutcomeState::Pending),
+        checked_at: None,
+        receipt_status: None,
+        block_number: None,
+        gas_used: None,
+        error_summary: None,
+    });
+    metadata.broadcast = Some(AbiCallBroadcastPlaceholder {
+        tx_hash: Some(tx_hash.to_string()),
+        broadcasted_at: Some(broadcasted_at.to_string()),
+        rpc_chain_id: Some(rpc_chain_id),
+        rpc_endpoint_summary: Some(summarize_rpc_endpoint(rpc_url)),
+        error_summary: None,
+    });
+    metadata.recovery = Some(AbiCallRecoveryPlaceholder {
+        recovery_id: None,
+        status: None,
+        created_at: None,
+        recovered_at: None,
+        last_error: None,
+        replacement_tx_hash: None,
+    });
+    metadata
+}
+
 fn abi_broadcast_history_write_error(
     tx_hash: &str,
     intent: &NativeTransferIntent,
@@ -4156,6 +4220,227 @@ fn abi_broadcast_history_write_error(
             .unwrap_or("unknown"),
         frozen_key,
     )
+}
+
+fn raw_calldata_broadcast_history_write_error(
+    tx_hash: &str,
+    intent: &NativeTransferIntent,
+    metadata: &RawCalldataHistoryMetadata,
+    frozen_key: &str,
+    error: &str,
+) -> String {
+    format!(
+        "raw calldata broadcast but local history write failed; tx_hash={tx_hash}; chainId={}; accountIndex={}; from={}; to={}; nonce={}; selector={}; calldataByteLength={}; calldataHash={}; frozenKey={}; error={error}",
+        intent.chain_id,
+        intent.account_index,
+        intent.from,
+        intent.to,
+        intent.nonce,
+        metadata.selector.as_deref().unwrap_or("none"),
+        metadata
+            .calldata_byte_length
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "unknown".to_string()),
+        metadata.calldata_hash.as_deref().unwrap_or("unknown"),
+        frozen_key,
+    )
+}
+
+pub async fn submit_raw_calldata(
+    intent: NativeTransferIntent,
+    calldata: Bytes,
+    raw_calldata_metadata: RawCalldataHistoryMetadata,
+    frozen_key: String,
+) -> Result<HistoryRecord, String> {
+    if intent.typed_transaction.transaction_type != TransactionType::RawCalldata {
+        return Err("raw calldata submit requires transaction_type rawCalldata".to_string());
+    }
+    let diagnostic_selector = raw_calldata_metadata.selector.clone();
+    let diagnostic_calldata_byte_length = raw_calldata_metadata.calldata_byte_length;
+    let diagnostic_calldata_hash = raw_calldata_metadata.calldata_hash.clone();
+    let wallet = with_session_mnemonic(|mnemonic| derive_wallet(mnemonic, intent.account_index))?
+        .with_chain_id(intent.chain_id);
+    let provider = Provider::<Http>::try_from(intent.rpc_url.clone()).map_err(|e| {
+        let error = e.to_string();
+        record_transaction_diagnostic(
+            DiagnosticLevel::Error,
+            "rawCalldataProviderInvalid",
+            Some(intent.chain_id),
+            Some(intent.account_index),
+            None,
+            Some(error.clone()),
+            json!({
+                "selector": diagnostic_selector.clone(),
+                "calldataByteLength": diagnostic_calldata_byte_length,
+                "calldataHash": diagnostic_calldata_hash.clone(),
+            }),
+        );
+        error
+    })?;
+    preflight_native_transfer(&intent, wallet.address(), &provider).await?;
+    ensure_no_pending_nonce_conflict(&intent)?;
+
+    let signer = SignerMiddleware::new(provider, wallet);
+    let tx = Eip1559TransactionRequest::new()
+        .to(parse_native_transfer_address(
+            &intent,
+            "to",
+            &intent.to,
+            "rawCalldataTransactionFieldInvalid",
+        )?)
+        .from(parse_native_transfer_address(
+            &intent,
+            "from",
+            &intent.from,
+            "rawCalldataTransactionFieldInvalid",
+        )?)
+        .value(parse_native_transfer_u256(
+            &intent,
+            "value_wei",
+            &intent.value_wei,
+            "rawCalldataTransactionFieldInvalid",
+        )?)
+        .data(calldata)
+        .nonce(U256::from(intent.nonce))
+        .gas(parse_native_transfer_u256(
+            &intent,
+            "gas_limit",
+            &intent.gas_limit,
+            "rawCalldataTransactionFieldInvalid",
+        )?)
+        .max_fee_per_gas(parse_native_transfer_u256(
+            &intent,
+            "max_fee_per_gas",
+            &intent.max_fee_per_gas,
+            "rawCalldataTransactionFieldInvalid",
+        )?)
+        .max_priority_fee_per_gas(parse_native_transfer_u256(
+            &intent,
+            "max_priority_fee_per_gas",
+            &intent.max_priority_fee_per_gas,
+            "rawCalldataTransactionFieldInvalid",
+        )?)
+        .chain_id(intent.chain_id);
+
+    let pending = signer.send_transaction(tx, None).await.map_err(|e| {
+        let error = sanitize_diagnostic_message(&e.to_string());
+        record_transaction_diagnostic(
+            DiagnosticLevel::Error,
+            "rawCalldataBroadcastFailed",
+            Some(intent.chain_id),
+            Some(intent.account_index),
+            None,
+            Some(error.clone()),
+            json!({
+                "selector": diagnostic_selector.clone(),
+                "calldataByteLength": diagnostic_calldata_byte_length,
+                "calldataHash": diagnostic_calldata_hash.clone(),
+                "nonce": intent.nonce,
+            }),
+        );
+        error
+    })?;
+    let tx_hash = format!("{:#x}", pending.tx_hash());
+    record_transaction_diagnostic(
+        DiagnosticLevel::Info,
+        "rawCalldataBroadcastSucceeded",
+        Some(intent.chain_id),
+        Some(intent.account_index),
+        Some(tx_hash.clone()),
+        None,
+        json!({
+            "selector": diagnostic_selector.clone(),
+            "calldataByteLength": diagnostic_calldata_byte_length,
+            "calldataHash": diagnostic_calldata_hash.clone(),
+            "nonce": intent.nonce,
+        }),
+    );
+
+    let recovery_intent = intent.clone();
+    let broadcasted_at = now_unix_seconds()?;
+    let history_metadata = raw_calldata_metadata_for_broadcast(
+        raw_calldata_metadata,
+        &tx_hash,
+        &broadcasted_at,
+        intent.chain_id,
+        &intent.rpc_url,
+    );
+    let recovery_metadata = history_metadata.clone();
+    let mut history_intent = intent;
+    history_intent.rpc_url = summarize_rpc_endpoint(&history_intent.rpc_url);
+    persist_pending_history_with_kind_at_and_metadata(
+        history_intent,
+        tx_hash.clone(),
+        SubmissionKind::RawCalldata,
+        None,
+        broadcasted_at.clone(),
+        None,
+        None,
+        Some(history_metadata),
+        Some(frozen_key.clone()),
+    )
+    .map_err(|error| {
+        let mut recovery_result = history_recovery_intent_from_broadcast_failure_with_frozen_key(
+            &recovery_intent,
+            tx_hash.clone(),
+            SubmissionKind::RawCalldata,
+            None,
+            broadcasted_at,
+            error.clone(),
+            Some(frozen_key.clone()),
+            None,
+        );
+        if let Ok(intent) = recovery_result.as_mut() {
+            let mut metadata = recovery_metadata.clone();
+            if let Some(recovery) = metadata.recovery.as_mut() {
+                recovery.recovery_id = Some(intent.id.clone());
+                recovery.status = Some("active".to_string());
+                recovery.created_at = Some(intent.created_at.clone());
+                recovery.last_error = Some(sanitize_recovery_error(&error));
+            }
+            intent.raw_calldata_metadata = Some(metadata);
+        }
+        let recovery_result = recovery_result.and_then(record_history_recovery_intent);
+        let recovery_recorded = recovery_result.is_ok();
+        if let Some(recovery_error) = recovery_result.err() {
+            record_transaction_diagnostic(
+                DiagnosticLevel::Error,
+                "rawCalldataHistoryRecoveryIntentWriteFailed",
+                Some(recovery_intent.chain_id),
+                Some(recovery_intent.account_index),
+                Some(tx_hash.clone()),
+                Some(recovery_error),
+                json!({
+                    "selector": recovery_metadata.selector.clone(),
+                    "calldataByteLength": recovery_metadata.calldata_byte_length,
+                    "calldataHash": recovery_metadata.calldata_hash.clone(),
+                    "nonce": recovery_intent.nonce,
+                }),
+            );
+        }
+        record_transaction_diagnostic(
+            DiagnosticLevel::Error,
+            "rawCalldataHistoryWriteAfterBroadcastFailed",
+            Some(recovery_intent.chain_id),
+            Some(recovery_intent.account_index),
+            Some(tx_hash.clone()),
+            Some(error.clone()),
+            json!({
+                "selector": recovery_metadata.selector.clone(),
+                "calldataByteLength": recovery_metadata.calldata_byte_length,
+                "calldataHash": recovery_metadata.calldata_hash.clone(),
+                "nonce": recovery_intent.nonce,
+                "recoveryRecorded": recovery_recorded,
+            }),
+        );
+        raw_calldata_broadcast_history_write_error(
+            &tx_hash,
+            &recovery_intent,
+            &recovery_metadata,
+            &frozen_key,
+            &error,
+        )
+    })
 }
 
 pub async fn submit_abi_write_call(
@@ -4358,7 +4643,7 @@ pub async fn submit_native_transfer_with_history_kind(
 ) -> Result<HistoryRecord, String> {
     if intent.typed_transaction.transaction_type == TransactionType::RawCalldata {
         return Err(
-            "rawCalldata submit is not implemented yet; use the raw calldata flow when it is available"
+            "rawCalldata submit must use the raw calldata flow; native transfer submit will not broadcast raw typed intents"
                 .to_string(),
         );
     }

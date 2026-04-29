@@ -3,6 +3,7 @@ use crate::models::{
     RawCalldataHistoryMetadata, RawCalldataInferenceSummary, RawCalldataPreviewSummary,
     TransactionType, TypedTransactionFields,
 };
+use crate::transactions::submit_raw_calldata;
 use ethers::types::{Address, Bytes, U256};
 use ethers::utils::{keccak256, to_checksum};
 use serde::{Deserialize, Serialize};
@@ -408,6 +409,13 @@ pub fn validate_raw_calldata_submit_input(
         metadata,
         expected_frozen_key,
     ))
+}
+
+#[tauri::command]
+pub async fn submit_raw_calldata_command(input: RawCalldataSubmitInput) -> Result<String, String> {
+    let (intent, calldata, metadata, frozen_key) = validate_raw_calldata_submit_input(input)?;
+    let record = submit_raw_calldata(intent, calldata, metadata, frozen_key).await?;
+    serde_json::to_string(&record).map_err(|e| e.to_string())
 }
 
 fn validate_calldata_summary(

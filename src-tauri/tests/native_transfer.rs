@@ -12,7 +12,8 @@ use ethers::abi::{encode, Token};
 use ethers::middleware::SignerMiddleware;
 use ethers::providers::{Http, Middleware, Provider};
 use ethers::signers::Signer;
-use ethers::types::{Address, Bytes, TransactionRequest, U256, U64};
+use ethers::types::{Address, Bytes, TransactionRequest, H256, U256, U64};
+use ethers::utils::keccak256;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use wallet_workbench_lib::diagnostics::read_diagnostic_events_from_path;
@@ -25,8 +26,8 @@ use wallet_workbench_lib::transactions::{
     mark_prior_history_state_with_replacement, next_nonce_with_pending_history, nonce_thread_key,
     persist_pending_history, persist_pending_history_with_kind, quarantine_history_storage,
     reconcile_pending_history, record_history_recovery_intent, recover_broadcasted_history_record,
-    review_dropped_history_record, submit_abi_write_call, ChainOutcomeState, HistoryCorruptionType,
-    HistoryRecord, HistoryStorageStatus, NativeTransferIntent,
+    review_dropped_history_record, submit_abi_write_call, submit_raw_calldata, ChainOutcomeState,
+    HistoryCorruptionType, HistoryRecord, HistoryStorageStatus, NativeTransferIntent,
 };
 
 const APP_DIR_ENV: &str = "EVM_WALLET_WORKBENCH_APP_DIR";
@@ -196,6 +197,79 @@ fn abi_write_call_metadata() -> wallet_workbench_lib::models::AbiCallHistoryMeta
         "rawAbi": "[{\"type\":\"function\",\"name\":\"setMessage\"}]"
     }))
     .expect("abi write metadata")
+}
+
+fn raw_calldata_intent(rpc_url: String) -> NativeTransferIntent {
+    NativeTransferIntent {
+        typed_transaction: wallet_workbench_lib::models::TypedTransactionFields::raw_calldata(
+            Some("0x12345678".to_string()),
+            "0",
+        ),
+        rpc_url,
+        account_index: 1,
+        chain_id: 1,
+        from: "0x70997970C51812dc3A010C7d01b50e0d17dc79C8".into(),
+        to: "0x6666666666666666666666666666666666666666".into(),
+        value_wei: "0".into(),
+        nonce: 0,
+        gas_limit: "90000".into(),
+        max_fee_per_gas: "40000000000".into(),
+        max_priority_fee_per_gas: "1500000000".into(),
+    }
+}
+
+fn raw_calldata_bytes() -> Bytes {
+    let mut bytes = vec![0x12, 0x34, 0x56, 0x78];
+    bytes.extend(vec![0xab; 128]);
+    Bytes::from(bytes)
+}
+
+fn raw_calldata_full_hex() -> String {
+    format!("0x12345678{}", "ab".repeat(128))
+}
+
+fn raw_calldata_hash() -> String {
+    format!(
+        "{:#x}",
+        H256::from(keccak256(raw_calldata_bytes().as_ref()))
+    )
+}
+
+fn raw_calldata_metadata() -> wallet_workbench_lib::models::RawCalldataHistoryMetadata {
+    serde_json::from_value(serde_json::json!({
+        "intentKind": "rawCalldata",
+        "draftId": "draft-raw-broadcast",
+        "createdAt": "2026-04-29T01:02:03.000Z",
+        "chainId": 1,
+        "accountIndex": 1,
+        "from": "0x70997970C51812dc3A010C7d01b50e0d17dc79C8",
+        "to": "0x6666666666666666666666666666666666666666",
+        "valueWei": "0",
+        "gasLimit": "90000",
+        "maxFeePerGas": "40000000000",
+        "maxPriorityFeePerGas": "1500000000",
+        "nonce": 0,
+        "calldataHashVersion": "keccak256-v1",
+        "calldataHash": raw_calldata_hash(),
+        "calldataByteLength": 132,
+        "selector": "0x12345678",
+        "selectorStatus": "unknown",
+        "preview": {
+            "previewPrefixBytes": 32,
+            "previewSuffixBytes": 32,
+            "truncated": true,
+            "omittedBytes": 68,
+            "display": "0x12345678abababab...",
+            "prefix": "0x12345678abababab",
+            "suffix": "0xabababababababab"
+        },
+        "inference": {
+            "inferenceStatus": "unknown",
+            "selectorMatchCount": 0
+        },
+        "frozenKey": "raw-draft-frozen-key"
+    }))
+    .expect("raw calldata metadata")
 }
 
 fn erc20_transfer_intent() -> wallet_workbench_lib::models::Erc20TransferIntent {
@@ -2737,8 +2811,56 @@ async fn submit_rejects_raw_calldata_intent_before_broadcast_or_history_write() 
         .expect_err("raw calldata submit is deferred");
 
     assert!(error.contains("rawCalldata"));
-    assert!(error.contains("not implemented"));
+    assert!(error.contains("raw calldata flow"));
     assert!(!history_path().expect("history path").exists());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn raw_calldata_submit_rejects_wrong_typed_transaction_before_broadcast() {
+    let _guard = test_lock().lock().expect("test lock");
+    let _app_dir_guard = TestAppDirGuard::new("raw-calldata-wrong-typed");
+    let mut intent = raw_calldata_intent("http://127.0.0.1:1".to_string());
+    intent.typed_transaction =
+        wallet_workbench_lib::models::TypedTransactionFields::native_transfer("0");
+
+    let error = submit_raw_calldata(
+        intent,
+        raw_calldata_bytes(),
+        raw_calldata_metadata(),
+        "raw-draft-frozen-key".to_string(),
+    )
+    .await
+    .expect_err("wrong typed transaction rejected");
+
+    assert!(error.contains("rawCalldata"));
+    assert!(!history_path().expect("history path").exists());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn raw_calldata_submit_rejects_unreadable_history_before_broadcast() {
+    let _guard = test_lock().lock().expect("test lock");
+    let _app_dir_guard = TestAppDirGuard::new("raw-calldata-history-corrupt-preflight");
+    wallet_workbench_lib::session::write_session_mnemonic(
+        "test test test test test test test test test test test junk".into(),
+    );
+    fs::write(history_path().expect("history path"), "{ broken").expect("write damaged history");
+    let (rpc_url, requests) = start_submission_guard_rpc_server();
+
+    let error = submit_raw_calldata(
+        raw_calldata_intent(rpc_url),
+        raw_calldata_bytes(),
+        raw_calldata_metadata(),
+        "raw-draft-frozen-key".to_string(),
+    )
+    .await
+    .expect_err("corrupt history must stop raw calldata submission");
+    let joined_requests = requests.lock().expect("requests lock").join("\n");
+
+    assert!(
+        error.contains("jsonParseFailed"),
+        "unexpected error: {error}; requests={joined_requests}"
+    );
+    assert!(!joined_requests.contains("eth_sendRawTransaction"));
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -2880,6 +3002,131 @@ async fn abi_write_history_write_failure_records_typed_recovery_without_payloads
         assert!(!serialized.contains("0x13af4035ffffffff"));
         assert!(!serialized.contains("\"type\":\"function\""));
     }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn raw_calldata_history_write_failure_records_typed_recovery_without_payloads() {
+    let _guard = test_lock().lock().expect("test lock");
+    let _app_dir_guard = TestAppDirGuard::new("raw-calldata-history-recovery");
+    wallet_workbench_lib::session::write_session_mnemonic(
+        "test test test test test test test test test test test junk".into(),
+    );
+    let path = history_path().expect("history path");
+    let rpc_url = start_history_write_failure_rpc_server(path);
+    let intent = raw_calldata_intent(format!("{rpc_url}/?apiKey=RAW_RPC_SECRET"));
+    let frozen_key = "raw-draft-frozen-key".to_string();
+    let full_calldata = raw_calldata_full_hex();
+
+    let error = submit_raw_calldata(
+        intent,
+        raw_calldata_bytes(),
+        raw_calldata_metadata(),
+        frozen_key.clone(),
+    )
+    .await
+    .expect_err("history write should fail after raw calldata broadcast");
+    let intents = load_history_recovery_intents().expect("load recovery intents");
+    let raw_intents = serde_json::to_string(&intents).expect("serialize recovery intents");
+    let events = read_diagnostic_events_from_path(&diagnostics_path().expect("diagnostics path"))
+        .expect("read diagnostics");
+    let raw_events = serde_json::to_string(&events).expect("serialize diagnostics");
+
+    assert!(error.contains("raw calldata broadcast"));
+    assert!(error
+        .contains("tx_hash=0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
+    assert!(error.contains("selector=0x12345678"));
+    assert!(error.contains("calldataByteLength=132"));
+    assert!(error.contains("calldataHash="));
+    assert!(error.contains(&format!("frozenKey={frozen_key}")));
+    assert_eq!(intents.len(), 1);
+    assert_eq!(
+        intents[0].kind,
+        wallet_workbench_lib::models::SubmissionKind::RawCalldata
+    );
+    assert_eq!(
+        intents[0].tx_hash,
+        "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    );
+    assert_eq!(intents[0].frozen_key.as_deref(), Some(frozen_key.as_str()));
+    assert_eq!(intents[0].selector.as_deref(), Some("0x12345678"));
+    assert_eq!(intents[0].method_name, None);
+    assert_eq!(intents[0].native_value_wei.as_deref(), Some("0"));
+    let metadata = intents[0]
+        .raw_calldata_metadata
+        .as_ref()
+        .expect("raw calldata metadata");
+    assert_eq!(metadata.intent_kind, "rawCalldata");
+    assert_eq!(metadata.selector.as_deref(), Some("0x12345678"));
+    assert_eq!(metadata.calldata_byte_length, Some(132));
+    assert!(metadata.calldata_hash.is_some());
+    assert_eq!(metadata.frozen_key.as_deref(), Some(frozen_key.as_str()));
+    assert_eq!(
+        metadata
+            .future_submission
+            .as_ref()
+            .and_then(|submission| submission.tx_hash.as_deref()),
+        Some("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+    );
+    assert_eq!(
+        metadata
+            .broadcast
+            .as_ref()
+            .and_then(|broadcast| broadcast.tx_hash.as_deref()),
+        Some("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+    );
+    let recovery = metadata.recovery.as_ref().expect("recovery metadata");
+    assert_eq!(recovery.status.as_deref(), Some("active"));
+    assert!(recovery.recovery_id.is_some());
+    assert!(recovery
+        .last_error
+        .as_deref()
+        .is_some_and(|value| { value.contains("directory") || value.contains("Is a directory") }));
+    assert!(events
+        .iter()
+        .any(|event| event.event == "rawCalldataHistoryWriteAfterBroadcastFailed"));
+
+    for serialized in [&raw_intents, &raw_events, &error] {
+        assert!(!serialized.contains("RAW_RPC_SECRET"));
+        assert!(!serialized.contains("apiKey="));
+        assert!(!serialized.contains(&full_calldata));
+        assert!(!serialized.contains("eth_sendRawTransaction"));
+        assert!(!serialized.contains("rawTx"));
+    }
+
+    fs::remove_dir_all(history_path().expect("history path")).expect("clear blocked history path");
+    let recovered = recover_broadcasted_history_record(
+        intents[0].id.clone(),
+        start_recovery_rpc_server(
+            Box::leak(
+                receipt_json(
+                    "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    1,
+                )
+                .into_boxed_str(),
+            ),
+            "null",
+        ),
+        1,
+    )
+    .await
+    .expect("raw calldata recovery intent from failure path should reconstruct history");
+    assert_eq!(
+        recovered.record.submission.kind,
+        wallet_workbench_lib::models::SubmissionKind::RawCalldata
+    );
+    assert_eq!(
+        recovered.record.intent.typed_transaction.transaction_type,
+        wallet_workbench_lib::models::TransactionType::RawCalldata
+    );
+    assert_eq!(
+        recovered
+            .record
+            .raw_calldata_metadata
+            .as_ref()
+            .and_then(|metadata| metadata.future_outcome.as_ref())
+            .and_then(|outcome| outcome.state.clone()),
+        Some(wallet_workbench_lib::models::AbiCallOutcomeState::Confirmed)
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
