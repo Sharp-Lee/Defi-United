@@ -109,6 +109,15 @@ export interface RawCalldataInferenceInput {
 }
 
 export interface RawCalldataRpcIdentity {
+  chainId: number | null;
+  providerConfigId?: string | null;
+  endpointId?: string | null;
+  endpointName?: string | null;
+  endpointSummary?: string | null;
+  endpointFingerprint?: string | null;
+}
+
+export interface RawCalldataRpcIdentityInput {
   chainId?: bigint | number | null;
   providerConfigId?: string | null;
   endpointId?: string | null;
@@ -133,7 +142,7 @@ export interface RawCalldataFeeInput {
 
 export interface BuildRawCalldataDraftInput {
   chainId: bigint | number;
-  selectedRpc: RawCalldataRpcIdentity | null;
+  selectedRpc: RawCalldataRpcIdentityInput | null;
   from: string | null;
   fromAccountIndex?: number | null;
   to: string | null;
@@ -265,9 +274,11 @@ export function buildRawCalldataDraft(input: BuildRawCalldataDraftInput): RawCal
   }
   if (!input.selectedRpc) {
     blockingStatuses.push(blocking("missingRpc", "Select and validate an RPC before drafting.", "rpc"));
+  } else if (input.selectedRpc.chainId === null || input.selectedRpc.chainId === undefined) {
+    blockingStatuses.push(
+      blocking("unvalidatedRpcChain", "Validate the selected RPC chain identity before drafting.", "rpc"),
+    );
   } else if (
-    input.selectedRpc.chainId !== null &&
-    input.selectedRpc.chainId !== undefined &&
     numericChainId(input.selectedRpc.chainId) !== numericChainId(input.chainId)
   ) {
     blockingStatuses.push(
@@ -296,10 +307,11 @@ export function buildRawCalldataDraft(input: BuildRawCalldataDraftInput): RawCal
     );
   }
 
-  const inference = sanitizeInference(input.inference);
+  const inputInference = sanitizeInference(input.inference);
   const preview = normalizeResult.ok
     ? buildRawCalldataPreview(normalizeResult, input.humanPreviewRows)
     : null;
+  const inference = preview ? effectiveInference(inputInference, preview) : inputInference;
   const warnings = preview
     ? warningStatuses(preview, input.valueWei, input.fee, inference, input.warningAcknowledgements ?? {})
     : [];
@@ -569,10 +581,28 @@ function sanitizeInference(input: RawCalldataInferenceInput | null | undefined):
   };
 }
 
-function sanitizeRpcIdentity(input: RawCalldataRpcIdentity | null): RawCalldataRpcIdentity | null {
+function effectiveInference(
+  inference: RawCalldataInferenceInput,
+  preview: RawCalldataPreview,
+): RawCalldataInferenceInput {
+  if (preview.selectorStatus === "present") {
+    return inference;
+  }
+  return {
+    status: "unknown",
+    matchedSource: null,
+    selectorMatchCount: 0,
+    conflictSummary: null,
+    staleSummary: null,
+    sourceStatus: preview.selectorStatus === "none" ? "selectorMissing" : "selectorTooShort",
+  };
+}
+
+function sanitizeRpcIdentity(input: RawCalldataRpcIdentityInput | null): RawCalldataRpcIdentity | null {
   if (!input) return null;
   return {
-    chainId: input.chainId ?? null,
+    chainId:
+      input.chainId === null || input.chainId === undefined ? null : numericChainId(input.chainId),
     providerConfigId: input.providerConfigId ?? null,
     endpointId: input.endpointId ?? null,
     endpointName: input.endpointName ?? null,

@@ -117,6 +117,9 @@ describe("buildRawCalldataPreview", () => {
     expect(preview.canonical).toBe("0xa9059cbb0000");
     expect(preview.hashVersion).toBe(RAW_CALLDATA_HASH_VERSION);
     expect(preview.hash).toBe(keccak256("0xa9059cbb0000"));
+    expect(buildRawCalldataPreview("0x").hash).toBe(
+      "0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470",
+    );
   });
 
   it("bounds large calldata preview with prefix, suffix, and omitted byte count", () => {
@@ -161,7 +164,7 @@ describe("buildRawCalldataDraft", () => {
     const acknowledged = buildRawCalldataDraft({
       ...baseInput,
       calldata: "0x",
-      warningAcknowledgements: { emptyCalldata: true },
+      warningAcknowledgements: { emptyCalldata: true, unknownSelector: true },
     });
     expect(acknowledged.canSubmit).toBe(true);
   });
@@ -195,6 +198,56 @@ describe("buildRawCalldataDraft", () => {
         }).canSubmit,
       ).toBe(true);
     }
+  });
+
+  it("treats matched inference as unknown when calldata has no full selector", () => {
+    const draft = buildRawCalldataDraft({
+      ...baseInput,
+      calldata: "0x123456",
+      inference: baseInput.inference,
+    });
+
+    expect(draft.preview.selectorStatus).toBe("short");
+    expect(draft.inference).toMatchObject({
+      status: "unknown",
+      selectorMatchCount: 0,
+      sourceStatus: "selectorTooShort",
+    });
+    expect(warningCodes(draft)).toContain("unknownSelector");
+    expect(draft.canSubmit).toBe(false);
+
+    expect(
+      buildRawCalldataDraft({
+        ...baseInput,
+        calldata: "0x123456",
+        inference: baseInput.inference,
+        warningAcknowledgements: { unknownSelector: true },
+      }).canSubmit,
+    ).toBe(true);
+  });
+
+  it("blocks a selected RPC that has no validated chain id", () => {
+    const draft = buildRawCalldataDraft({
+      ...baseInput,
+      selectedRpc: { ...baseInput.selectedRpc, chainId: null },
+    });
+
+    expect(draft.submission).toBeNull();
+    expect(draft.canSubmit).toBe(false);
+    expect(draft.blockingStatuses).toMatchObject([{ code: "unvalidatedRpcChain" }]);
+  });
+
+  it("normalizes RPC chain id to JSON-safe number in submission and frozen key", () => {
+    const bigintRpcDraft = buildRawCalldataDraft(baseInput);
+    const numberRpcDraft = buildRawCalldataDraft({
+      ...baseInput,
+      selectedRpc: { ...baseInput.selectedRpc, chainId: 1 },
+    });
+
+    expect(bigintRpcDraft.frozenKey).toBe(numberRpcDraft.frozenKey);
+    expect(bigintRpcDraft.submission?.selectedRpc?.chainId).toBe(1);
+    expect(typeof bigintRpcDraft.submission?.selectedRpc?.chainId).toBe("number");
+    expect(() => JSON.stringify(bigintRpcDraft.submission)).not.toThrow();
   });
 
   it("gates high-risk warning acknowledgements", () => {
@@ -250,29 +303,23 @@ describe("buildRawCalldataDraft", () => {
   });
 
   it("changes frozen key for covered transaction, preview, acknowledgement, and inference fields", () => {
-    const acknowledgedBase = {
-      ...baseInput,
-      calldata: "0x",
-      warningAcknowledgements: { emptyCalldata: true },
-    };
-    const frozenKey = buildRawCalldataDraft(acknowledgedBase).frozenKey;
+    const frozenKey = buildRawCalldataDraft(baseInput).frozenKey;
     const changedInputs: BuildRawCalldataDraftInput[] = [
-      { ...acknowledgedBase, chainId: 5n, selectedRpc: { ...baseInput.selectedRpc, chainId: 5n } },
+      { ...baseInput, chainId: 5n, selectedRpc: { ...baseInput.selectedRpc, chainId: 5n } },
       {
-        ...acknowledgedBase,
+        ...baseInput,
         selectedRpc: { ...baseInput.selectedRpc, endpointFingerprint: "rpc-fp-2" },
       },
-      { ...acknowledgedBase, from: "0x3333333333333333333333333333333333333333" },
-      { ...acknowledgedBase, to: "0x4444444444444444444444444444444444444444" },
-      { ...acknowledgedBase, valueWei: 1n, warningAcknowledgements: { emptyCalldata: true, nonzeroValue: true } },
-      { ...acknowledgedBase, calldata: "0x12345678", warningAcknowledgements: {} },
-      { ...acknowledgedBase, fee: { ...baseInput.fee, gasLimit: 22_000n, manualGas: true }, warningAcknowledgements: { emptyCalldata: true, manualGas: true } },
-      { ...acknowledgedBase, fee: { ...baseInput.fee, maxFeePerGas: 13n } },
-      { ...acknowledgedBase, nonce: 8 },
-      { ...acknowledgedBase, warningAcknowledgements: { emptyCalldata: false } },
-      { ...acknowledgedBase, inference: { status: "unknown", selectorMatchCount: 0 }, warningAcknowledgements: { emptyCalldata: true, unknownSelector: true } },
+      { ...baseInput, from: "0x3333333333333333333333333333333333333333" },
+      { ...baseInput, to: "0x4444444444444444444444444444444444444444" },
+      { ...baseInput, valueWei: 1n, warningAcknowledgements: { nonzeroValue: true } },
+      { ...baseInput, calldata: "0x87654321" },
+      { ...baseInput, fee: { ...baseInput.fee, gasLimit: 22_000n, manualGas: true }, warningAcknowledgements: { manualGas: true } },
+      { ...baseInput, fee: { ...baseInput.fee, maxFeePerGas: 13n } },
+      { ...baseInput, nonce: 8 },
+      { ...baseInput, inference: { status: "unknown", selectorMatchCount: 0 }, warningAcknowledgements: { unknownSelector: true } },
       {
-        ...acknowledgedBase,
+        ...baseInput,
         inference: {
           status: "matched",
           matchedSource: { identity: "other", version: "v2", fingerprint: "fp2", abiHash: "hash2" },
@@ -284,6 +331,20 @@ describe("buildRawCalldataDraft", () => {
     for (const changed of changedInputs) {
       expect(buildRawCalldataDraft(changed).frozenKey).not.toBe(frozenKey);
     }
+
+    expect(
+      buildRawCalldataDraft({
+        ...baseInput,
+        calldata: "0x",
+        warningAcknowledgements: { emptyCalldata: false, unknownSelector: true },
+      }).frozenKey,
+    ).not.toBe(
+      buildRawCalldataDraft({
+        ...baseInput,
+        calldata: "0x",
+        warningAcknowledgements: { emptyCalldata: true, unknownSelector: true },
+      }).frozenKey,
+    );
   });
 });
 
