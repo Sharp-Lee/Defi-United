@@ -1,7 +1,7 @@
 use crate::models::{
-    AbiCallSelectedRpcSummary, AbiCallStatusSummary, NativeTransferIntent,
-    RawCalldataHistoryMetadata, RawCalldataInferenceSummary, RawCalldataPreviewSummary,
-    TransactionType, TypedTransactionFields,
+    AbiCallStatusSummary, NativeTransferIntent, RawCalldataHistoryMetadata,
+    RawCalldataInferenceSummary, RawCalldataPreviewSummary, TransactionType,
+    TypedTransactionFields,
 };
 use crate::transactions::submit_raw_calldata;
 use ethers::types::{Address, Bytes, U256};
@@ -35,7 +35,7 @@ pub struct RawCalldataSubmitInput {
     #[serde(alias = "chain_id")]
     pub chain_id: u64,
     #[serde(default, alias = "selected_rpc")]
-    pub selected_rpc: Option<AbiCallSelectedRpcSummary>,
+    pub selected_rpc: Option<RawCalldataSelectedRpcInput>,
     pub from: String,
     #[serde(
         default,
@@ -91,6 +91,23 @@ pub struct RawCalldataSubmitInput {
     pub inference: RawCalldataInferenceInput,
     #[serde(default, alias = "human", alias = "human_preview")]
     pub human_preview: RawCalldataHumanPreview,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RawCalldataSelectedRpcInput {
+    #[serde(default, alias = "chain_id")]
+    pub chain_id: Option<u64>,
+    #[serde(default, alias = "provider_config_id")]
+    pub provider_config_id: Option<String>,
+    #[serde(default, alias = "endpoint_id")]
+    pub endpoint_id: Option<String>,
+    #[serde(default, alias = "endpoint_name")]
+    pub endpoint_name: Option<String>,
+    #[serde(default, alias = "endpoint_summary")]
+    pub endpoint_summary: Option<String>,
+    #[serde(default, alias = "endpoint_fingerprint")]
+    pub endpoint_fingerprint: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -549,7 +566,7 @@ fn checksum_address(value: &str, label: &str) -> Result<String, String> {
 }
 
 fn validate_selected_rpc_endpoint(
-    selected_rpc: &AbiCallSelectedRpcSummary,
+    selected_rpc: &RawCalldataSelectedRpcInput,
     rpc_url: &str,
 ) -> Result<(), String> {
     let endpoint_summary = selected_rpc
@@ -974,7 +991,7 @@ fn validate_warning_acknowledgements(
 
 struct RawCalldataFrozenPayloadParts<'a> {
     chain_id: u64,
-    selected_rpc: &'a AbiCallSelectedRpcSummary,
+    selected_rpc: &'a RawCalldataSelectedRpcInput,
     account_index: u32,
     from: &'a str,
     to: &'a str,
@@ -1096,7 +1113,7 @@ fn raw_calldata_frozen_payload(parts: &RawCalldataFrozenPayloadParts<'_>) -> Val
     ])
 }
 
-fn rpc_identity_value(rpc: &AbiCallSelectedRpcSummary) -> Value {
+fn rpc_identity_value(rpc: &RawCalldataSelectedRpcInput) -> Value {
     object_value([
         (
             "chainId",
@@ -1469,7 +1486,7 @@ mod tests {
             frozen_key: None,
             created_at: Some("2026-04-29T00:00:00.000Z".to_string()),
             chain_id: 1,
-            selected_rpc: Some(AbiCallSelectedRpcSummary {
+            selected_rpc: Some(RawCalldataSelectedRpcInput {
                 chain_id: Some(1),
                 provider_config_id: Some("mainnet".to_string()),
                 endpoint_id: Some("primary".to_string()),
@@ -1520,6 +1537,52 @@ mod tests {
         };
         refresh_frozen_key(&mut input);
         input
+    }
+
+    fn base_input_json(input: &RawCalldataSubmitInput) -> Value {
+        let selected_rpc = input.selected_rpc.as_ref().unwrap();
+        serde_json::json!({
+            "rpcUrl": input.rpc_url,
+            "draftId": input.draft_id,
+            "frozenKey": input.frozen_key,
+            "createdAt": input.created_at,
+            "chainId": input.chain_id,
+            "selectedRpc": {
+                "chainId": selected_rpc.chain_id,
+                "providerConfigId": selected_rpc.provider_config_id,
+                "endpointId": selected_rpc.endpoint_id,
+                "endpointName": selected_rpc.endpoint_name,
+                "endpointSummary": selected_rpc.endpoint_summary,
+                "endpointFingerprint": selected_rpc.endpoint_fingerprint,
+            },
+            "from": input.from,
+            "accountIndex": input.account_index,
+            "to": input.to,
+            "valueWei": input.value_wei,
+            "calldata": input.calldata,
+            "calldataHashVersion": input.calldata_hash_version,
+            "calldataHash": input.calldata_hash,
+            "calldataByteLength": input.calldata_byte_length,
+            "selector": input.selector,
+            "selectorStatus": input.selector_status,
+            "nonce": input.nonce,
+            "gasLimit": input.gas_limit,
+            "estimatedGasLimit": input.estimated_gas_limit,
+            "manualGas": input.manual_gas,
+            "latestBaseFeePerGas": input.latest_base_fee_per_gas,
+            "baseFeePerGas": input.base_fee_per_gas,
+            "baseFeeMultiplier": input.base_fee_multiplier,
+            "maxFeePerGas": input.max_fee_per_gas,
+            "maxFeeOverridePerGas": input.max_fee_override_per_gas,
+            "maxPriorityFeePerGas": input.max_priority_fee_per_gas,
+            "liveMaxFeePerGas": input.live_max_fee_per_gas,
+            "liveMaxPriorityFeePerGas": input.live_max_priority_fee_per_gas,
+            "warnings": input.warnings,
+            "warningAcknowledgements": input.warning_acknowledgements,
+            "blockingStatuses": input.blocking_statuses,
+            "inference": input.inference,
+            "humanPreview": input.human_preview,
+        })
     }
 
     fn refresh_frozen_key(input: &mut RawCalldataSubmitInput) {
@@ -1728,6 +1791,50 @@ mod tests {
         let error = validate_raw_calldata_submit_input(input)
             .expect_err("swapped rpc fingerprint rejected");
         assert!(error.contains("endpointFingerprint"), "{error}");
+        assert!(!error.contains("other-rpc.example"), "{error}");
+    }
+
+    #[test]
+    fn raw_calldata_submit_preserves_selected_rpc_identity_through_serde() {
+        let expected = base_input();
+        let expected_frozen_key = expected.frozen_key.clone().unwrap();
+        let payload = base_input_json(&expected);
+
+        let input: RawCalldataSubmitInput =
+            serde_json::from_value(payload).expect("raw submit JSON should deserialize");
+
+        let selected_rpc = input.selected_rpc.as_ref().unwrap();
+        assert_eq!(
+            selected_rpc.endpoint_summary.as_deref(),
+            Some("https://rpc.example")
+        );
+        assert_eq!(
+            selected_rpc.endpoint_fingerprint.as_deref(),
+            Some(rpc_endpoint_fingerprint("https://rpc.example").as_str())
+        );
+
+        let (intent, _, metadata, frozen_key) =
+            validate_raw_calldata_submit_input(input).expect("serde input should validate");
+
+        assert_eq!(intent.rpc_url, "https://rpc.example");
+        assert_eq!(frozen_key, expected_frozen_key);
+        assert_eq!(metadata.frozen_key.as_deref(), Some(frozen_key.as_str()));
+        let serialized_metadata = serde_json::to_string(&metadata).unwrap();
+        assert!(!serialized_metadata.contains("rpc.example"));
+    }
+
+    #[test]
+    fn raw_calldata_submit_rejects_swapped_rpc_url_after_serde() {
+        let expected = base_input();
+        let mut payload = base_input_json(&expected);
+        payload["rpcUrl"] = Value::String("https://other-rpc.example".to_string());
+
+        let input: RawCalldataSubmitInput =
+            serde_json::from_value(payload).expect("raw submit JSON should deserialize");
+
+        let error =
+            validate_raw_calldata_submit_input(input).expect_err("swapped rpc should be rejected");
+        assert!(error.contains("endpointSummary"), "{error}");
         assert!(!error.contains("other-rpc.example"), "{error}");
     }
 
