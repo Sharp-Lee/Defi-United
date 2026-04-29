@@ -1106,7 +1106,7 @@ P5-1 已提供 ABI source/cache/read model，不实现 raw calldata、revoke、h
 
 - 只改文档，不改 `src` 或 `src-tauri`。
 - 不实现 ABI read/write 调用器、raw calldata、revoke、hot tx 解析、代理自动解析完整方案或任意交易广播。
-- 不把 P5-2/P5-3/P6 能力写成当前已完成。
+- P5-1 本身不实现调用器或解析器；P5-2 已作为后续 completed consumer 使用 ABI read model，但 P5-3 raw calldata 和 P6 解析仍不得写成当前已完成。
 
 **验收/测试建议**
 
