@@ -16,10 +16,14 @@ import type {
   AbiManagedEntryInput,
   AbiPayloadValidationReadModel,
   AbiProviderKind,
+  AbiReadCallInput,
+  AbiReadCallResult,
   AbiRegistryMutationResult,
   AbiRegistryState,
+  AbiWriteSubmitInput,
   AccountRecord,
   FetchExplorerAbiInput,
+  HistoryRecord,
   UpsertAbiDataSourceConfigInput,
   UserAbiPayloadInput,
 } from "../../lib/tauri";
@@ -54,6 +58,8 @@ export interface AbiLibraryViewProps {
   onDeleteEntry: (entry: AbiCacheEntryRecord) => Promise<boolean | void> | boolean | void;
   onListFunctions?: (input: AbiManagedEntryInput) => Promise<AbiFunctionCatalogResult>;
   onPreviewCalldata?: (input: AbiCalldataPreviewInput) => Promise<AbiCalldataPreviewResult>;
+  onCallReadOnlyFunction?: (input: AbiReadCallInput) => Promise<AbiReadCallResult>;
+  onSubmitWriteCall?: (input: AbiWriteSubmitInput) => Promise<HistoryRecord>;
 }
 
 const providerKinds: AbiProviderKind[] = [
@@ -434,6 +440,29 @@ export function AbiLibraryView({
     sourceFingerprint: input.sourceFingerprint,
     parameterSummary: [],
   }),
+  onCallReadOnlyFunction = async (input) => ({
+    status: "blocked",
+    reasons: ["unknown"],
+    functionSignature: input.functionSignature,
+    contractAddress: input.contractAddress,
+    from: input.from ?? null,
+    sourceKind: input.sourceKind,
+    providerConfigId: input.providerConfigId ?? null,
+    userSourceId: input.userSourceId ?? null,
+    versionId: input.versionId,
+    abiHash: input.abiHash,
+    sourceFingerprint: input.sourceFingerprint,
+    outputs: [],
+    rpc: {
+      endpoint: "unknown",
+      expectedChainId: input.chainId,
+      actualChainId: null,
+    },
+    errorSummary: "Read caller is not configured.",
+  }),
+  onSubmitWriteCall = async () => {
+    throw new Error("ABI write submitter is not configured.");
+  },
 }: AbiLibraryViewProps) {
   const [targetChainId, setTargetChainId] = useState(selectedChainId.toString());
   const [targetAddress, setTargetAddress] = useState("");
@@ -464,12 +493,15 @@ export function AbiLibraryView({
   const [maxFeeOverrideGwei, setMaxFeeOverrideGwei] = useState("");
   const [priorityFeeGwei, setPriorityFeeGwei] = useState("");
   const [writeDraft, setWriteDraft] = useState<AbiWriteDraftReadModel | null>(null);
+  const [readResult, setReadResult] = useState<AbiReadCallResult | null>(null);
+  const [writeWarningsAcknowledged, setWriteWarningsAcknowledged] = useState(false);
   const [draftAttempted, setDraftAttempted] = useState(false);
   const [draftStatuses, setDraftStatuses] = useState<{
     warnings: AbiWriteDraftStatus[];
     blockingStatuses: AbiWriteDraftStatus[];
   } | null>(null);
   const [previewBusy, setPreviewBusy] = useState(false);
+  const [callBusy, setCallBusy] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
   const [localMessage, setLocalMessage] = useState<string | null>(null);
   const latestPreviewStateRef = useRef({
@@ -544,10 +576,22 @@ export function AbiLibraryView({
   const previewDisabled =
     busy ||
     previewBusy ||
+    callBusy ||
     !selectedPreviewEntry ||
     !selectedEntryCallable ||
     !selectedFunction ||
     !selectedFunction.supported;
+  const readDisabled =
+    previewDisabled ||
+    selectedFunction?.callKind !== "read" ||
+    rpcUrl.trim().length === 0;
+  const submitDisabled =
+    busy ||
+    previewBusy ||
+    callBusy ||
+    !writeDraft ||
+    writeDraft.blockingStatuses.length > 0 ||
+    (writeDraft.warnings.length > 0 && !writeWarningsAcknowledged);
   const statusCounts = useMemo(() => {
     const counts = new Map<string, number>();
     for (const entry of state?.cacheEntries ?? []) {
@@ -661,6 +705,7 @@ export function AbiLibraryView({
 
   function clearWriteDraft() {
     setWriteDraft(null);
+    setWriteWarningsAcknowledged(false);
     setDraftAttempted(false);
     setDraftStatuses(null);
   }
@@ -689,6 +734,7 @@ export function AbiLibraryView({
     setSelectedFunctionSignature("");
     setParamsText("[]");
     setPreview(null);
+    setReadResult(null);
     clearWriteDraft();
   }, [selectedPreviewEntryKey]);
 
@@ -813,6 +859,7 @@ export function AbiLibraryView({
     setFunctionCatalog(null);
     setSelectedFunctionSignature("");
     setPreview(null);
+    setReadResult(null);
     clearWriteDraft();
     if (!selectedPreviewEntry) {
       setLocalError("Select a managed ABI entry.");
@@ -855,6 +902,7 @@ export function AbiLibraryView({
     setLocalError(null);
     setLocalMessage(null);
     setPreview(null);
+    setReadResult(null);
     clearWriteDraft();
     if (!selectedPreviewEntry || !selectedFunction) {
       setLocalError("Select a managed ABI entry and function.");
@@ -901,6 +949,7 @@ export function AbiLibraryView({
         return;
       }
       setPreview(result);
+      setReadResult(null);
       if (result.status !== "success") {
         const reasonText = result.reasons.map(statusLabel).join(", ");
         const previewReason = result.errorSummary ?? (reasonText || statusLabel(result.status));
@@ -923,6 +972,67 @@ export function AbiLibraryView({
       if (previewRequestIdRef.current === requestId) {
         setPreviewBusy(false);
       }
+    }
+  }
+
+  function parseCanonicalParams(): unknown[] | null {
+    let canonicalParams: unknown;
+    try {
+      canonicalParams = JSON.parse(paramsText);
+    } catch {
+      setLocalError("Canonical params must be a valid JSON array.");
+      return null;
+    }
+    if (!Array.isArray(canonicalParams)) {
+      setLocalError("Canonical params must be a JSON array.");
+      return null;
+    }
+    return canonicalParams;
+  }
+
+  async function handleReadCall() {
+    setLocalError(null);
+    setLocalMessage(null);
+    setReadResult(null);
+    if (!selectedPreviewEntry || !selectedFunction) {
+      setLocalError("Select a managed ABI entry and function.");
+      return;
+    }
+    if (!selectedEntryCallable) {
+      setLocalError(`ABI entry is blocked: ${selectedEntryReasons.map(statusLabel).join(", ")}.`);
+      return;
+    }
+    if (!selectedFunction.supported || selectedFunction.callKind !== "read") {
+      setLocalError(`Function is blocked: ${selectedFunction.unsupportedReason ?? "not read-only"}.`);
+      return;
+    }
+    if (!rpcUrl.trim()) {
+      setLocalError("Validate an RPC before calling a read-only ABI function.");
+      return;
+    }
+    const canonicalParams = parseCanonicalParams();
+    if (!canonicalParams) return;
+    setCallBusy(true);
+    try {
+      const result = await onCallReadOnlyFunction({
+        ...entryInput(selectedPreviewEntry),
+        chainId: Number(selectedChainId),
+        rpcUrl: rpcUrl.trim(),
+        functionSignature: selectedFunction.signature,
+        canonicalParams,
+        from: selectedAccount?.address ?? null,
+      });
+      setReadResult(result);
+      if (result.status === "success") {
+        setLocalMessage(`Read call succeeded: ${result.outputs.length} output${result.outputs.length === 1 ? "" : "s"}.`);
+      } else {
+        const reasonText = result.reasons.map(statusLabel).join(", ");
+        setLocalError(`Read call blocked: ${result.errorSummary ?? (reasonText || statusLabel(result.status))}.`);
+      }
+    } catch (err) {
+      setLocalError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setCallBusy(false);
     }
   }
 
@@ -1019,8 +1129,77 @@ export function AbiLibraryView({
       blockingStatuses: result.blockingStatuses,
     });
     setWriteDraft(result.draft);
+    setWriteWarningsAcknowledged(false);
     if (result.blockingStatuses.length > 0) {
       setLocalError(`Write draft blocked: ${result.blockingStatuses.map((item) => statusLabel(item.code)).join(", ")}.`);
+    }
+  }
+
+  async function handleSubmitWriteCall() {
+    setLocalError(null);
+    setLocalMessage(null);
+    if (!writeDraft) {
+      setLocalError("Build a valid ABI write draft before submitting.");
+      return;
+    }
+    if (writeDraft.blockingStatuses.length > 0) {
+      setLocalError("Resolve ABI write blocking statuses before submitting.");
+      return;
+    }
+    if (writeDraft.warnings.length > 0 && !writeWarningsAcknowledged) {
+      setLocalError("Acknowledge ABI write draft warnings before submitting.");
+      return;
+    }
+    if (!rpcUrl.trim()) {
+      setLocalError("Validate an RPC before submitting an ABI write call.");
+      return;
+    }
+    const canonicalParams = parseCanonicalParams();
+    if (!canonicalParams) return;
+    setCallBusy(true);
+    try {
+      const record = await onSubmitWriteCall({
+        chainId: writeDraft.chainId,
+        rpcUrl: rpcUrl.trim(),
+        contractAddress: writeDraft.contractAddress,
+        sourceKind: writeDraft.sourceKind,
+        providerConfigId: writeDraft.providerConfigId,
+        userSourceId: writeDraft.userSourceId,
+        versionId: writeDraft.versionId,
+        abiHash: writeDraft.abiHash,
+        sourceFingerprint: writeDraft.sourceFingerprint,
+        functionSignature: writeDraft.functionSignature,
+        canonicalParams,
+        accountIndex: writeDraft.accountIndex,
+        from: writeDraft.from,
+        draftId: writeDraft.draftId,
+        createdAt: writeDraft.createdAt,
+        frozenKey: writeDraft.frozenKey,
+        selector: writeDraft.selector,
+        calldataHash: writeDraft.calldataHash,
+        calldataByteLength: writeDraft.calldataByteLength,
+        argumentHash: writeDraft.argumentHash,
+        argumentSummary: writeDraft.argumentSummary,
+        nativeValueWei: writeDraft.nativeValueWei,
+        gasLimit: writeDraft.gasLimit,
+        latestBaseFeePerGas: writeDraft.latestBaseFeePerGas,
+        baseFeeIsCustom: writeDraft.baseFeeIsCustom,
+        baseFeePerGas: writeDraft.baseFeePerGas,
+        baseFeeMultiplier: writeDraft.baseFeeMultiplier,
+        maxFeePerGas: writeDraft.maxFeePerGas,
+        maxFeeOverridePerGas: writeDraft.maxFeeOverridePerGas,
+        maxPriorityFeePerGas: writeDraft.maxPriorityFeePerGas,
+        nonce: writeDraft.nonce,
+        selectedRpc: writeDraft.selectedRpc,
+        warnings: writeDraft.warnings,
+        blockingStatuses: writeDraft.blockingStatuses,
+        warningsAcknowledged: writeDraft.warnings.length === 0 || writeWarningsAcknowledged,
+      });
+      setLocalMessage(`ABI write submitted: ${compact(record.submission.tx_hash, 18, 10)}.`);
+    } catch (err) {
+      setLocalError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setCallBusy(false);
     }
   }
 
@@ -1361,6 +1540,7 @@ export function AbiLibraryView({
                 setSelectedFunctionSignature(functionSignature);
                 setParamsText("[]");
                 setPreview(null);
+                setReadResult(null);
                 clearWriteDraft();
               }}
               value={selectedFunctionSignature}
@@ -1439,6 +1619,7 @@ export function AbiLibraryView({
               };
               setParamsText(nextParamsText);
               setPreview(null);
+              setReadResult(null);
               clearWriteDraft();
             }}
             rows={7}
@@ -1450,10 +1631,44 @@ export function AbiLibraryView({
           <button disabled={previewDisabled} onClick={handlePreviewCalldata} type="button">
             Preview Encoding
           </button>
-          <button disabled type="button">
+          <button disabled={readDisabled} onClick={() => void handleReadCall()} type="button">
             Read Call
           </button>
         </div>
+
+        {readResult && (
+          <div className="abi-preview-result" aria-label="ABI read call result">
+            <div className="confirmation-grid">
+              <div>Signature</div>
+              <div className="mono">{readResult.functionSignature}</div>
+              <div>Contract</div>
+              <div className="mono">{readResult.contractAddress ?? "none"}</div>
+              <div>From</div>
+              <div className="mono">{readResult.from ?? "none"}</div>
+              <div>Calldata bytes</div>
+              <div>{readResult.calldata?.byteLength ?? "none"}</div>
+              <div>Calldata hash</div>
+              <div className="mono">{readResult.calldata?.hash ?? "none"}</div>
+              <div>Status</div>
+              <div>{statusLabel(readResult.status)}</div>
+              <div>RPC</div>
+              <div className="mono">
+                {readResult.rpc.endpoint}
+                {readResult.rpc.actualChainId !== null && readResult.rpc.actualChainId !== undefined
+                  ? ` / chainId ${readResult.rpc.actualChainId}`
+                  : ""}
+              </div>
+            </div>
+            {readResult.errorSummary && <div className="inline-error">{readResult.errorSummary}</div>}
+            {readResult.outputs.length > 0 && (
+              <ul className="abi-summary-tree" aria-label="ABI read output summary">
+                {readResult.outputs.map((summary, index) =>
+                  renderSummary(summary, `read-output-${index}`),
+                )}
+              </ul>
+            )}
+          </div>
+        )}
 
         {preview && (
           <div className="abi-preview-result" aria-label="ABI calldata preview result">
@@ -1496,6 +1711,7 @@ export function AbiLibraryView({
                     accounts.find((account) => account.index.toString() === nextIndex) ?? null;
                   setSelectedAccountIndex(nextIndex);
                   setNonce(nextAccount?.nonce?.toString() ?? "");
+                  setReadResult(null);
                   clearWriteDraft();
                 }}
                 value={selectedAccountIndex}
@@ -1651,8 +1867,18 @@ export function AbiLibraryView({
               )}
             </div>
           )}
+          {writeDraft && writeDraft.warnings.length > 0 && (
+            <label className="checkbox-row">
+              <input
+                checked={writeWarningsAcknowledged}
+                onChange={(event) => setWriteWarningsAcknowledged(event.target.checked)}
+                type="checkbox"
+              />
+              Acknowledge ABI write draft warnings
+            </label>
+          )}
           <div className="button-row abi-payload-actions">
-            <button disabled type="button">
+            <button disabled={submitDisabled} onClick={() => void handleSubmitWriteCall()} type="button">
               Submit Transaction
             </button>
           </div>

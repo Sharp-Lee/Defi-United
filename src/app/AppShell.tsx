@@ -26,7 +26,10 @@ import type {
   AbiFunctionCatalogResult,
   AbiManagedEntryInput,
   AbiPayloadValidationReadModel,
+  AbiReadCallInput,
+  AbiReadCallResult,
   AbiRegistryState,
+  AbiWriteSubmitInput,
   FetchExplorerAbiInput,
   EditWatchlistTokenInput,
   TokenWatchlistState,
@@ -117,6 +120,8 @@ export interface AppShellProps {
   onPreviewAbiCalldata?: (
     input: AbiCalldataPreviewInput,
   ) => Promise<AbiCalldataPreviewResult>;
+  onCallReadOnlyAbiFunction?: (input: AbiReadCallInput) => Promise<AbiReadCallResult>;
+  onSubmitAbiWriteCall?: (input: AbiWriteSubmitInput) => Promise<HistoryRecord>;
   onRefreshAccounts?: () => Promise<void> | void;
   onRefreshHistory?: () => Promise<void> | void;
   onQuarantineHistory?: () => Promise<void> | void;
@@ -221,6 +226,29 @@ export function AppShell({
     sourceFingerprint: input.sourceFingerprint,
     parameterSummary: [],
   }),
+  onCallReadOnlyAbiFunction = async (input) => ({
+    status: "blocked",
+    reasons: ["unknown"],
+    functionSignature: input.functionSignature,
+    contractAddress: input.contractAddress,
+    from: input.from ?? null,
+    sourceKind: input.sourceKind,
+    providerConfigId: input.providerConfigId ?? null,
+    userSourceId: input.userSourceId ?? null,
+    versionId: input.versionId,
+    abiHash: input.abiHash,
+    sourceFingerprint: input.sourceFingerprint,
+    outputs: [],
+    rpc: {
+      endpoint: "unknown",
+      expectedChainId: input.chainId,
+      actualChainId: null,
+    },
+    errorSummary: "Read caller is not configured.",
+  }),
+  onSubmitAbiWriteCall = async () => {
+    throw new Error("ABI write submitter is not configured.");
+  },
   onRefreshAccounts = async () => {},
   onRefreshHistory = async () => {},
   onQuarantineHistory = async () => {},
@@ -337,6 +365,7 @@ export function AppShell({
                 chainName={selectedChain?.name ?? "Unknown chain"}
                 error={abiRegistryError}
                 onDeleteEntry={onDeleteAbiEntry}
+                onCallReadOnlyFunction={onCallReadOnlyAbiFunction}
                 onFetchExplorerAbi={onFetchExplorerAbi}
                 onImportPayload={onImportAbiPayload}
                 onMarkStale={onMarkAbiStale}
@@ -346,6 +375,7 @@ export function AppShell({
                 onRefresh={onRefreshAbiRegistry}
                 onRemoveDataSource={onRemoveAbiDataSource}
                 onSaveDataSource={onSaveAbiDataSource}
+                onSubmitWriteCall={onSubmitAbiWriteCall}
                 onValidatePayload={onValidateAbiPayload}
                 rpcUrl={rpcUrl}
                 selectedChainId={selectedChainId}

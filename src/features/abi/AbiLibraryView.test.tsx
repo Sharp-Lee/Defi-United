@@ -7,9 +7,13 @@ import type {
   AbiFetchSourceStatus,
   AbiFunctionCatalogResult,
   AbiManagedEntryInput,
+  AbiReadCallInput,
+  AbiReadCallResult,
   AbiRegistryMutationResult,
   AbiRegistryState,
   AbiValidationStatus,
+  AbiWriteSubmitInput,
+  HistoryRecord,
 } from "../../lib/tauri";
 import { renderScreen } from "../../test/render";
 import { AbiLibraryView } from "./AbiLibraryView";
@@ -218,6 +222,8 @@ function renderAbi(
     onDeleteEntry: ReturnType<typeof vi.fn>;
     onListFunctions: ReturnType<typeof vi.fn>;
     onPreviewCalldata: ReturnType<typeof vi.fn>;
+    onCallReadOnlyFunction: ReturnType<typeof vi.fn>;
+    onSubmitWriteCall: ReturnType<typeof vi.fn>;
   }> = {},
   options: Partial<{
     rpcUrl: string;
@@ -282,6 +288,26 @@ function renderAbi(
         sourceFingerprint: input.sourceFingerprint,
         parameterSummary: [],
       })),
+    onCallReadOnlyFunction:
+      handlers.onCallReadOnlyFunction ??
+      vi.fn(async (input: AbiReadCallInput): Promise<AbiReadCallResult> => ({
+        status: "blocked",
+        reasons: ["unknown"],
+        functionSignature: input.functionSignature,
+        contractAddress: input.contractAddress,
+        from: input.from ?? null,
+        sourceKind: input.sourceKind,
+        providerConfigId: input.providerConfigId ?? null,
+        userSourceId: input.userSourceId ?? null,
+        versionId: input.versionId,
+        abiHash: input.abiHash,
+        sourceFingerprint: input.sourceFingerprint,
+        outputs: [],
+        rpc: { endpoint: "unknown", expectedChainId: input.chainId, actualChainId: null },
+      })),
+    onSubmitWriteCall:
+      handlers.onSubmitWriteCall ??
+      vi.fn(async (): Promise<HistoryRecord> => historyRecord()),
   };
   renderScreen(
     <AbiLibraryView
@@ -304,6 +330,33 @@ function renderAbi(
     />,
   );
   return props;
+}
+
+function historyRecord(overrides: Partial<HistoryRecord> = {}): HistoryRecord {
+  return {
+    schema_version: 1,
+    intent: {
+      chain_id: 1,
+      account_index: 0,
+      from: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      to: contract,
+      value_wei: "123",
+      nonce: 7,
+      transaction_type: "contractCall",
+    },
+    intent_snapshot: {},
+    submission: {
+      kind: "abiWriteCall",
+      tx_hash: "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      signed_transaction: null,
+      raw_transaction: null,
+      submitted_at: "2026-04-29T00:00:00.000Z",
+    },
+    outcome: { state: "Pending" },
+    nonce_thread: {},
+    abi_call_metadata: null,
+    ...overrides,
+  } as HistoryRecord;
 }
 
 function writeFunctionCatalog(
@@ -642,7 +695,7 @@ describe("AbiLibraryView", () => {
     expect(onRemoveDataSource).toHaveBeenCalledWith("etherscan-mainnet");
   });
 
-  it("selects overloaded functions by full signature and renders bounded calldata preview", async () => {
+  it("selects overloaded functions by full signature and invokes read calls", async () => {
     const onListFunctions = vi.fn(async (input: AbiManagedEntryInput): Promise<AbiFunctionCatalogResult> => ({
       status: "success",
       reasons: [],
@@ -720,9 +773,43 @@ describe("AbiLibraryView", () => {
         },
       }),
     );
+    const onCallReadOnlyFunction = vi.fn(
+      async (input: AbiReadCallInput): Promise<AbiReadCallResult> => ({
+        status: "success",
+        reasons: [],
+        functionSignature: input.functionSignature,
+        selector: "0xf23a6e61",
+        contractAddress: input.contractAddress,
+        from: input.from ?? null,
+        sourceKind: input.sourceKind,
+        providerConfigId: input.providerConfigId ?? null,
+        userSourceId: input.userSourceId ?? null,
+        versionId: input.versionId,
+        abiHash: input.abiHash,
+        sourceFingerprint: input.sourceFingerprint,
+        calldata: {
+          byteLength: 36,
+          hash: "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        },
+        outputs: [
+          {
+            kind: "uint",
+            type: "uint256",
+            value: "100",
+            byteLength: null,
+            hash: null,
+            items: null,
+            fields: null,
+            truncated: false,
+          },
+        ],
+        rpc: { endpoint: "https://rpc.example.invalid", expectedChainId: 1, actualChainId: 1 },
+      }),
+    );
     renderAbi(registryState({ cacheEntries: [cacheEntry("v1")] }), {
       onListFunctions,
       onPreviewCalldata,
+      onCallReadOnlyFunction,
     });
 
     fireEvent.click(screen.getByRole("button", { name: "Load Functions" }));
@@ -752,16 +839,33 @@ describe("AbiLibraryView", () => {
     expect(preview).toHaveTextContent("36");
     expect(preview).toHaveTextContent("0xaaaaaaaaaa");
     expect(preview).not.toHaveTextContent("0xf23a6e61000000000000000000000000");
+
+    expect(screen.getByRole("button", { name: "Read Call" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "Read Call" }));
+    await waitFor(() =>
+      expect(onCallReadOnlyFunction).toHaveBeenCalledWith(
+        expect.objectContaining({
+          chainId: 1,
+          rpcUrl: "https://rpc.example.invalid/mainnet?apikey=secret",
+          functionSignature: "lookup(address)",
+          canonicalParams: ["0x2222222222222222222222222222222222222222"],
+          from: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        }),
+      ),
+    );
+    expect(screen.getByLabelText("ABI read call result")).toHaveTextContent("100");
   });
 
-  it("allows payable value and shows bounded ABI write confirmation with submit stubbed", async () => {
+  it("allows payable value and submits a bounded ABI write confirmation after warning acknowledgement", async () => {
     const onListFunctions = vi.fn(async (input: AbiManagedEntryInput) => writeFunctionCatalog(input));
     const onPreviewCalldata = vi.fn(async (input: AbiCalldataPreviewInput) =>
       successfulWritePreview(input),
     );
+    const onSubmitWriteCall = vi.fn(async () => historyRecord());
     renderAbi(registryState({ cacheEntries: [cacheEntry("v1")] }), {
       onListFunctions,
       onPreviewCalldata,
+      onSubmitWriteCall,
     });
 
     await buildSuccessfulWriteDraft();
@@ -779,6 +883,30 @@ describe("AbiLibraryView", () => {
     expect(confirmation).not.toHaveTextContent("/mainnet");
     expect(confirmation).not.toHaveTextContent("apikey=secret");
     expect(screen.getByRole("button", { name: "Submit Transaction" })).toBeDisabled();
+
+    fireEvent.click(screen.getByLabelText("Acknowledge ABI write draft warnings"));
+    expect(screen.getByRole("button", { name: "Submit Transaction" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "Submit Transaction" }));
+
+    await waitFor(() =>
+      expect(onSubmitWriteCall).toHaveBeenCalledWith(
+        expect.objectContaining<Partial<AbiWriteSubmitInput>>({
+          chainId: 1,
+          rpcUrl: "https://rpc.example.invalid/mainnet?apikey=secret",
+          accountIndex: 0,
+          from: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          contractAddress: contract,
+          functionSignature: "deposit(uint256)",
+          canonicalParams: [42],
+          frozenKey: expect.stringMatching(/^abi-draft-/),
+          nativeValueWei: "123",
+          gasLimit: "80000",
+          maxPriorityFeePerGas: "1500000000",
+          warningsAcknowledged: true,
+        }),
+      ),
+    );
+    expect(screen.getByText(/ABI write submitted:/)).toBeInTheDocument();
   });
 
   it("ignores stale write draft fee lookups when draft inputs change in flight", async () => {

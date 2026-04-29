@@ -7,6 +7,7 @@ import type { AccountChainState } from "./lib/rpc";
 import {
   createAndScanAccount,
   createVault,
+  callReadOnlyAbiFunction,
   deleteAbiCacheEntry,
   dismissHistoryRecoveryIntent,
   fetchExplorerAbi,
@@ -39,6 +40,7 @@ import {
   scanWatchlistBalances,
   scanWatchlistTokenMetadata,
   removeAbiDataSourceConfig,
+  submitAbiWriteCall,
   upsertAbiDataSourceConfig,
   unlockVault,
   validateAbiPayload,
@@ -1186,6 +1188,29 @@ export function App() {
     }
   }
 
+  async function handleSubmitAbiWriteCall(input: Parameters<typeof submitAbiWriteCall>[0]) {
+    try {
+      const record = await submitAbiWriteCall(input);
+      setHistory((current) => [record, ...current]);
+      void inspectTransactionHistoryStorage()
+        .then(setHistoryStorage)
+        .catch(() => {});
+      void loadHistoryRecoveryIntents()
+        .then(setHistoryRecoveryIntents)
+        .catch(() => {});
+      void refreshAccountsFromDisk();
+      return record;
+    } catch (err) {
+      await inspectHistoryStorageGate(errorMessage(err));
+      try {
+        setHistoryRecoveryIntents(await loadHistoryRecoveryIntents());
+      } catch {
+        // Keep the submit error visible in the ABI panel.
+      }
+      throw err;
+    }
+  }
+
   async function handleQuarantineHistory() {
     setAppError(null);
     setHistoryError(null);
@@ -1347,8 +1372,10 @@ export function App() {
       onTransferSubmitted={handleTransferSubmitted}
       onUnlock={handleUnlock}
       onValidateAbiPayload={(payload) => validateAbiPayload({ payload })}
+      onCallReadOnlyAbiFunction={callReadOnlyAbiFunction}
       onListAbiFunctions={listManagedAbiFunctions}
       onPreviewAbiCalldata={previewManagedAbiCalldata}
+      onSubmitAbiWriteCall={handleSubmitAbiWriteCall}
       onValidateRpc={handleValidateRpc}
       rpcUrl={rpcUrl}
       selectedChainId={selectedChainId}
