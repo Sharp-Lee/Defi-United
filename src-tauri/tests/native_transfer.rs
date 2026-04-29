@@ -25,8 +25,8 @@ use wallet_workbench_lib::transactions::{
     mark_prior_history_state_with_replacement, next_nonce_with_pending_history, nonce_thread_key,
     persist_pending_history, persist_pending_history_with_kind, quarantine_history_storage,
     reconcile_pending_history, recover_broadcasted_history_record, review_dropped_history_record,
-    ChainOutcomeState, HistoryCorruptionType, HistoryRecord, HistoryStorageStatus,
-    NativeTransferIntent,
+    submit_abi_write_call, ChainOutcomeState, HistoryCorruptionType, HistoryRecord,
+    HistoryStorageStatus, NativeTransferIntent,
 };
 
 const APP_DIR_ENV: &str = "EVM_WALLET_WORKBENCH_APP_DIR";
@@ -119,6 +119,83 @@ fn native_transfer_intent(nonce: u64, value_wei: &str) -> NativeTransferIntent {
         max_fee_per_gas: "40000000000".into(),
         max_priority_fee_per_gas: "1500000000".into(),
     }
+}
+
+fn abi_write_call_intent(rpc_url: String) -> NativeTransferIntent {
+    NativeTransferIntent {
+        typed_transaction: wallet_workbench_lib::models::TypedTransactionFields::contract_call(
+            "0x13af4035",
+            "setMessage(string)",
+            "0",
+        ),
+        rpc_url,
+        account_index: 1,
+        chain_id: 1,
+        from: "0x70997970C51812dc3A010C7d01b50e0d17dc79C8".into(),
+        to: "0x6666666666666666666666666666666666666666".into(),
+        value_wei: "0".into(),
+        nonce: 0,
+        gas_limit: "90000".into(),
+        max_fee_per_gas: "40000000000".into(),
+        max_priority_fee_per_gas: "1500000000".into(),
+    }
+}
+
+fn abi_write_call_calldata() -> Bytes {
+    let mut bytes = vec![0x13, 0xaf, 0x40, 0x35];
+    bytes.extend(encode(&[Token::String("hello".to_string())]));
+    Bytes::from(bytes)
+}
+
+fn abi_write_call_metadata() -> wallet_workbench_lib::models::AbiCallHistoryMetadata {
+    serde_json::from_value(serde_json::json!({
+        "intentKind": "abiWriteCall",
+        "draftId": "draft-abi-broadcast",
+        "createdAt": "2026-04-29T01:02:03.000Z",
+        "chainId": 1,
+        "accountIndex": 1,
+        "from": "0x70997970C51812dc3A010C7d01b50e0d17dc79C8",
+        "contractAddress": "0x6666666666666666666666666666666666666666",
+        "sourceKind": "provider",
+        "providerConfigId": "etherscan-mainnet",
+        "versionId": "v1",
+        "abiHash": "0xabi",
+        "sourceFingerprint": "0xfingerprint",
+        "functionSignature": "setMessage(string)",
+        "selector": "0x13af4035",
+        "argumentSummary": [
+            {
+                "kind": "string",
+                "type": "string",
+                "value": "hello",
+                "byteLength": 5,
+                "hash": "0xargumenthash",
+                "truncated": false
+            }
+        ],
+        "argumentHash": "0xargumenthash",
+        "nativeValueWei": "0",
+        "gasLimit": "90000",
+        "maxFeePerGas": "40000000000",
+        "maxPriorityFeePerGas": "1500000000",
+        "nonce": 0,
+        "selectedRpc": {
+            "chainId": 1,
+            "providerConfigId": "mainnet-rpc",
+            "endpointName": "Mainnet token=ABI_RPC_SECRET",
+            "endpointSummary": "https://rpc.example/?api_key=ABI_RPC_SECRET",
+            "endpointFingerprint": "rpc-endpoint-broadcast"
+        },
+        "calldata": {
+            "selector": "0x13af4035",
+            "byteLength": 100,
+            "hash": "0xcalldatahash",
+            "rawCalldata": "0x13af4035ffffffff"
+        },
+        "canonicalParams": ["hello"],
+        "rawAbi": "[{\"type\":\"function\",\"name\":\"setMessage\"}]"
+    }))
+    .expect("abi write metadata")
 }
 
 fn erc20_transfer_intent() -> wallet_workbench_lib::models::Erc20TransferIntent {
@@ -641,6 +718,8 @@ fn history_record_roundtrips_abi_write_call_metadata_without_raw_payloads() {
                 "endpointId": "primary",
                 "endpointName": "Mainnet primary token=SECRET_TOKEN",
                 "endpointSummary": "https://rpc.example/?api_key=SECRET_TOKEN",
+                "endpointFingerprint": "rpc-endpoint-1234abcd",
+                "endpointFingerprintSource": "https://rpc.example/?api_key=SECRET_TOKEN",
                 "rpcUrl": "https://rpc.example/?api_key=SECRET_TOKEN"
             },
             "warnings": [
@@ -670,7 +749,7 @@ fn history_record_roundtrips_abi_write_call_metadata_without_raw_payloads() {
                 "txHash": null,
                 "submittedAt": null,
                 "broadcastedAt": null,
-                "errorSummary": "submit failed token=SECRET_TOKEN"
+                "errorSummary": "submit failed token=SECRET_TOKEN privateKey=0xabc rawTx=0xsigned signed transaction=signed-secret"
             },
             "futureOutcome": {
                 "state": "Confirmed",
@@ -678,7 +757,7 @@ fn history_record_roundtrips_abi_write_call_metadata_without_raw_payloads() {
                 "receiptStatus": null,
                 "blockNumber": null,
                 "gasUsed": null,
-                "errorSummary": "receipt failed https://rpc.example/?token=SECRET_TOKEN"
+                "errorSummary": "receipt failed https://rpc.example/?token=SECRET_TOKEN mnemonic=abandon abandon next=value"
             },
             "broadcast": {
                 "txHash": null,
@@ -759,6 +838,13 @@ fn history_record_roundtrips_abi_write_call_metadata_without_raw_payloads() {
     );
     assert_eq!(
         metadata
+            .selected_rpc
+            .as_ref()
+            .and_then(|rpc| rpc.endpoint_fingerprint.as_deref()),
+        Some("rpc-endpoint-1234abcd")
+    );
+    assert_eq!(
+        metadata
             .calldata
             .as_ref()
             .and_then(|calldata| calldata.hash.as_deref()),
@@ -788,7 +874,9 @@ fn history_record_roundtrips_abi_write_call_metadata_without_raw_payloads() {
         .expect("future submission placeholder");
     assert_eq!(
         future_submission.error_summary.as_deref(),
-        Some("submit failed [redacted_secret]")
+        Some(
+            "submit failed [redacted_secret] [redacted_secret] [redacted_secret] [redacted_secret]"
+        )
     );
     let future_outcome = metadata
         .future_outcome
@@ -800,7 +888,7 @@ fn history_record_roundtrips_abi_write_call_metadata_without_raw_payloads() {
     );
     assert_eq!(
         future_outcome.error_summary.as_deref(),
-        Some("receipt failed [redacted_url]")
+        Some("receipt failed [redacted_url] [redacted_secret] [redacted] next=value")
     );
     assert!(metadata
         .broadcast
@@ -842,9 +930,14 @@ fn history_record_roundtrips_abi_write_call_metadata_without_raw_payloads() {
     assert!(!serialized.contains("rawCalldata"));
     assert!(!serialized.contains("rawAbi"));
     assert!(!serialized.contains("canonicalParams"));
+    assert!(!serialized.contains("endpointFingerprintSource"));
     assert!(!serialized.contains("SECRET_TOKEN"));
     assert!(!serialized.contains("api_key"));
     assert!(!serialized.contains("token="));
+    assert!(!serialized.contains("0xabc"));
+    assert!(!serialized.contains("0xsigned"));
+    assert!(!serialized.contains("signed-secret"));
+    assert!(!serialized.contains("abandon abandon"));
 }
 
 #[test]
@@ -1043,6 +1136,57 @@ fn start_history_write_failure_rpc_server(history_path: PathBuf) -> String {
                 "null"
             };
             let body = format!(r#"{{"jsonrpc":"2.0","id":1,"result":{result}}}"#);
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("write rpc response");
+        }
+    });
+    format!("http://{address}")
+}
+
+fn start_abi_broadcast_failure_rpc_server() -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind rpc server");
+    let address = listener.local_addr().expect("local addr");
+    thread::spawn(move || {
+        for stream in listener.incoming().take(4) {
+            let mut stream = stream.expect("accept rpc request");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .expect("set read timeout");
+            let mut buffer = [0; 4096];
+            let bytes = stream.read(&mut buffer).expect("read rpc request");
+            let mut request = String::from_utf8_lossy(&buffer[..bytes]).to_string();
+            while !request.contains("eth_") {
+                match stream.read(&mut buffer) {
+                    Ok(0) => break,
+                    Ok(bytes) => request.push_str(&String::from_utf8_lossy(&buffer[..bytes])),
+                    Err(_) => break,
+                }
+            }
+            let body = if request.contains("eth_chainId") {
+                r#"{"jsonrpc":"2.0","id":1,"result":"0x1"}"#.to_string()
+            } else if request.contains("eth_getBalance") {
+                r#"{"jsonrpc":"2.0","id":1,"result":"0xffffffffffffffffffff"}"#.to_string()
+            } else if request.contains("eth_getTransactionCount") {
+                r#"{"jsonrpc":"2.0","id":1,"result":"0x0"}"#.to_string()
+            } else if request.contains("eth_sendRawTransaction") {
+                serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "error": {
+                        "code": -32000,
+                        "message": "broadcast rejected rawCalldata=0x13af4035ffffffff api_key=SEND_SECRET privateKey=0xabc signedTx=signed-secret rawAbi=[{\"type\":\"function\"}] canonicalParams=[\"SEND_SECRET\"]"
+                    }
+                })
+                .to_string()
+            } else {
+                r#"{"jsonrpc":"2.0","id":1,"result":null}"#.to_string()
+            };
             let response = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                 body.len(),
@@ -1759,6 +1903,134 @@ async fn broadcast_history_write_failure_records_recovery_intent_without_rpc_sec
     assert!(events
         .iter()
         .any(|event| event.event == "nativeTransferHistoryWriteAfterBroadcastFailed"));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn abi_write_history_write_failure_records_typed_recovery_without_payloads() {
+    let _guard = test_lock().lock().expect("test lock");
+    let _app_dir_guard = TestAppDirGuard::new("abi-write-history-recovery");
+    wallet_workbench_lib::session::write_session_mnemonic(
+        "test test test test test test test test test test test junk".into(),
+    );
+    let path = history_path().expect("history path");
+    let rpc_url = start_history_write_failure_rpc_server(path);
+    let intent = abi_write_call_intent(format!("{rpc_url}/?apiKey=ABI_RPC_SECRET"));
+    let frozen_key = "abi-draft-frozen-key".to_string();
+
+    let error = submit_abi_write_call(
+        intent,
+        abi_write_call_calldata(),
+        abi_write_call_metadata(),
+        frozen_key.clone(),
+    )
+    .await
+    .expect_err("history write should fail after ABI write broadcast");
+    let intents = load_history_recovery_intents().expect("load recovery intents");
+    let raw_intents = serde_json::to_string(&intents).expect("serialize recovery intents");
+    let events = read_diagnostic_events_from_path(&diagnostics_path().expect("diagnostics path"))
+        .expect("read diagnostics");
+    let raw_events = serde_json::to_string(&events).expect("serialize diagnostics");
+
+    assert!(error.contains("ABI write call broadcast"));
+    assert!(error
+        .contains("tx_hash=0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
+    assert!(error.contains("selector=0x13af4035"));
+    assert!(error.contains("method=setMessage(string)"));
+    assert!(error.contains(&format!("frozenKey={frozen_key}")));
+    assert_eq!(intents.len(), 1);
+    assert_eq!(
+        intents[0].kind,
+        wallet_workbench_lib::models::SubmissionKind::AbiWriteCall
+    );
+    assert_eq!(
+        intents[0].tx_hash,
+        "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    );
+    assert_eq!(intents[0].frozen_key.as_deref(), Some(frozen_key.as_str()));
+    assert_eq!(intents[0].selector.as_deref(), Some("0x13af4035"));
+    assert_eq!(
+        intents[0].method_name.as_deref(),
+        Some("setMessage(string)")
+    );
+    let metadata = intents[0]
+        .abi_call_metadata
+        .as_ref()
+        .expect("abi write metadata");
+    assert_eq!(metadata.intent_kind, "abiWriteCall");
+    assert_eq!(
+        metadata.function_signature.as_deref(),
+        Some("setMessage(string)")
+    );
+    assert_eq!(
+        metadata
+            .future_submission
+            .as_ref()
+            .and_then(|submission| submission.tx_hash.as_deref()),
+        Some("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+    );
+    assert_eq!(
+        metadata
+            .broadcast
+            .as_ref()
+            .and_then(|broadcast| broadcast.tx_hash.as_deref()),
+        Some("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+    );
+    let recovery = metadata.recovery.as_ref().expect("recovery metadata");
+    assert_eq!(recovery.status.as_deref(), Some("active"));
+    assert!(recovery.recovery_id.is_some());
+    assert!(recovery
+        .last_error
+        .as_deref()
+        .is_some_and(|value| { value.contains("directory") || value.contains("Is a directory") }));
+    assert!(events
+        .iter()
+        .any(|event| event.event == "abiWriteCallHistoryWriteAfterBroadcastFailed"));
+
+    for serialized in [&raw_intents, &raw_events, &error] {
+        assert!(!serialized.contains("ABI_RPC_SECRET"));
+        assert!(!serialized.contains("apiKey="));
+        assert!(!serialized.contains("rawCalldata"));
+        assert!(!serialized.contains("rawAbi"));
+        assert!(!serialized.contains("canonicalParams"));
+        assert!(!serialized.contains("0x13af4035ffffffff"));
+        assert!(!serialized.contains("\"type\":\"function\""));
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn abi_write_broadcast_failure_diagnostics_redact_payloads_and_secrets() {
+    let _guard = test_lock().lock().expect("test lock");
+    let _app_dir_guard = TestAppDirGuard::new("abi-write-broadcast-failure-redaction");
+    wallet_workbench_lib::session::write_session_mnemonic(
+        "test test test test test test test test test test test junk".into(),
+    );
+    let rpc_url = start_abi_broadcast_failure_rpc_server();
+    let intent = abi_write_call_intent(format!("{rpc_url}/?apiKey=ABI_RPC_SECRET"));
+
+    let error = submit_abi_write_call(
+        intent,
+        abi_write_call_calldata(),
+        abi_write_call_metadata(),
+        "abi-draft-frozen-key".to_string(),
+    )
+    .await
+    .expect_err("broadcast failure should be returned");
+    let events = read_diagnostic_events_from_path(&diagnostics_path().expect("diagnostics path"))
+        .expect("read diagnostics");
+    let raw_events = serde_json::to_string(&events).expect("serialize diagnostics");
+
+    assert!(events
+        .iter()
+        .any(|event| event.event == "abiWriteCallBroadcastFailed"));
+    for serialized in [&raw_events, &error] {
+        assert!(!serialized.contains("SEND_SECRET"));
+        assert!(!serialized.contains("ABI_RPC_SECRET"));
+        assert!(!serialized.contains("0x13af4035ffffffff"));
+        assert!(!serialized.contains("0xabc"));
+        assert!(!serialized.contains("signed-secret"));
+        assert!(!serialized.contains("\"type\":\"function\""));
+        assert!(!serialized.contains("[\"SEND_SECRET\"]"));
+    }
 }
 
 #[test]

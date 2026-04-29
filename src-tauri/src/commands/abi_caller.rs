@@ -3546,7 +3546,10 @@ mod tests {
             let raw_abi = set_owner_abi();
             let entry = write_submit_fixture(dir, selected_entry(|_| {}), &raw_abi);
             let (selector, calldata) = set_owner_calldata();
-            let input = abi_write_submit_input(&entry, selector.clone(), calldata.clone(), "0");
+            let mut input = abi_write_submit_input(&entry, selector.clone(), calldata.clone(), "0");
+            input.selected_rpc.endpoint_name =
+                Some("Primary token=submit-secret privateKey=0xabc".to_string());
+            refresh_test_frozen_key(&mut input);
 
             let (intent, encoded, metadata, frozen_key) =
                 validate_abi_write_submit_input(input).expect("valid ABI write submit");
@@ -3577,6 +3580,9 @@ mod tests {
             let serialized = serde_json::to_string(&metadata).expect("serialize metadata");
             assert!(!serialized.contains("canonicalParams"));
             assert!(!serialized.contains("apiKey=secret"));
+            assert!(!serialized.contains("submit-secret"));
+            assert!(!serialized.contains("0xabc"));
+            assert!(serialized.contains("[redacted_endpoint]"));
         });
     }
 

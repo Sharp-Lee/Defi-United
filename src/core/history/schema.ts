@@ -368,7 +368,11 @@ function sanitizeDurableRpcSummary(value: unknown, maxLength = 200) {
     .replace(/\b(?:https?|wss?):\/\/[^\s"'<>;,]+/gi, "[redacted_endpoint]")
     .replace(/\bBearer\s+[^\s"'<>;,]+/gi, "Bearer [redacted_secret]")
     .replace(
-      /\b[^\s"'<>;,]*(?:api[_-]?key|apikey|token|auth|authorization|password|secret|private[_-]?key|access[_-]?token)[^\s"'<>;,]*\s*[:=]\s*[^\s"'<>;,]+/gi,
+      /\b(?:mnemonic|seed[_\s-]?phrase|recovery[_\s-]?phrase)\s*[:=]\s*(?:(?!\b[\w.-]+\s*[:=])[^\s"'<>;,]+(?:\s+|$)){1,24}/gi,
+      "[redacted_secret] ",
+    )
+    .replace(
+      /\b[^\s"'<>;,]*(?:api[_-]?key|apikey|token|auth|authorization|password|secret|private[_\s-]?key|access[_-]?token|raw[_\s-]?tx|raw[_\s-]?transaction|signed[_\s-]?tx|signed[_\s-]?transaction|signature)[^\s"'<>;,]*\s*[:=]\s*[^\s"'<>;,]+/gi,
       "[redacted_secret]",
     );
   return redacted.length <= maxLength ? redacted : `${redacted.slice(0, maxLength)}...[truncated]`;

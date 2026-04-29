@@ -4148,7 +4148,7 @@ pub async fn submit_abi_write_call(
         .chain_id(intent.chain_id);
 
     let pending = signer.send_transaction(tx, None).await.map_err(|e| {
-        let error = e.to_string();
+        let error = sanitize_diagnostic_message(&e.to_string());
         record_transaction_diagnostic(
             DiagnosticLevel::Error,
             "abiWriteCallBroadcastFailed",

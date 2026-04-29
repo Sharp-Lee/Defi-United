@@ -522,6 +522,8 @@ describe("history schema normalization", () => {
             endpointId: "primary",
             endpointName: "Mainnet primary token=SECRET_TOKEN",
             endpointSummary: "https://rpc.example/?api_key=SECRET_TOKEN",
+            endpointFingerprint: "rpc-endpoint-1234abcd",
+            endpointFingerprintSource: "https://rpc.example/?api_key=SECRET_TOKEN",
             rpcUrl: "https://rpc.example/?api_key=SECRET_TOKEN",
           },
           warnings: [
@@ -551,7 +553,8 @@ describe("history schema normalization", () => {
             txHash: null,
             submittedAt: null,
             broadcastedAt: null,
-            errorSummary: "submit failed token=SECRET_TOKEN",
+            errorSummary:
+              "submit failed token=SECRET_TOKEN privateKey=0xabc rawTx=0xsigned signed transaction=signed-secret",
           },
           futureOutcome: {
             state: "Confirmed",
@@ -559,7 +562,8 @@ describe("history schema normalization", () => {
             receiptStatus: null,
             blockNumber: null,
             gasUsed: null,
-            errorSummary: "receipt failed https://rpc.example/?token=SECRET_TOKEN",
+            errorSummary:
+              "receipt failed https://rpc.example/?token=SECRET_TOKEN mnemonic=abandon abandon next=value",
           },
           broadcast: {
             txHash: null,
@@ -606,6 +610,7 @@ describe("history schema normalization", () => {
         endpoint_id: "primary",
         endpoint_name: "Mainnet primary [redacted_secret]",
         endpoint_summary: "[redacted_endpoint]",
+        endpoint_fingerprint: "rpc-endpoint-1234abcd",
       },
       calldata: {
         selector: "0xa9059cbb",
@@ -615,11 +620,12 @@ describe("history schema normalization", () => {
       future_submission: {
         tx_hash: null,
         broadcasted_at: null,
-        error_summary: "submit failed [redacted_secret]",
+        error_summary:
+          "submit failed [redacted_secret] [redacted_secret] [redacted_secret] [redacted_secret]",
       },
       future_outcome: {
         state: "Confirmed",
-        error_summary: "receipt failed [redacted_endpoint]",
+        error_summary: "receipt failed [redacted_endpoint] [redacted_secret] next=value",
       },
       broadcast: {
         tx_hash: null,
@@ -687,9 +693,14 @@ describe("history schema normalization", () => {
     expect(durable).not.toContain(rawCalldata);
     expect(durable).not.toContain("rawAbi");
     expect(durable).not.toContain("canonicalParams");
+    expect(durable).not.toContain("endpointFingerprintSource");
     expect(durable).not.toContain("SECRET_TOKEN");
     expect(durable).not.toContain("api_key");
     expect(durable).not.toContain("token=");
+    expect(durable).not.toContain("0xabc");
+    expect(durable).not.toContain("0xsigned");
+    expect(durable).not.toContain("signed-secret");
+    expect(durable).not.toContain("abandon abandon");
     expect(durable).not.toContain(overlongKind);
     expect(durable).not.toContain(overlongType);
     expect(durable).not.toContain(overlongHash);

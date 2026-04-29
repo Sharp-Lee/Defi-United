@@ -886,8 +886,19 @@ fn redact_abi_sensitive_key_labels(mut value: String) -> String {
         "password",
         "secret",
         "private_key",
+        "privateKey",
+        "private key",
         "access_token",
+        "raw_tx",
+        "rawTx",
+        "raw transaction",
+        "signed_tx",
+        "signedTx",
+        "signed transaction",
+        "signature",
+        "mnemonic",
     ] {
+        value = redact_abi_inline_secret_label(value, key);
         for separator in ["=", ": "] {
             let needle = format!("{key}{separator}[redacted]");
             value = value.replace(&needle, "[redacted_secret]");
@@ -899,6 +910,27 @@ fn redact_abi_sensitive_key_labels(mut value: String) -> String {
                 &key[1..]
             );
             value = value.replace(&titlecase_needle, "[redacted_secret]");
+        }
+    }
+    value
+}
+
+fn redact_abi_inline_secret_label(mut value: String, key: &str) -> String {
+    for separator in ["=", ": "] {
+        let needle = format!("{}{separator}", key.to_ascii_lowercase());
+        loop {
+            let lower = value.to_ascii_lowercase();
+            let Some(start) = lower.find(&needle) else {
+                break;
+            };
+            let value_start = start + needle.len();
+            let end = value[value_start..]
+                .find(|ch: char| {
+                    ch.is_whitespace() || matches!(ch, '"' | '\'' | '<' | '>' | ';' | ',')
+                })
+                .map(|offset| value_start + offset)
+                .unwrap_or(value.len());
+            value.replace_range(start..end, "[redacted_secret]");
         }
     }
     value

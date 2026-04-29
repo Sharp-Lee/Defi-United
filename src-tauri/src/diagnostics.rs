@@ -264,6 +264,9 @@ pub fn export_diagnostic_events_to_path(
             "password",
             "signatureMaterial",
             "rawSignedTransaction",
+            "rawAbi",
+            "rawCalldata",
+            "canonicalParams",
             "fullRpcCredential",
         ],
         note: "Diagnostics events are local troubleshooting metadata only. They are not chain confirmation facts.",
@@ -576,9 +579,10 @@ fn collect_metadata_strings_for_keys(value: &Value, keys: &[&str], output: &mut 
 }
 
 pub fn sanitize_diagnostic_message(value: &str) -> String {
+    let redacted_abi_payloads = redact_bracketed_abi_message_payloads(value);
     let mut redact_mode = RedactMode::None;
     let mut sanitized_parts = Vec::new();
-    let tokens = value.split_whitespace().collect::<Vec<_>>();
+    let tokens = redacted_abi_payloads.split_whitespace().collect::<Vec<_>>();
     let mut index = 0;
     while index < tokens.len() {
         let token = tokens[index];
@@ -598,6 +602,14 @@ pub fn sanitize_diagnostic_message(value: &str) -> String {
             }
             RedactMode::UntilNextKeyValue => {
                 if looks_like_key_value_token(token) {
+                } else {
+                    sanitized_parts.push("[redacted]".to_string());
+                    index += 1;
+                    continue;
+                }
+            }
+            RedactMode::AbiPayloadUntilNextKeyValue => {
+                if is_clear_next_diagnostic_key_value_token(token) {
                 } else {
                     sanitized_parts.push("[redacted]".to_string());
                     index += 1;
@@ -629,12 +641,123 @@ pub fn sanitize_diagnostic_message(value: &str) -> String {
     sanitized
 }
 
+fn redact_bracketed_abi_message_payloads(value: &str) -> String {
+    let mut sanitized = String::with_capacity(value.len());
+    let mut cursor = 0;
+    while let Some((key_start, separator_index, value_end)) =
+        find_next_bracketed_abi_payload(value, cursor)
+    {
+        sanitized.push_str(&value[cursor..key_start]);
+        sanitized.push_str(&value[key_start..=separator_index]);
+        sanitized.push_str("[redacted]");
+        cursor = value_end;
+    }
+    sanitized.push_str(&value[cursor..]);
+    sanitized
+}
+
+fn find_next_bracketed_abi_payload(value: &str, cursor: usize) -> Option<(usize, usize, usize)> {
+    let search = &value[cursor..];
+    for (relative_separator, separator) in search.char_indices() {
+        if separator != '=' && separator != ':' {
+            continue;
+        }
+        let separator_index = cursor + relative_separator;
+        let (key_start, key) = abi_payload_key_before_separator(value, separator_index);
+        if !is_abi_payload_message_key(key) {
+            continue;
+        }
+        let value_start = value[separator_index + separator.len_utf8()..]
+            .char_indices()
+            .find(|(_, ch)| !ch.is_whitespace())
+            .map(|(index, _)| separator_index + separator.len_utf8() + index)
+            .unwrap_or(value.len());
+        let Some(first) = value[value_start..].chars().next() else {
+            return None;
+        };
+        if first != '[' && first != '{' {
+            continue;
+        }
+        let value_end = matching_bracketed_payload_end(value, value_start).unwrap_or(value.len());
+        return Some((key_start, separator_index, value_end));
+    }
+    None
+}
+
+fn abi_payload_key_before_separator(value: &str, separator_index: usize) -> (usize, &str) {
+    let before = &value[..separator_index];
+    let trimmed_end = before.trim_end_matches(char::is_whitespace).len();
+    let before = &before[..trimmed_end];
+    if before.ends_with('"') || before.ends_with('\'') {
+        let quote = before.chars().last().unwrap_or('"');
+        if let Some((quote_start, _)) = before[..before.len() - quote.len_utf8()]
+            .char_indices()
+            .rev()
+            .find(|(_, ch)| *ch == quote)
+        {
+            return (
+                quote_start,
+                &before[quote_start + quote.len_utf8()..before.len() - quote.len_utf8()],
+            );
+        }
+    }
+    let key_start = before
+        .char_indices()
+        .rev()
+        .find(|(_, ch)| !is_secret_key_char(*ch))
+        .map(|(index, ch)| index + ch.len_utf8())
+        .unwrap_or(0);
+    (key_start, &before[key_start..])
+}
+
+fn matching_bracketed_payload_end(value: &str, start: usize) -> Option<usize> {
+    let mut stack = Vec::new();
+    let mut in_string: Option<char> = None;
+    let mut escaped = false;
+    for (relative_index, ch) in value[start..].char_indices() {
+        let index = start + relative_index;
+        if let Some(quote) = in_string {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == quote {
+                in_string = None;
+            }
+            continue;
+        }
+        match ch {
+            '"' | '\'' => in_string = Some(ch),
+            '[' | '{' => stack.push(ch),
+            ']' => {
+                if stack.pop() != Some('[') {
+                    return None;
+                }
+                if stack.is_empty() {
+                    return Some(index + ch.len_utf8());
+                }
+            }
+            '}' => {
+                if stack.pop() != Some('{') {
+                    return None;
+                }
+                if stack.is_empty() {
+                    return Some(index + ch.len_utf8());
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RedactMode {
     None,
     Next,
     NextTwo,
     UntilNextKeyValue,
+    AbiPayloadUntilNextKeyValue,
 }
 
 fn sanitize_structured_tx_hash(value: &str) -> String {
@@ -710,7 +833,9 @@ fn sanitize_secret_key_value_token(token: &str) -> Option<(String, RedactMode)> 
     };
     let trailing = secret_value_trailing_punctuation(value);
     let redacted = format!("{key_part}{separator_char}{leading_quote}[redacted]{trailing}");
-    let next_mode = if is_multi_token_secret_key(key) {
+    let next_mode = if is_abi_payload_message_key(key) {
+        RedactMode::AbiPayloadUntilNextKeyValue
+    } else if is_multi_token_secret_key(key) {
         RedactMode::UntilNextKeyValue
     } else if is_authorization_message_key(key) {
         RedactMode::Next
@@ -737,12 +862,19 @@ fn is_sensitive_message_key(key: &str) -> bool {
     is_sensitive_key_name(key)
 }
 
+fn is_abi_payload_message_key(key: &str) -> bool {
+    let key = normalize_key_name(key);
+    key.contains("rawabi") || key.contains("rawcalldata") || key.contains("canonicalparams")
+}
+
 fn is_authorization_message_key(key: &str) -> bool {
     matches!(normalize_key_name(key).as_str(), "authorization" | "auth")
 }
 
 fn redact_mode_after_empty_value(key: &str) -> RedactMode {
-    if is_multi_token_secret_key(key) {
+    if is_abi_payload_message_key(key) {
+        RedactMode::AbiPayloadUntilNextKeyValue
+    } else if is_multi_token_secret_key(key) {
         RedactMode::UntilNextKeyValue
     } else if is_authorization_message_key(key) {
         RedactMode::NextTwo
@@ -835,6 +967,14 @@ fn trim_auth_token_punctuation(token: &str) -> &str {
 
 fn looks_like_key_value_token(token: &str) -> bool {
     token.contains('=') || token.contains(':')
+}
+
+fn is_clear_next_diagnostic_key_value_token(token: &str) -> bool {
+    let Some(separator_index) = token.find('=') else {
+        return false;
+    };
+    let key = token[..separator_index].trim_matches(|ch: char| !is_secret_key_char(ch));
+    !key.is_empty() && key.chars().all(is_secret_key_char)
 }
 
 fn is_long_hex_payload(value: &str) -> bool {
@@ -930,6 +1070,9 @@ fn is_sensitive_key_name(key: &str) -> bool {
         || key.contains("signedtransaction")
         || key.contains("rawtx")
         || key.contains("rawtransaction")
+        || key.contains("rawabi")
+        || key.contains("rawcalldata")
+        || key.contains("canonicalparams")
         || key.contains("payload")
         || key.contains("apikey")
         || key.contains("accesstoken")
@@ -1284,6 +1427,89 @@ mod tests {
         assert!(!exported.contains("rpc.example"));
         assert!(!exported.contains("token=secret"));
         assert!(!exported.contains("hunter2"));
+        let _ = fs::remove_file(source_path);
+        let _ = fs::remove_file(export_path);
+    }
+
+    #[test]
+    fn load_and_export_redact_abi_payload_diagnostic_fields() {
+        let source_path = std::env::temp_dir().join(format!(
+            "wallet-workbench-diagnostics-abi-payload-source-{}.jsonl",
+            std::process::id()
+        ));
+        let export_path = std::env::temp_dir().join(format!(
+            "wallet-workbench-diagnostics-abi-payload-export-{}.json",
+            std::process::id()
+        ));
+        let _ = fs::remove_file(&source_path);
+        let _ = fs::remove_file(&export_path);
+        let raw_abi = format!(
+            r#"[{{"type":"function","name":"leak","inputs":[{{"name":"secret","type":"string"}}]}}]{}"#,
+            "x".repeat(1024)
+        );
+        let raw_calldata = format!("0xa9059cbb{}", "ab".repeat(256));
+        let canonical_params =
+            r#"["api_key=ABI_SECRET","privateKey=0xabc","mnemonic=abandon abandon"]"#;
+        let pretty_abi = r#"[{"type":"function", "name":"prettyLeak", "inputs":[{"name":"rawArg", "type":"string"}]}]"#;
+        let pretty_params = r#"["raw arg", {"memo": "spaced secret"}]"#;
+        let tricky_params = r#"[ "api_key=TRICKY_SECRET", {"memo": "spaced secret"} ]"#;
+        let quoted_abi = r#"[{"type":"function", "name":"quotedLeak"}]"#;
+        let quoted_calldata = r#""0x13af4035quotedpayload""#;
+        let raw = serde_json::json!({
+            "timestamp": "1700000000",
+            "level": "error",
+            "category": "transaction",
+            "source": "abi",
+            "event": "abiWriteCallBroadcastFailed",
+            "message": format!("rawAbi={pretty_abi} rawCalldata={raw_calldata} canonicalParams={pretty_params} canonicalParams= {tricky_params} next=value {{\"canonicalParams\": {tricky_params}, \"rawAbi\": {quoted_abi}, \"rawCalldata\": {quoted_calldata}}} api_key=ABI_SECRET signedTx=signed-secret"),
+            "metadata": {
+                "rawAbi": raw_abi,
+                "rawCalldata": raw_calldata,
+                "canonicalParams": canonical_params,
+                "nested": {
+                    "raw_calldata": raw_calldata,
+                    "canonical_params": canonical_params,
+                    "privateKey": "0xabc"
+                }
+            }
+        });
+        fs::write(&source_path, format!("{raw}\n")).expect("write diagnostics");
+
+        let events =
+            load_recent_diagnostic_events_from_path(&source_path, DiagnosticEventQuery::default())
+                .expect("load");
+        let loaded = serde_json::to_string(&events).expect("serialize loaded diagnostics");
+        export_diagnostic_events_to_path(
+            &source_path,
+            &export_path,
+            DiagnosticEventQuery::default(),
+        )
+        .expect("export");
+        let exported = fs::read_to_string(&export_path).expect("read export");
+
+        for serialized in [&loaded, &exported] {
+            assert!(serialized.contains("[redacted]"));
+            assert!(!serialized.contains("\"type\":\"function\""));
+            assert!(!serialized.contains("prettyLeak"));
+            assert!(!serialized.contains("quotedLeak"));
+            assert!(!serialized.contains("rawArg"));
+            assert!(!serialized.contains("raw arg"));
+            assert!(!serialized.contains("\"memo\""));
+            assert!(!serialized.contains("spaced secret"));
+            assert!(!serialized.contains("leak"));
+            assert!(!serialized.contains("a9059cbb"));
+            assert!(!serialized.contains("13af4035quotedpayload"));
+            assert!(!serialized.contains("ABI_SECRET"));
+            assert!(!serialized.contains("TRICKY_SECRET"));
+            assert!(!serialized.contains("signed-secret"));
+            assert!(!serialized.contains("0xabc"));
+            assert!(!serialized.contains("abandon abandon"));
+            assert!(serialized.contains("next=value"));
+        }
+        assert!(exported.contains("rawAbi"));
+        assert!(exported.contains("rawCalldata"));
+        assert!(exported.contains("canonicalParams"));
+
         let _ = fs::remove_file(source_path);
         let _ = fs::remove_file(export_path);
     }

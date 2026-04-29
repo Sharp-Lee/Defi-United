@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { AbiCacheEntryRecord, AbiRegistryState } from "../../lib/tauri";
+import type { AbiCacheEntryRecord, AbiCalldataPreviewResult, AbiRegistryState } from "../../lib/tauri";
 import type { AbiReadModelReason, AbiWriteDraftInput } from "./readModel";
 import {
   buildAbiWriteDraft,
@@ -463,6 +463,142 @@ describe("ABI read model", () => {
     expect(JSON.stringify(result.draft)).not.toContain(longValue);
     expect(JSON.stringify(result.draft)).not.toContain("secret-token");
     expect(result.draft?.selectedRpc?.endpointSummary).toContain("https://rpc.example.invalid");
+  });
+
+  it("keeps nested tuple array write drafts summary-only with no raw calldata or RPC secrets", () => {
+    const entry = cacheEntry("tuple-array", {
+      selected: true,
+      selectionStatus: "selected",
+    });
+    const rawCalldata = `0x9f2b7a31${"ab".repeat(256)}`;
+    const rawPayload = "tuple-secret-".repeat(80);
+    const previewWithRaw = {
+      status: "success",
+      reasons: [],
+      functionSignature: "configure((address,uint256,string)[])",
+      selector: "0x9f2b7a31",
+      contractAddress: contract,
+      sourceKind: entry.sourceKind,
+      providerConfigId: entry.providerConfigId,
+      userSourceId: entry.userSourceId,
+      versionId: entry.versionId,
+      abiHash: entry.abiHash,
+      sourceFingerprint: entry.sourceFingerprint,
+      parameterSummary: [
+        {
+          kind: "tuple[]",
+          type: "(address,uint256,string)[]",
+          value: null,
+          byteLength: 640,
+          hash: "0xargs",
+          truncated: false,
+          items: Array.from({ length: 10 }, (_, index) => ({
+            kind: "tuple",
+            type: "(address,uint256,string)",
+            value: null,
+            byteLength: null,
+            hash: null,
+            truncated: false,
+            items: null,
+            fields: [
+              {
+                name: "owner",
+                value: {
+                  kind: "address",
+                  type: "address",
+                  value: "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                  byteLength: null,
+                  hash: null,
+                  items: null,
+                  fields: null,
+                  truncated: false,
+                },
+              },
+              {
+                name: "memo",
+                value: {
+                  kind: "string",
+                  type: "string",
+                  value: `${rawPayload}-${index}`,
+                  byteLength: rawPayload.length,
+                  hash: "0xmemohash",
+                  items: null,
+                  fields: null,
+                  truncated: false,
+                },
+              },
+            ],
+          })),
+          fields: null,
+        },
+      ],
+      calldata: { byteLength: 260, hash: "0xcalldatahash" },
+      rawCalldata,
+    } as unknown as AbiCalldataPreviewResult;
+    const result = buildAbiWriteDraft({
+      selectedChainId: 1,
+      chainLabel: "Ethereum",
+      accountIndex: 0,
+      from: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      rpcConfigured: true,
+      selectedRpc: {
+        chainId: 1,
+        endpointName: "Primary token=secret-value",
+        endpointSummary: "https://rpc.example.invalid/mainnet?apikey=secret-token",
+        endpointFingerprintSource: "https://rpc.example.invalid/mainnet?api%5Fkey=secret-token",
+      },
+      entry,
+      fn: {
+        name: "configure",
+        signature: "configure((address,uint256,string)[])",
+        selector: "0x9f2b7a31",
+        stateMutability: "payable",
+        callKind: "writeDraft",
+        supported: true,
+        unsupportedReason: null,
+        inputs: [
+          {
+            name: "items",
+            type: "tuple[]",
+            kind: "tuple",
+            arrayLength: null,
+            components: [
+              { name: "owner", type: "address", kind: "address", arrayLength: null, components: null },
+              { name: "amount", type: "uint256", kind: "uint", arrayLength: null, components: null },
+              { name: "memo", type: "string", kind: "string", arrayLength: null, components: null },
+            ],
+          },
+        ],
+        outputs: [],
+      },
+      preview: previewWithRaw,
+      nativeValueWei: "1",
+      gasLimit: "90000",
+      latestBaseFeeGwei: "10",
+      baseFeeGwei: "",
+      baseFeeMultiplier: "2",
+      maxFeeOverrideGwei: "",
+      priorityFeeGwei: "1",
+      nonce: "7",
+      createdAt: "2026-04-29T01:02:03.000Z",
+    });
+
+    expect(result.blockingStatuses).toEqual([]);
+    expect(result.draft?.argumentSummary[0]?.items?.length).toBe(8);
+    expect(result.draft?.argumentSummary[0]?.truncated).toBe(true);
+    expect(result.draft?.calldataHash).toBe("0xcalldatahash");
+    expect(result.draft?.calldataByteLength).toBe(260);
+    expect(result.draft?.selectedRpc?.endpointSummary).toBe("https://rpc.example.invalid");
+    expect(result.draft?.selectedRpc?.endpointName).toBe("Primary token=[redacted]");
+    expect(result.draft?.selectedRpc?.endpointFingerprint).toMatch(/^rpc-endpoint-/);
+
+    const durable = JSON.stringify(result.draft);
+    expect(durable).not.toContain(rawCalldata);
+    expect(durable).not.toContain(rawPayload);
+    expect(durable).not.toContain("secret-token");
+    expect(durable).not.toContain("secret-value");
+    expect(durable).not.toContain("rawCalldata");
+    expect(durable).not.toContain("canonicalParams");
   });
 
   it("freezes selected RPC identity into ABI write draft keys", () => {
