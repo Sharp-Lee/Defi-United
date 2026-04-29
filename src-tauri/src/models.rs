@@ -1154,11 +1154,12 @@ fn is_hex_payload(value: &str) -> bool {
 fn sanitize_raw_calldata_text(value: &str, max_chars: usize) -> String {
     let compact = value.trim();
     if (is_hex_payload(compact) && compact.len() > max_chars)
+        || (is_hex_payload(compact) && compact.len() > 10)
         || compact
             .split(|ch: char| {
                 ch.is_whitespace() || matches!(ch, '"' | '\'' | '<' | '>' | ';' | ',')
             })
-            .any(|token| token.len() > 130 && is_hex_payload(token))
+            .any(|token| token.len() > 10 && is_hex_payload(token))
     {
         return "[redacted_payload]".to_string();
     }
@@ -1230,6 +1231,25 @@ where
         serializer,
         RAW_CALLDATA_PREVIEW_PART_MAX_CHARS,
     )
+}
+
+fn deserialize_sanitized_raw_calldata_text_option_96<'de, D>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_sanitized_raw_calldata_text_option(deserializer, ABI_HISTORY_LABEL_MAX_CHARS)
+}
+
+fn serialize_sanitized_raw_calldata_text_option_96<S>(
+    value: &Option<String>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    serialize_sanitized_raw_calldata_text_option(value, serializer, ABI_HISTORY_LABEL_MAX_CHARS)
 }
 
 fn deserialize_sanitized_raw_calldata_text_option_256<'de, D>(
@@ -1747,9 +1767,17 @@ pub struct HistoryRecoveryIntent {
     pub token_name: Option<String>,
     #[serde(default)]
     pub token_metadata_source: Option<String>,
-    #[serde(default)]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_sanitized_raw_calldata_selector_option",
+        serialize_with = "serialize_sanitized_raw_calldata_selector_option"
+    )]
     pub selector: Option<String>,
-    #[serde(default)]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_sanitized_raw_calldata_text_option_96",
+        serialize_with = "serialize_sanitized_raw_calldata_text_option_96"
+    )]
     pub method_name: Option<String>,
     #[serde(default)]
     pub native_value_wei: Option<String>,

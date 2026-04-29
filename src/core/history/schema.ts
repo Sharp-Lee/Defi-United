@@ -497,8 +497,8 @@ function sanitizeRawCalldataSummaryText(value: unknown, maxLength = 160) {
   if (typeof value !== "string") return null;
   const compact = value.replace(/\s+/g, " ").trim();
   if (
-    (/^0x[0-9a-f]+$/i.test(compact) && compact.length > maxLength) ||
-    /0x[0-9a-f]{129,}/i.test(compact)
+    (/^0x[0-9a-f]+$/i.test(compact) && compact.length > 10) ||
+    /0x[0-9a-f]{9,}/i.test(compact)
   ) {
     return "[redacted_payload]";
   }
@@ -1048,21 +1048,31 @@ export function normalizeRawCalldataMetadata(rawMetadata: unknown): RawCalldataH
 export function normalizeHistoryRecord(rawRecord: unknown): HistoryRecord {
   const record = objectOrEmpty(rawRecord);
   const intentSnapshot = objectOrEmpty(record.intent_snapshot);
+  const intent = normalizeTransactionIntent(record.intent);
+  const submission = normalizeSubmission(record.submission);
+  const rawCalldataMetadata = normalizeRawCalldataMetadata(
+    record.raw_calldata_metadata ?? record.rawCalldataMetadata,
+  );
+  const isRawCalldata =
+    intent.transaction_type === "rawCalldata" ||
+    submission.kind === "rawCalldata" ||
+    submission.transaction_type === "rawCalldata" ||
+    rawCalldataMetadata != null;
   return {
     schema_version: numberOrNull(record.schema_version) ?? 1,
-    intent: normalizeTransactionIntent(record.intent),
+    intent,
     intent_snapshot: {
       source: stringOrDefault(intentSnapshot.source, LEGACY),
       captured_at: stringOrNull(intentSnapshot.captured_at),
     },
-    submission: normalizeSubmission(record.submission),
+    submission,
     outcome: normalizeOutcome(record.outcome),
     nonce_thread: normalizeNonceThread(record.nonce_thread),
-    batch_metadata: normalizeBatchMetadata(record.batch_metadata ?? record.batchMetadata),
-    abi_call_metadata: normalizeAbiCallMetadata(record.abi_call_metadata ?? record.abiCallMetadata),
-    raw_calldata_metadata: normalizeRawCalldataMetadata(
-      record.raw_calldata_metadata ?? record.rawCalldataMetadata,
-    ),
+    batch_metadata: isRawCalldata ? null : normalizeBatchMetadata(record.batch_metadata ?? record.batchMetadata),
+    abi_call_metadata: isRawCalldata
+      ? null
+      : normalizeAbiCallMetadata(record.abi_call_metadata ?? record.abiCallMetadata),
+    raw_calldata_metadata: rawCalldataMetadata,
   };
 }
 

@@ -1811,14 +1811,13 @@ fn local_same_nonce_review_result(
             SubmissionKind::Replacement
             | SubmissionKind::NativeTransfer
             | SubmissionKind::Erc20Transfer
-            | SubmissionKind::AbiWriteCall => Some((
+            | SubmissionKind::AbiWriteCall
+            | SubmissionKind::RawCalldata => Some((
                 ChainOutcomeState::Replaced,
                 candidate_hash,
                 "localReplacementSameNonce".to_string(),
             )),
-            SubmissionKind::Legacy | SubmissionKind::RawCalldata | SubmissionKind::Unsupported => {
-                None
-            }
+            SubmissionKind::Legacy | SubmissionKind::Unsupported => None,
         }
     })
 }

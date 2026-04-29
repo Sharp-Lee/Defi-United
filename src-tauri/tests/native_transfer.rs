@@ -1338,6 +1338,103 @@ fn history_record_redacts_oversized_accepted_raw_calldata_summary_fields() {
 }
 
 #[test]
+fn history_record_redacts_short_full_raw_calldata_summary_fields() {
+    let short_raw_calldata =
+        "0xa9059cbb0000000000000000000000001111111111111111111111111111111111111111";
+    let with_raw = serde_json::json!({
+        "schema_version": 5,
+        "intent": {
+            "transaction_type": "rawCalldata",
+            "rpc_url": "history-schema-placeholder",
+            "account_index": 1,
+            "chain_id": 1,
+            "from": "0x1111111111111111111111111111111111111111",
+            "to": "0x6666666666666666666666666666666666666666",
+            "value_wei": "42",
+            "nonce": 7,
+            "gas_limit": "120000",
+            "max_fee_per_gas": "40000000000",
+            "max_priority_fee_per_gas": "1500000000",
+            "selector": short_raw_calldata
+        },
+        "submission": {
+            "transaction_type": "rawCalldata",
+            "frozen_key": "raw-draft-key",
+            "tx_hash": "0xraw",
+            "kind": "rawCalldata",
+            "selector": short_raw_calldata
+        },
+        "outcome": {
+            "state": "Pending",
+            "tx_hash": "0xraw"
+        },
+        "raw_calldata_metadata": {
+            "intentKind": "rawCalldata",
+            "calldataHashVersion": "keccak256-v1",
+            "calldataByteLength": 36,
+            "selector": "0xa9059cbb",
+            "preview": {
+                "display": short_raw_calldata,
+                "prefix": short_raw_calldata,
+                "suffix": format!("selector 0xa9059cbb payload {short_raw_calldata}"),
+                "truncated": false
+            },
+            "inference": {
+                "inferenceStatus": "conflict",
+                "conflictSummary": short_raw_calldata
+            }
+        }
+    });
+
+    let record: HistoryRecord = serde_json::from_value(with_raw).expect("raw calldata record");
+    let metadata = record
+        .raw_calldata_metadata
+        .as_ref()
+        .expect("raw calldata metadata");
+
+    assert_eq!(
+        record.intent.typed_transaction.selector.as_deref(),
+        Some("[redacted_payload]")
+    );
+    assert_eq!(
+        record.submission.typed_transaction.selector.as_deref(),
+        Some("[redacted_payload]")
+    );
+    assert_eq!(metadata.selector.as_deref(), Some("0xa9059cbb"));
+    assert_eq!(
+        metadata
+            .preview
+            .as_ref()
+            .and_then(|preview| preview.display.as_deref()),
+        Some("[redacted_payload]")
+    );
+    assert_eq!(
+        metadata
+            .preview
+            .as_ref()
+            .and_then(|preview| preview.prefix.as_deref()),
+        Some("[redacted_payload]")
+    );
+    assert_eq!(
+        metadata
+            .preview
+            .as_ref()
+            .and_then(|preview| preview.suffix.as_deref()),
+        Some("[redacted_payload]")
+    );
+    assert_eq!(
+        metadata
+            .inference
+            .as_ref()
+            .and_then(|inference| inference.conflict_summary.as_deref()),
+        Some("[redacted_payload]")
+    );
+
+    let serialized = serde_json::to_string(&record).expect("serialize raw calldata record");
+    assert!(!serialized.contains(short_raw_calldata));
+}
+
+#[test]
 fn history_recovery_intent_preserves_raw_calldata_metadata_additively() {
     let intent: wallet_workbench_lib::models::HistoryRecoveryIntent =
         serde_json::from_value(serde_json::json!({
@@ -1398,6 +1495,57 @@ fn history_recovery_intent_preserves_raw_calldata_metadata_additively() {
     let serialized = serde_json::to_string(&intent).expect("serialize raw recovery intent");
     assert!(serialized.contains("rawCalldataMetadata"));
     assert!(serialized.contains("calldataByteLength"));
+}
+
+#[test]
+fn history_recovery_intent_redacts_raw_calldata_selector_payloads() {
+    let short_raw_calldata =
+        "0xa9059cbb0000000000000000000000001111111111111111111111111111111111111111";
+    let oversized_raw_calldata = format!("0x12345678{}", "ab".repeat(512));
+
+    let short_intent: wallet_workbench_lib::models::HistoryRecoveryIntent =
+        serde_json::from_value(serde_json::json!({
+            "schemaVersion": 1,
+            "id": "raw-recovery-short-selector",
+            "status": "active",
+            "createdAt": "2026-04-29T01:02:03.000Z",
+            "txHash": "0xraw",
+            "kind": "rawCalldata",
+            "selector": short_raw_calldata,
+            "methodName": format!("payload {short_raw_calldata}"),
+            "broadcastedAt": "2026-04-29T01:02:04.000Z",
+            "writeError": "schema placeholder"
+        }))
+        .expect("short raw recovery intent");
+    let oversized_intent: wallet_workbench_lib::models::HistoryRecoveryIntent =
+        serde_json::from_value(serde_json::json!({
+            "schemaVersion": 1,
+            "id": "raw-recovery-oversized-selector",
+            "status": "active",
+            "createdAt": "2026-04-29T01:02:03.000Z",
+            "txHash": "0xraw",
+            "kind": "rawCalldata",
+            "selector": oversized_raw_calldata,
+            "broadcastedAt": "2026-04-29T01:02:04.000Z",
+            "writeError": "schema placeholder"
+        }))
+        .expect("oversized raw recovery intent");
+
+    assert_eq!(short_intent.selector.as_deref(), Some("[redacted_payload]"));
+    assert_eq!(
+        short_intent.method_name.as_deref(),
+        Some("[redacted_payload]")
+    );
+    assert_eq!(
+        oversized_intent.selector.as_deref(),
+        Some("[redacted_payload]")
+    );
+
+    let serialized = serde_json::to_string(&vec![short_intent, oversized_intent])
+        .expect("serialize recovery intents");
+    assert!(!serialized.contains(short_raw_calldata));
+    assert!(!serialized.contains(&oversized_raw_calldata));
+    assert!(!serialized.contains("abababababababababababababababababababab"));
 }
 
 fn start_preflight_rpc_server() -> String {
@@ -4972,6 +5120,47 @@ async fn dropped_review_uses_local_same_nonce_replacement_without_mempool_infere
     let original = records
         .iter()
         .find(|record| record.submission.tx_hash == full_hash('d'))
+        .expect("dropped original");
+
+    assert_eq!(original.outcome.state, ChainOutcomeState::Replaced);
+    let review = &original.outcome.dropped_review_history[0];
+    assert_eq!(
+        review.local_same_nonce_tx_hash.as_deref(),
+        Some(replacement_hash.as_str())
+    );
+    assert_eq!(review.decision, "localReplacementSameNonce");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn dropped_review_uses_local_same_nonce_raw_calldata_replacement_without_mempool_inference() {
+    let _guard = test_lock().lock().expect("test lock");
+    let _app_dir = TestAppDirGuard::new("dropped-review-local-raw-calldata-replacement");
+    let dropped_hash = full_hash('8');
+    let replacement_hash = full_hash('9');
+    let mut dropped = history_record(4, ChainOutcomeState::Dropped, &dropped_hash);
+    dropped.nonce_thread.replaced_by_tx_hash = Some(replacement_hash.clone());
+    let mut replacement = history_record(4, ChainOutcomeState::Pending, &replacement_hash);
+    replacement.submission.kind = wallet_workbench_lib::models::SubmissionKind::RawCalldata;
+    replacement.submission.typed_transaction =
+        wallet_workbench_lib::models::TypedTransactionFields::raw_calldata(
+            Some("0x12345678".to_string()),
+            "0",
+        );
+    replacement.submission.replaces_tx_hash = Some(dropped_hash.clone());
+    replacement.nonce_thread.replaces_tx_hash = Some(dropped_hash.clone());
+    fs::write(
+        history_path().expect("history path"),
+        serde_json::to_string_pretty(&vec![dropped, replacement]).expect("serialize history"),
+    )
+    .expect("write history");
+    let rpc_url = start_dropped_review_rpc_server("\"0x1\"", "null".into(), "null", "\"0x5\"", 4);
+
+    let records = review_dropped_history_record(dropped_hash, rpc_url, 1)
+        .await
+        .expect("review dropped");
+    let original = records
+        .iter()
+        .find(|record| record.submission.tx_hash == full_hash('8'))
         .expect("dropped original");
 
     assert_eq!(original.outcome.state, ChainOutcomeState::Replaced);

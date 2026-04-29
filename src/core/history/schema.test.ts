@@ -568,8 +568,8 @@ describe("history schema normalization", () => {
     expect(records[0].raw_calldata_metadata?.future_submission?.error_summary).toBe(
       "failed [redacted_secret] [redacted_secret] next=value",
     );
-    expect(records[0].abi_call_metadata?.intent_kind).toBe("abiWriteCall");
-    expect(records[0].batch_metadata?.batch_id).toBe("should-not-render-as-batch");
+    expect(records[0].abi_call_metadata).toBeNull();
+    expect(records[0].batch_metadata).toBeNull();
 
     const durable = JSON.stringify(records[0]);
     expect(durable).not.toContain(rawCalldata);
@@ -639,6 +639,54 @@ describe("history schema normalization", () => {
     expect(durable).not.toContain("abababababababababababababababababababab");
     expect(durable).not.toContain("SECRET_TOKEN");
     expect(durable).not.toContain("0xabc");
+  });
+
+  it("redacts short full raw calldata summary fields while preserving selector-like values", () => {
+    const shortRawCalldata =
+      "0xa9059cbb0000000000000000000000001111111111111111111111111111111111111111";
+    const records = normalizeHistoryRecords([
+      {
+        intent: {
+          ...legacyIntent,
+          transaction_type: "rawCalldata",
+          selector: shortRawCalldata,
+        },
+        submission: {
+          frozen_key: "raw-draft-key",
+          tx_hash: "0xraw",
+          kind: "rawCalldata",
+          transaction_type: "rawCalldata",
+          selector: shortRawCalldata,
+        },
+        outcome: { state: "Pending", tx_hash: "0xraw" },
+        rawCalldataMetadata: {
+          intentKind: "rawCalldata",
+          calldataHashVersion: "keccak256-v1",
+          calldataByteLength: 36,
+          selector: "0xa9059cbb",
+          preview: {
+            display: shortRawCalldata,
+            prefix: shortRawCalldata,
+            suffix: `selector 0xa9059cbb payload ${shortRawCalldata}`,
+            truncated: false,
+          },
+          inference: {
+            inferenceStatus: "conflict",
+            conflictSummary: shortRawCalldata,
+          },
+        },
+      },
+    ]);
+
+    const metadata = records[0].raw_calldata_metadata;
+    expect(records[0].intent.selector).toBe("[redacted_payload]");
+    expect(records[0].submission.selector).toBe("[redacted_payload]");
+    expect(metadata?.selector).toBe("0xa9059cbb");
+    expect(metadata?.preview?.display).toBe("[redacted_payload]");
+    expect(metadata?.preview?.prefix).toBe("[redacted_payload]");
+    expect(metadata?.preview?.suffix).toBe("[redacted_payload]");
+    expect(metadata?.inference?.conflict_summary).toBe("[redacted_payload]");
+    expect(JSON.stringify(records[0])).not.toContain(shortRawCalldata);
   });
 
   it("normalizes arbitrary ABI write call metadata without raw ABI, calldata, params, or RPC secrets", () => {
