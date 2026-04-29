@@ -493,6 +493,36 @@ function sanitizeAbiSummaryHash(value: unknown) {
   return { value: redacted, changed: redacted !== value };
 }
 
+function sanitizeRawCalldataSummaryText(value: unknown, maxLength = 160) {
+  if (typeof value !== "string") return null;
+  const compact = value.replace(/\s+/g, " ").trim();
+  if (
+    (/^0x[0-9a-f]+$/i.test(compact) && compact.length > maxLength) ||
+    /0x[0-9a-f]{129,}/i.test(compact)
+  ) {
+    return "[redacted_payload]";
+  }
+  return sanitizeDurableRpcSummary(compact, maxLength);
+}
+
+function normalizeRawCalldataHash(value: unknown, hashVersion: RawCalldataHistoryMetadata["calldata_hash_version"]) {
+  if (typeof value !== "string") return null;
+  const compact = value.replace(/\s+/g, "").trim();
+  if (/^0x[0-9a-f]+$/i.test(compact) && compact.length !== 66) {
+    return "[redacted_payload]";
+  }
+  if (hashVersion === "keccak256-v1" && /^0x[0-9a-f]{64}$/i.test(compact)) return compact;
+  return sanitizeAbiSummaryHash(compact).value;
+}
+
+function normalizeRawCalldataSelector(value: unknown) {
+  if (typeof value !== "string") return null;
+  const compact = value.replace(/\s+/g, "").trim();
+  if (/^0x[0-9a-f]{8}$/i.test(compact)) return compact;
+  if (/^0x[0-9a-f]+$/i.test(compact) && compact.length > 10) return "[redacted_payload]";
+  return sanitizeDurableRpcSummary(compact, 32);
+}
+
 function objectOrEmpty(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
 }
@@ -524,7 +554,7 @@ function normalizeTypedTransactionFields(
     token_symbol: stringOrNull(rawValue.token_symbol),
     token_name: stringOrNull(rawValue.token_name),
     token_metadata_source: stringOrNull(rawValue.token_metadata_source),
-    selector: stringOrNull(rawValue.selector),
+    selector: normalizeRawCalldataSelector(rawValue.selector),
     method_name: stringOrNull(rawValue.method_name),
     native_value_wei: stringOrNull(rawValue.native_value_wei),
   };
@@ -931,9 +961,9 @@ function normalizeRawCalldataPreview(rawPreview: unknown): RawCalldataPreviewSum
     preview_suffix_bytes: numberOrNull(preview.preview_suffix_bytes ?? preview.previewSuffixBytes),
     truncated: booleanOrNull(preview.truncated) ?? false,
     omitted_bytes: numberOrNull(preview.omitted_bytes ?? preview.omittedBytes),
-    display: sanitizeDurableRpcSummary(preview.display, 256),
-    prefix: boundedStringOrNull(preview.prefix, 160),
-    suffix: boundedStringOrNull(preview.suffix, 160),
+    display: sanitizeRawCalldataSummaryText(preview.display, 256),
+    prefix: sanitizeRawCalldataSummaryText(preview.prefix, 80),
+    suffix: sanitizeRawCalldataSummaryText(preview.suffix, 80),
   };
 }
 
@@ -947,12 +977,19 @@ function normalizeRawCalldataInference(
     matched_source_kind: stringOrNull(inference.matched_source_kind ?? inference.matchedSourceKind),
     matched_source_id: stringOrNull(inference.matched_source_id ?? inference.matchedSourceId),
     matched_version_id: stringOrNull(inference.matched_version_id ?? inference.matchedVersionId),
-    matched_source_fingerprint: stringOrNull(
+    matched_source_fingerprint: normalizeRawCalldataHash(
       inference.matched_source_fingerprint ?? inference.matchedSourceFingerprint,
+      "unknown",
     ),
-    matched_abi_hash: stringOrNull(inference.matched_abi_hash ?? inference.matchedAbiHash),
+    matched_abi_hash: normalizeRawCalldataHash(
+      inference.matched_abi_hash ?? inference.matchedAbiHash,
+      "unknown",
+    ),
     selector_match_count: numberOrNull(inference.selector_match_count ?? inference.selectorMatchCount),
-    conflict_summary: sanitizeDurableRpcSummary(inference.conflict_summary ?? inference.conflictSummary, 256),
+    conflict_summary: sanitizeRawCalldataSummaryText(
+      inference.conflict_summary ?? inference.conflictSummary,
+      256,
+    ),
     stale_status: stringOrNull(inference.stale_status ?? inference.staleStatus),
     source_status: stringOrNull(inference.source_status ?? inference.sourceStatus),
   };
@@ -961,6 +998,9 @@ function normalizeRawCalldataInference(
 export function normalizeRawCalldataMetadata(rawMetadata: unknown): RawCalldataHistoryMetadata | null {
   if (rawMetadata == null) return null;
   const metadata = objectOrEmpty(rawMetadata);
+  const calldataHashVersion = normalizeRawCalldataHashVersion(
+    metadata.calldata_hash_version ?? metadata.calldataHashVersion,
+  );
   return {
     intent_kind: normalizeRawCalldataIntentKind(metadata.intent_kind ?? metadata.intentKind),
     draft_id: stringOrNull(metadata.draft_id ?? metadata.draftId),
@@ -976,12 +1016,13 @@ export function normalizeRawCalldataMetadata(rawMetadata: unknown): RawCalldataH
       metadata.max_priority_fee_per_gas ?? metadata.maxPriorityFeePerGas,
     ),
     nonce: numberOrNull(metadata.nonce),
-    calldata_hash_version: normalizeRawCalldataHashVersion(
-      metadata.calldata_hash_version ?? metadata.calldataHashVersion,
+    calldata_hash_version: calldataHashVersion,
+    calldata_hash: normalizeRawCalldataHash(
+      metadata.calldata_hash ?? metadata.calldataHash,
+      calldataHashVersion,
     ),
-    calldata_hash: stringOrNull(metadata.calldata_hash ?? metadata.calldataHash),
     calldata_byte_length: numberOrNull(metadata.calldata_byte_length ?? metadata.calldataByteLength),
-    selector: stringOrNull(metadata.selector),
+    selector: normalizeRawCalldataSelector(metadata.selector),
     selector_status: stringOrNull(metadata.selector_status ?? metadata.selectorStatus),
     preview: normalizeRawCalldataPreview(metadata.preview),
     warning_acknowledgements: normalizeAbiStatusSummaries(

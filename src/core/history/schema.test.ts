@@ -583,6 +583,64 @@ describe("history schema normalization", () => {
     expect(durable).not.toContain("abandon abandon");
   });
 
+  it("redacts oversized accepted raw calldata summary fields", () => {
+    const oversizedHex = `0x12345678${"ab".repeat(512)}`;
+    const records = normalizeHistoryRecords([
+      {
+        intent: {
+          ...legacyIntent,
+          transaction_type: "rawCalldata",
+          selector: oversizedHex,
+        },
+        submission: {
+          frozen_key: "raw-draft-key",
+          tx_hash: "0xraw",
+          kind: "rawCalldata",
+          transaction_type: "rawCalldata",
+          selector: oversizedHex,
+        },
+        outcome: { state: "Pending", tx_hash: "0xraw" },
+        rawCalldataMetadata: {
+          intentKind: "rawCalldata",
+          calldataHashVersion: "keccak256-v1",
+          calldataHash: oversizedHex,
+          calldataByteLength: 516,
+          selector: oversizedHex,
+          selectorStatus: "unknown",
+          preview: {
+            display: oversizedHex,
+            prefix: oversizedHex,
+            suffix: `${oversizedHex} api_key=SECRET_TOKEN`,
+            truncated: true,
+          },
+          inference: {
+            inferenceStatus: "conflict",
+            matchedSourceFingerprint: oversizedHex,
+            matchedAbiHash: oversizedHex,
+            selectorMatchCount: 2,
+            conflictSummary: `${oversizedHex} privateKey=0xabc`,
+          },
+        },
+      },
+    ]);
+
+    const metadata = records[0].raw_calldata_metadata;
+    expect(metadata?.calldata_hash).toBe("[redacted_payload]");
+    expect(metadata?.selector).toBe("[redacted_payload]");
+    expect(metadata?.preview?.display).toBe("[redacted_payload]");
+    expect(metadata?.preview?.prefix).toBe("[redacted_payload]");
+    expect(metadata?.preview?.suffix).toBe("[redacted_payload]");
+    expect(metadata?.inference?.matched_abi_hash).not.toBe(oversizedHex);
+    expect(metadata?.inference?.matched_source_fingerprint).not.toBe(oversizedHex);
+    expect(metadata?.inference?.conflict_summary).toBe("[redacted_payload]");
+
+    const durable = JSON.stringify(records[0]);
+    expect(durable).not.toContain(oversizedHex);
+    expect(durable).not.toContain("abababababababababababababababababababab");
+    expect(durable).not.toContain("SECRET_TOKEN");
+    expect(durable).not.toContain("0xabc");
+  });
+
   it("normalizes arbitrary ABI write call metadata without raw ABI, calldata, params, or RPC secrets", () => {
     const rawCalldata = `0xa9059cbb${"0".repeat(512)}`;
     const overlongKind = `kind-${"x".repeat(220)}`;

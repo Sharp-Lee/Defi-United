@@ -28,8 +28,9 @@ use crate::models::{
     AbiCallOutcomeState, AbiCallRecoveryPlaceholder, AbiCallSubmissionPlaceholder,
     BatchHistoryMetadata, ChainOutcome, DroppedReviewSummary, Erc20TransferIntent,
     HistoryErrorSummary, HistoryRecoveryIntent, HistoryRecoveryIntentStatus, HistoryRecoveryResult,
-    HistoryRecoveryResultStatus, IntentSnapshotMetadata, NonceThread, ReceiptSummary,
-    ReconcileSummary, SubmissionKind, SubmissionRecord, TransactionType, TypedTransactionFields,
+    HistoryRecoveryResultStatus, IntentSnapshotMetadata, NonceThread, RawCalldataHistoryMetadata,
+    ReceiptSummary, ReconcileSummary, SubmissionKind, SubmissionRecord, TransactionType,
+    TypedTransactionFields,
 };
 use crate::session::with_session_mnemonic;
 use crate::storage::{
@@ -2578,6 +2579,36 @@ fn finalized_abi_call_metadata_for_recovery(
     Some(metadata)
 }
 
+fn finalized_raw_calldata_metadata_for_recovery(
+    metadata: &Option<RawCalldataHistoryMetadata>,
+    outcome_state: &ChainOutcomeState,
+    receipt: Option<&ReceiptSummary>,
+    checked_at: &str,
+) -> Option<RawCalldataHistoryMetadata> {
+    let mut metadata = metadata.clone()?;
+    metadata.future_outcome = Some(AbiCallOutcomePlaceholder {
+        state: Some(abi_call_outcome_state_from_chain(outcome_state)),
+        checked_at: Some(checked_at.to_string()),
+        receipt_status: receipt.and_then(|receipt| receipt.status),
+        block_number: receipt.and_then(|receipt| receipt.block_number),
+        gas_used: receipt.and_then(|receipt| receipt.gas_used.clone()),
+        error_summary: None,
+    });
+    let mut recovery = metadata.recovery.unwrap_or(AbiCallRecoveryPlaceholder {
+        recovery_id: None,
+        status: None,
+        created_at: None,
+        recovered_at: None,
+        last_error: None,
+        replacement_tx_hash: None,
+    });
+    recovery.status = Some("recovered".to_string());
+    recovery.recovered_at = Some(checked_at.to_string());
+    recovery.last_error = None;
+    metadata.recovery = Some(recovery);
+    Some(metadata)
+}
+
 fn history_record_from_recovery_intent(
     intent: &HistoryRecoveryIntent,
     outcome_state: ChainOutcomeState,
@@ -2709,6 +2740,12 @@ fn history_record_from_recovery_intent(
         receipt.as_ref(),
         &checked_at,
     );
+    let raw_calldata_metadata = finalized_raw_calldata_metadata_for_recovery(
+        &intent.raw_calldata_metadata,
+        &outcome_state,
+        receipt.as_ref(),
+        &checked_at,
+    );
     let finalized_at = match outcome_state {
         ChainOutcomeState::Confirmed | ChainOutcomeState::Failed => Some(checked_at.clone()),
         _ => None,
@@ -2780,7 +2817,7 @@ fn history_record_from_recovery_intent(
         },
         batch_metadata: intent.batch_metadata.clone(),
         abi_call_metadata,
-        raw_calldata_metadata: intent.raw_calldata_metadata.clone(),
+        raw_calldata_metadata,
     })
 }
 

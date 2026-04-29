@@ -1231,6 +1231,113 @@ fn history_record_roundtrips_raw_calldata_metadata_without_raw_payloads() {
 }
 
 #[test]
+fn history_record_redacts_oversized_accepted_raw_calldata_summary_fields() {
+    let oversized_hex = format!("0x12345678{}", "ab".repeat(512));
+    let with_raw = serde_json::json!({
+        "schema_version": 5,
+        "intent": {
+            "transaction_type": "rawCalldata",
+            "rpc_url": "history-schema-placeholder",
+            "account_index": 1,
+            "chain_id": 1,
+            "from": "0x1111111111111111111111111111111111111111",
+            "to": "0x6666666666666666666666666666666666666666",
+            "value_wei": "42",
+            "nonce": 7,
+            "gas_limit": "120000",
+            "max_fee_per_gas": "40000000000",
+            "max_priority_fee_per_gas": "1500000000",
+            "selector": oversized_hex
+        },
+        "submission": {
+            "transaction_type": "rawCalldata",
+            "frozen_key": "raw-draft-key",
+            "tx_hash": "0xraw",
+            "kind": "rawCalldata",
+            "selector": oversized_hex
+        },
+        "outcome": {
+            "state": "Pending",
+            "tx_hash": "0xraw"
+        },
+        "raw_calldata_metadata": {
+            "intentKind": "rawCalldata",
+            "calldataHashVersion": "keccak256-v1",
+            "calldataHash": oversized_hex,
+            "calldataByteLength": 516,
+            "selector": oversized_hex,
+            "selectorStatus": "unknown",
+            "preview": {
+                "display": oversized_hex,
+                "prefix": oversized_hex,
+                "suffix": oversized_hex,
+                "truncated": true
+            },
+            "inference": {
+                "inferenceStatus": "conflict",
+                "matchedSourceFingerprint": oversized_hex,
+                "matchedAbiHash": oversized_hex,
+                "selectorMatchCount": 2,
+                "conflictSummary": format!("{oversized_hex} privateKey=0xabc")
+            }
+        }
+    });
+
+    let record: HistoryRecord = serde_json::from_value(with_raw).expect("raw calldata record");
+    let metadata = record
+        .raw_calldata_metadata
+        .as_ref()
+        .expect("raw calldata metadata");
+
+    assert_eq!(
+        record.intent.typed_transaction.selector.as_deref(),
+        Some("[redacted_payload]")
+    );
+    assert_eq!(
+        record.submission.typed_transaction.selector.as_deref(),
+        Some("[redacted_payload]")
+    );
+    assert_eq!(
+        metadata.calldata_hash.as_deref(),
+        Some("[redacted_payload]")
+    );
+    assert_eq!(metadata.selector.as_deref(), Some("[redacted_payload]"));
+    assert_eq!(
+        metadata
+            .preview
+            .as_ref()
+            .and_then(|preview| preview.display.as_deref()),
+        Some("[redacted_payload]")
+    );
+    assert_eq!(
+        metadata
+            .preview
+            .as_ref()
+            .and_then(|preview| preview.prefix.as_deref()),
+        Some("[redacted_payload]")
+    );
+    assert_eq!(
+        metadata
+            .preview
+            .as_ref()
+            .and_then(|preview| preview.suffix.as_deref()),
+        Some("[redacted_payload]")
+    );
+    assert_eq!(
+        metadata
+            .inference
+            .as_ref()
+            .and_then(|inference| inference.conflict_summary.as_deref()),
+        Some("[redacted_payload]")
+    );
+
+    let serialized = serde_json::to_string(&record).expect("serialize raw calldata record");
+    assert!(!serialized.contains(&oversized_hex));
+    assert!(!serialized.contains("abababababababababababababababababababab"));
+    assert!(!serialized.contains("0xabc"));
+}
+
+#[test]
 fn history_recovery_intent_preserves_raw_calldata_metadata_additively() {
     let intent: wallet_workbench_lib::models::HistoryRecoveryIntent =
         serde_json::from_value(serde_json::json!({
@@ -3478,7 +3585,8 @@ async fn recovery_reconstructs_raw_calldata_history_record_without_type_fallback
                     "recovery": {
                         "recoveryId": "raw-recovery-with-selector",
                         "status": "active",
-                        "createdAt": "1700000000"
+                        "createdAt": "1700000000",
+                        "lastError": "stale raw recovery error privateKey=0xabc"
                     }
                 },
                 "broadcastedAt": "1700000001",
@@ -3518,7 +3626,8 @@ async fn recovery_reconstructs_raw_calldata_history_record_without_type_fallback
                     "recovery": {
                         "recoveryId": "raw-recovery-without-selector",
                         "status": "active",
-                        "createdAt": "1700000000"
+                        "createdAt": "1700000000",
+                        "lastError": "stale raw recovery error privateKey=0xabc"
                     }
                 },
                 "broadcastedAt": "1700000001",
@@ -3585,6 +3694,26 @@ async fn recovery_reconstructs_raw_calldata_history_record_without_type_fallback
                 .map(|metadata| metadata.intent_kind.as_str()),
             Some("rawCalldata")
         );
+        let metadata = record
+            .raw_calldata_metadata
+            .as_ref()
+            .expect("raw calldata metadata");
+        let future_outcome = metadata
+            .future_outcome
+            .as_ref()
+            .expect("raw future outcome");
+        assert_eq!(
+            future_outcome.state,
+            Some(wallet_workbench_lib::models::AbiCallOutcomeState::Confirmed)
+        );
+        assert!(future_outcome.checked_at.is_some());
+        assert_eq!(future_outcome.receipt_status, Some(1));
+        assert_eq!(future_outcome.block_number, Some(1));
+        assert_eq!(future_outcome.gas_used.as_deref(), Some("21000"));
+        let recovery = metadata.recovery.as_ref().expect("raw recovery metadata");
+        assert_eq!(recovery.status.as_deref(), Some("recovered"));
+        assert!(recovery.recovered_at.is_some());
+        assert!(recovery.last_error.is_none());
     }
     assert_eq!(
         with_selector

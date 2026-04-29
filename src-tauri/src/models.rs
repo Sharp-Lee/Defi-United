@@ -150,7 +150,11 @@ pub struct TypedTransactionFields {
     pub token_name: Option<String>,
     #[serde(default)]
     pub token_metadata_source: Option<String>,
-    #[serde(default)]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_sanitized_raw_calldata_selector_option",
+        serialize_with = "serialize_sanitized_raw_calldata_selector_option"
+    )]
     pub selector: Option<String>,
     #[serde(default)]
     pub method_name: Option<String>,
@@ -662,20 +666,20 @@ pub struct RawCalldataPreviewSummary {
     pub omitted_bytes: Option<u64>,
     #[serde(
         default,
-        deserialize_with = "deserialize_sanitized_text_option_256",
-        serialize_with = "serialize_sanitized_text_option_256"
+        deserialize_with = "deserialize_sanitized_raw_calldata_text_option_256",
+        serialize_with = "serialize_sanitized_raw_calldata_text_option_256"
     )]
     pub display: Option<String>,
     #[serde(
         default,
-        deserialize_with = "deserialize_sanitized_text_option_160",
-        serialize_with = "serialize_sanitized_text_option_160"
+        deserialize_with = "deserialize_sanitized_raw_calldata_text_option_80",
+        serialize_with = "serialize_sanitized_raw_calldata_text_option_80"
     )]
     pub prefix: Option<String>,
     #[serde(
         default,
-        deserialize_with = "deserialize_sanitized_text_option_160",
-        serialize_with = "serialize_sanitized_text_option_160"
+        deserialize_with = "deserialize_sanitized_raw_calldata_text_option_80",
+        serialize_with = "serialize_sanitized_raw_calldata_text_option_80"
     )]
     pub suffix: Option<String>,
 }
@@ -691,17 +695,27 @@ pub struct RawCalldataInferenceSummary {
     pub matched_source_id: Option<String>,
     #[serde(default, alias = "matched_version_id")]
     pub matched_version_id: Option<String>,
-    #[serde(default, alias = "matched_source_fingerprint")]
+    #[serde(
+        default,
+        alias = "matched_source_fingerprint",
+        deserialize_with = "deserialize_sanitized_raw_calldata_hash_option",
+        serialize_with = "serialize_sanitized_raw_calldata_hash_option"
+    )]
     pub matched_source_fingerprint: Option<String>,
-    #[serde(default, alias = "matched_abi_hash")]
+    #[serde(
+        default,
+        alias = "matched_abi_hash",
+        deserialize_with = "deserialize_sanitized_raw_calldata_hash_option",
+        serialize_with = "serialize_sanitized_raw_calldata_hash_option"
+    )]
     pub matched_abi_hash: Option<String>,
     #[serde(default, alias = "selector_match_count")]
     pub selector_match_count: Option<u64>,
     #[serde(
         default,
         alias = "conflict_summary",
-        deserialize_with = "deserialize_sanitized_text_option_256",
-        serialize_with = "serialize_sanitized_text_option_256"
+        deserialize_with = "deserialize_sanitized_raw_calldata_text_option_256",
+        serialize_with = "serialize_sanitized_raw_calldata_text_option_256"
     )]
     pub conflict_summary: Option<String>,
     #[serde(default, alias = "stale_status")]
@@ -739,11 +753,20 @@ pub struct RawCalldataHistoryMetadata {
     pub nonce: Option<u64>,
     #[serde(default = "unknown_string", alias = "calldata_hash_version")]
     pub calldata_hash_version: String,
-    #[serde(default, alias = "calldata_hash")]
+    #[serde(
+        default,
+        alias = "calldata_hash",
+        deserialize_with = "deserialize_sanitized_raw_calldata_hash_option",
+        serialize_with = "serialize_sanitized_raw_calldata_hash_option"
+    )]
     pub calldata_hash: Option<String>,
     #[serde(default, alias = "calldata_byte_length")]
     pub calldata_byte_length: Option<u64>,
-    #[serde(default)]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_sanitized_raw_calldata_selector_option",
+        serialize_with = "serialize_sanitized_raw_calldata_selector_option"
+    )]
     pub selector: Option<String>,
     #[serde(default, alias = "selector_status")]
     pub selector_status: Option<String>,
@@ -976,7 +999,7 @@ pub struct Erc20BatchSubmitResult {
 
 const ABI_HISTORY_VALUE_MAX_CHARS: usize = 256;
 const ABI_HISTORY_LABEL_MAX_CHARS: usize = 96;
-const RAW_CALLDATA_PREVIEW_HEX_MAX_CHARS: usize = 160;
+const RAW_CALLDATA_PREVIEW_PART_MAX_CHARS: usize = 80;
 const ABI_HISTORY_RPC_NAME_MAX_CHARS: usize = 120;
 const ABI_HISTORY_RPC_SUMMARY_MAX_CHARS: usize = 200;
 const ABI_HISTORY_HASH_MAX_CHARS: usize = 128;
@@ -1118,26 +1141,155 @@ where
     sanitized.serialize(serializer)
 }
 
-fn deserialize_sanitized_text_option_160<'de, D>(
+fn is_hex_payload(value: &str) -> bool {
+    let Some(hex) = value
+        .strip_prefix("0x")
+        .or_else(|| value.strip_prefix("0X"))
+    else {
+        return false;
+    };
+    !hex.is_empty() && hex.chars().all(|ch| ch.is_ascii_hexdigit())
+}
+
+fn sanitize_raw_calldata_text(value: &str, max_chars: usize) -> String {
+    let compact = value.trim();
+    if (is_hex_payload(compact) && compact.len() > max_chars)
+        || compact
+            .split(|ch: char| {
+                ch.is_whitespace() || matches!(ch, '"' | '\'' | '<' | '>' | ';' | ',')
+            })
+            .any(|token| token.len() > 130 && is_hex_payload(token))
+    {
+        return "[redacted_payload]".to_string();
+    }
+    sanitize_abi_history_text(compact, max_chars).0
+}
+
+fn sanitize_raw_calldata_hash(value: &str) -> String {
+    let compact = value.trim();
+    if is_hex_payload(compact) && compact.len() != 66 {
+        return "[redacted_payload]".to_string();
+    }
+    sanitize_abi_history_text(compact, ABI_HISTORY_HASH_MAX_CHARS).0
+}
+
+fn sanitize_raw_calldata_selector(value: &str) -> String {
+    let compact = value.trim();
+    if is_hex_payload(compact) && compact.len() != 10 {
+        return "[redacted_payload]".to_string();
+    }
+    sanitize_abi_history_text(compact, 32).0
+}
+
+fn deserialize_sanitized_raw_calldata_text_option<'de, D>(
     deserializer: D,
+    max_chars: usize,
 ) -> Result<Option<String>, D::Error>
 where
     D: Deserializer<'de>,
 {
     let value = Option::<String>::deserialize(deserializer)?;
-    Ok(sanitize_abi_history_text_option(value, RAW_CALLDATA_PREVIEW_HEX_MAX_CHARS).0)
+    Ok(value.map(|value| sanitize_raw_calldata_text(&value, max_chars)))
 }
 
-fn serialize_sanitized_text_option_160<S>(
+fn serialize_sanitized_raw_calldata_text_option<S>(
     value: &Option<String>,
     serializer: S,
+    max_chars: usize,
 ) -> Result<S::Ok, S::Error>
 where
     S: Serializer,
 {
     let sanitized = value
         .as_deref()
-        .map(|value| sanitize_abi_history_text(value, RAW_CALLDATA_PREVIEW_HEX_MAX_CHARS).0);
+        .map(|value| sanitize_raw_calldata_text(value, max_chars));
+    sanitized.serialize(serializer)
+}
+
+fn deserialize_sanitized_raw_calldata_text_option_80<'de, D>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_sanitized_raw_calldata_text_option(
+        deserializer,
+        RAW_CALLDATA_PREVIEW_PART_MAX_CHARS,
+    )
+}
+
+fn serialize_sanitized_raw_calldata_text_option_80<S>(
+    value: &Option<String>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    serialize_sanitized_raw_calldata_text_option(
+        value,
+        serializer,
+        RAW_CALLDATA_PREVIEW_PART_MAX_CHARS,
+    )
+}
+
+fn deserialize_sanitized_raw_calldata_text_option_256<'de, D>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_sanitized_raw_calldata_text_option(deserializer, ABI_HISTORY_VALUE_MAX_CHARS)
+}
+
+fn serialize_sanitized_raw_calldata_text_option_256<S>(
+    value: &Option<String>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    serialize_sanitized_raw_calldata_text_option(value, serializer, ABI_HISTORY_VALUE_MAX_CHARS)
+}
+
+fn deserialize_sanitized_raw_calldata_hash_option<'de, D>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<String>::deserialize(deserializer)?;
+    Ok(value.map(|value| sanitize_raw_calldata_hash(&value)))
+}
+
+fn serialize_sanitized_raw_calldata_hash_option<S>(
+    value: &Option<String>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    let sanitized = value.as_deref().map(sanitize_raw_calldata_hash);
+    sanitized.serialize(serializer)
+}
+
+fn deserialize_sanitized_raw_calldata_selector_option<'de, D>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<String>::deserialize(deserializer)?;
+    Ok(value.map(|value| sanitize_raw_calldata_selector(&value)))
+}
+
+fn serialize_sanitized_raw_calldata_selector_option<S>(
+    value: &Option<String>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    let sanitized = value.as_deref().map(sanitize_raw_calldata_selector);
     sanitized.serialize(serializer)
 }
 
