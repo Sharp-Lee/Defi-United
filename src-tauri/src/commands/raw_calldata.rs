@@ -19,6 +19,7 @@ const RAW_CALLDATA_FROZEN_KEY_PREFIX: &str = "raw-calldata";
 const RAW_CALLDATA_MAX_MULTIPLIER_FRACTION_DIGITS: usize = 18;
 const RAW_CALLDATA_HUMAN_PREVIEW_MAX_ROWS: usize = 12;
 const RAW_CALLDATA_HUMAN_PREVIEW_MAX_CHARS: usize = 160;
+const JS_MAX_SAFE_INTEGER_U64: u64 = 9_007_199_254_740_991;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -706,7 +707,7 @@ fn validate_fee_fields(
     if fees.max_priority_fee_per_gas > fees.max_fee_per_gas {
         return Err("maxPriorityFeePerGas cannot exceed maxFeePerGas".to_string());
     }
-    if input.nonce > i64::MAX as u64 {
+    if input.nonce > JS_MAX_SAFE_INTEGER_U64 {
         return Err("nonce must be a non-negative safe integer".to_string());
     }
     Ok(())
@@ -1631,6 +1632,31 @@ mod tests {
         input.calldata = format!("0x{}", "aa".repeat(RAW_CALLDATA_MAX_BYTES + 1));
         let error = validate_raw_calldata_submit_input(input).expect_err("oversized calldata");
         assert!(error.contains("byte limit"), "{error}");
+    }
+
+    #[test]
+    fn raw_calldata_submit_rejects_nonce_above_js_safe_integer() {
+        let mut input = base_input();
+        input.nonce = JS_MAX_SAFE_INTEGER_U64 + 1;
+        refresh_frozen_key(&mut input);
+
+        let error =
+            validate_raw_calldata_submit_input(input).expect_err("unsafe nonce should be rejected");
+
+        assert_eq!(error, "nonce must be a non-negative safe integer");
+    }
+
+    #[test]
+    fn raw_calldata_submit_accepts_max_js_safe_integer_nonce() {
+        let mut input = base_input();
+        input.nonce = JS_MAX_SAFE_INTEGER_U64;
+        refresh_frozen_key(&mut input);
+
+        let (intent, _, metadata, _) =
+            validate_raw_calldata_submit_input(input).expect("max safe nonce should pass");
+
+        assert_eq!(intent.nonce, JS_MAX_SAFE_INTEGER_U64);
+        assert_eq!(metadata.nonce, Some(JS_MAX_SAFE_INTEGER_U64));
     }
 
     #[test]
