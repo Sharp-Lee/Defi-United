@@ -323,6 +323,8 @@ pub struct AbiCallSelectedRpcSummary {
         serialize_with = "serialize_sanitized_rpc_option_200"
     )]
     pub endpoint_summary: Option<String>,
+    #[serde(default, alias = "endpoint_fingerprint")]
+    pub endpoint_fingerprint: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

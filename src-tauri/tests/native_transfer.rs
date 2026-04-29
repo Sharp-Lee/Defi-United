@@ -2745,9 +2745,9 @@ async fn recovery_does_not_write_when_chain_has_no_transaction() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn recovery_refuses_abi_write_intent_before_rpc_validation() {
+async fn recovery_reconstructs_abi_write_call_history_record() {
     let _guard = test_lock().lock().expect("test lock");
-    let _app_dir_guard = TestAppDirGuard::new("broadcast-history-recover-abi-early-block");
+    let _app_dir_guard = TestAppDirGuard::new("broadcast-history-recover-abi-write");
     let path = wallet_workbench_lib::storage::history_recovery_intents_path()
         .expect("recovery intents path");
     fs::write(
@@ -2760,6 +2760,65 @@ async fn recovery_refuses_abi_write_intent_before_rpc_validation() {
                 "createdAt": "1700000000",
                 "txHash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 "kind": "abiWriteCall",
+                "chainId": 1,
+                "accountIndex": 3,
+                "from": "0x1111111111111111111111111111111111111111",
+                "nonce": 9,
+                "to": "0x2222222222222222222222222222222222222222",
+                "valueWei": "42",
+                "selector": "0x12345678",
+                "methodName": "setValue(uint256)",
+                "nativeValueWei": "42",
+                "frozenKey": "abi-draft-frozen-key",
+                "gasLimit": "100000",
+                "maxFeePerGas": "2000000000",
+                "maxPriorityFeePerGas": "1000000000",
+                "abiCallMetadata": {
+                    "intentKind": "abiWriteCall",
+                    "draftId": "draft-abi-1",
+                    "createdAt": "1700000000",
+                    "chainId": 1,
+                    "accountIndex": 3,
+                    "from": "0x1111111111111111111111111111111111111111",
+                    "contractAddress": "0x2222222222222222222222222222222222222222",
+                    "sourceKind": "explorerFetched",
+                    "versionId": "v1",
+                    "abiHash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "sourceFingerprint": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                    "functionSignature": "setValue(uint256)",
+                    "selector": "0x12345678",
+                    "argumentHash": "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                    "nativeValueWei": "42",
+                    "gasLimit": "100000",
+                    "maxFeePerGas": "2000000000",
+                    "maxPriorityFeePerGas": "1000000000",
+                    "nonce": 9,
+                    "calldata": {
+                        "selector": "0x12345678",
+                        "byteLength": 36,
+                        "hash": "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+                    },
+                    "futureSubmission": {
+                        "status": "broadcasted",
+                        "txHash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                        "broadcastedAt": "1700000001"
+                    },
+                    "futureOutcome": {
+                        "state": "Pending",
+                        "checkedAt": null
+                    },
+                    "broadcast": {
+                        "txHash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                        "broadcastedAt": "1700000001",
+                        "rpcChainId": 1,
+                        "rpcEndpointSummary": "https://rpc.example.invalid"
+                    },
+                    "recovery": {
+                        "recoveryId": "abi-recovery",
+                        "status": "active",
+                        "createdAt": "1700000000"
+                    }
+                },
                 "broadcastedAt": "1700000001",
                 "writeError": "schema placeholder"
             }
@@ -2768,14 +2827,65 @@ async fn recovery_refuses_abi_write_intent_before_rpc_validation() {
     )
     .expect("write recovery intent");
 
-    let error = recover_broadcasted_history_record("abi-recovery".into(), "not a url".into(), 1)
-        .await
-        .expect_err("ABI recovery must be rejected before RPC/provider work");
+    let result = recover_broadcasted_history_record(
+        "abi-recovery".into(),
+        start_recovery_rpc_server(
+            Box::leak(
+                receipt_json(
+                    "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    1,
+                )
+                .into_boxed_str(),
+            ),
+            "null",
+        ),
+        1,
+    )
+    .await
+    .expect("ABI write recovery should reconstruct history");
 
     assert_eq!(
-        error,
-        "history recovery for ABI write call records is not implemented"
+        result.record.submission.kind,
+        wallet_workbench_lib::models::SubmissionKind::AbiWriteCall
     );
+    assert_eq!(
+        result.record.intent.typed_transaction.transaction_type,
+        wallet_workbench_lib::models::TransactionType::ContractCall
+    );
+    assert_eq!(result.record.submission.frozen_key, "abi-draft-frozen-key");
+    assert_eq!(
+        result
+            .record
+            .abi_call_metadata
+            .as_ref()
+            .and_then(|metadata| metadata.broadcast.as_ref())
+            .and_then(|broadcast| broadcast.tx_hash.clone()),
+        Some("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string())
+    );
+    let abi_metadata = result
+        .record
+        .abi_call_metadata
+        .as_ref()
+        .expect("ABI metadata");
+    let future_outcome = abi_metadata
+        .future_outcome
+        .as_ref()
+        .expect("future outcome");
+    assert_eq!(
+        future_outcome.state,
+        Some(wallet_workbench_lib::models::AbiCallOutcomeState::Confirmed)
+    );
+    assert!(future_outcome.checked_at.is_some());
+    assert_eq!(future_outcome.receipt_status, Some(1));
+    assert_eq!(future_outcome.block_number, Some(1));
+    assert_eq!(future_outcome.gas_used.as_deref(), Some("21000"));
+    let recovery = abi_metadata.recovery.as_ref().expect("recovery metadata");
+    assert_eq!(recovery.status.as_deref(), Some("recovered"));
+    assert!(recovery.recovered_at.is_some());
+    assert!(recovery.last_error.is_none());
+    let raw_history = serde_json::to_string(&result.history).expect("serialize history");
+    assert!(!raw_history.contains("canonicalParams"));
+    assert!(!raw_history.contains("apiKey"));
 }
 
 #[tokio::test(flavor = "current_thread")]

@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
@@ -23,6 +24,8 @@ use crate::diagnostics::{
     append_diagnostic_event, sanitize_diagnostic_message, DiagnosticEventInput, DiagnosticLevel,
 };
 use crate::models::{
+    AbiCallBroadcastPlaceholder, AbiCallHistoryMetadata, AbiCallOutcomePlaceholder,
+    AbiCallOutcomeState, AbiCallRecoveryPlaceholder, AbiCallSubmissionPlaceholder,
     BatchHistoryMetadata, ChainOutcome, DroppedReviewSummary, Erc20TransferIntent,
     HistoryErrorSummary, HistoryRecoveryIntent, HistoryRecoveryIntentStatus, HistoryRecoveryResult,
     HistoryRecoveryResultStatus, IntentSnapshotMetadata, NonceThread, ReceiptSummary,
@@ -51,6 +54,45 @@ pub const DISPERSE_TOKEN_METHOD: &str = "disperseToken(address,address[],uint256
 fn history_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
+}
+
+fn abi_write_inflight_set() -> &'static Mutex<HashSet<String>> {
+    static ACTIVE: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    ACTIVE.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+#[derive(Debug)]
+struct AbiWriteInflightGuard {
+    key: String,
+}
+
+impl Drop for AbiWriteInflightGuard {
+    fn drop(&mut self) {
+        let mut active = abi_write_inflight_set()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        active.remove(&self.key);
+    }
+}
+
+fn acquire_abi_write_inflight_guard(
+    intent: &NativeTransferIntent,
+) -> Result<AbiWriteInflightGuard, String> {
+    let key = nonce_thread_key(
+        intent.chain_id,
+        intent.account_index,
+        &intent.from,
+        intent.nonce,
+    );
+    let mut active = abi_write_inflight_set()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if !active.insert(key.clone()) {
+        return Err(format!(
+            "ABI write submit already in progress for nonce thread {key}"
+        ));
+    }
+    Ok(AbiWriteInflightGuard { key })
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1125,6 +1167,8 @@ fn persist_pending_history_with_kind_at(
         replaces_tx_hash,
         broadcasted_at,
         None,
+        None,
+        None,
     )
 }
 
@@ -1135,17 +1179,22 @@ fn persist_pending_history_with_kind_at_and_batch(
     replaces_tx_hash: Option<String>,
     broadcasted_at: String,
     batch_metadata: Option<BatchHistoryMetadata>,
+    abi_call_metadata: Option<AbiCallHistoryMetadata>,
+    frozen_key_override: Option<String>,
 ) -> Result<HistoryRecord, String> {
     let _guard = history_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let submission = submission_record_from_intent(
+    let mut submission = submission_record_from_intent(
         &intent,
         tx_hash.clone(),
         broadcasted_at.clone(),
         kind,
         replaces_tx_hash.clone(),
     );
+    if let Some(frozen_key) = frozen_key_override {
+        submission.frozen_key = frozen_key;
+    }
     let nonce_thread = nonce_thread_from_intent(&intent, replaces_tx_hash);
 
     let record = HistoryRecord {
@@ -1168,7 +1217,7 @@ fn persist_pending_history_with_kind_at_and_batch(
         },
         nonce_thread,
         batch_metadata,
-        abi_call_metadata: None,
+        abi_call_metadata,
     };
 
     let mut records = load_history_records()?;
@@ -1637,8 +1686,35 @@ fn summarize_rpc_endpoint(rpc_url: &str) -> String {
     if authority.is_empty() || authority.contains(char::is_whitespace) {
         return "[redacted_endpoint]".to_string();
     }
+    let authority = canonical_rpc_authority(&scheme, authority);
 
     format!("{scheme}://{authority}")
+}
+
+fn canonical_rpc_authority(scheme: &str, authority: &str) -> String {
+    let authority = authority.to_ascii_lowercase();
+    if let Some(rest) = authority.strip_prefix('[') {
+        if let Some(end) = rest.find(']') {
+            let bracketed_host = &authority[..=end + 1];
+            let suffix = &authority[end + 2..];
+            if let Some(port) = suffix.strip_prefix(':') {
+                if is_default_rpc_port(scheme, port) {
+                    return bracketed_host.to_string();
+                }
+            }
+            return authority;
+        }
+    }
+    if let Some((host, port)) = authority.rsplit_once(':') {
+        if !host.contains(':') && is_default_rpc_port(scheme, port) {
+            return host.to_string();
+        }
+    }
+    authority
+}
+
+fn is_default_rpc_port(scheme: &str, port: &str) -> bool {
+    matches!((scheme, port), ("https", "443") | ("http", "80"))
 }
 
 fn dropped_review_summary(
@@ -2457,6 +2533,47 @@ fn history_record_matches_recovery_intent(
         && record.outcome.tx_hash.eq_ignore_ascii_case(&intent.tx_hash)
 }
 
+fn abi_call_outcome_state_from_chain(state: &ChainOutcomeState) -> AbiCallOutcomeState {
+    match state {
+        ChainOutcomeState::Pending => AbiCallOutcomeState::Pending,
+        ChainOutcomeState::Confirmed => AbiCallOutcomeState::Confirmed,
+        ChainOutcomeState::Failed => AbiCallOutcomeState::Failed,
+        ChainOutcomeState::Replaced => AbiCallOutcomeState::Replaced,
+        ChainOutcomeState::Cancelled => AbiCallOutcomeState::Cancelled,
+        ChainOutcomeState::Dropped => AbiCallOutcomeState::Dropped,
+    }
+}
+
+fn finalized_abi_call_metadata_for_recovery(
+    metadata: &Option<AbiCallHistoryMetadata>,
+    outcome_state: &ChainOutcomeState,
+    receipt: Option<&ReceiptSummary>,
+    checked_at: &str,
+) -> Option<AbiCallHistoryMetadata> {
+    let mut metadata = metadata.clone()?;
+    metadata.future_outcome = Some(AbiCallOutcomePlaceholder {
+        state: Some(abi_call_outcome_state_from_chain(outcome_state)),
+        checked_at: Some(checked_at.to_string()),
+        receipt_status: receipt.and_then(|receipt| receipt.status),
+        block_number: receipt.and_then(|receipt| receipt.block_number),
+        gas_used: receipt.and_then(|receipt| receipt.gas_used.clone()),
+        error_summary: None,
+    });
+    let mut recovery = metadata.recovery.unwrap_or(AbiCallRecoveryPlaceholder {
+        recovery_id: None,
+        status: None,
+        created_at: None,
+        recovered_at: None,
+        last_error: None,
+        replacement_tx_hash: None,
+    });
+    recovery.status = Some("recovered".to_string());
+    recovery.recovered_at = Some(checked_at.to_string());
+    recovery.last_error = None;
+    metadata.recovery = Some(recovery);
+    Some(metadata)
+}
+
 fn history_record_from_recovery_intent(
     intent: &HistoryRecoveryIntent,
     outcome_state: ChainOutcomeState,
@@ -2464,9 +2581,6 @@ fn history_record_from_recovery_intent(
     checked_at: String,
     decision: String,
 ) -> Result<HistoryRecord, String> {
-    if intent.kind == SubmissionKind::AbiWriteCall || intent.abi_call_metadata.is_some() {
-        return Err("history recovery for ABI write call records is not implemented".to_string());
-    }
     let chain_id = require_recovery_u64(intent.chain_id, "chainId")?;
     let account_index = require_recovery_u32(intent.account_index, "account/from")?;
     let from = require_recovery_string(&intent.from, "account/from")?;
@@ -2569,6 +2683,12 @@ fn history_record_from_recovery_intent(
             format!("{chain_id}:{from}:{to}:{value_wei}:{nonce}")
         }
     });
+    let abi_call_metadata = finalized_abi_call_metadata_for_recovery(
+        &intent.abi_call_metadata,
+        &outcome_state,
+        receipt.as_ref(),
+        &checked_at,
+    );
     let finalized_at = match outcome_state {
         ChainOutcomeState::Confirmed | ChainOutcomeState::Failed => Some(checked_at.clone()),
         _ => None,
@@ -2639,7 +2759,7 @@ fn history_record_from_recovery_intent(
             replaced_by_tx_hash: None,
         },
         batch_metadata: intent.batch_metadata.clone(),
-        abi_call_metadata: intent.abi_call_metadata.clone(),
+        abi_call_metadata,
     })
 }
 
@@ -2741,9 +2861,6 @@ pub async fn recover_broadcasted_history_record(
         .into_iter()
         .find(|intent| intent.id == recovery_id)
         .ok_or_else(|| format!("history recovery intent not found: {recovery_id}"))?;
-    if intent.kind == SubmissionKind::AbiWriteCall || intent.abi_call_metadata.is_some() {
-        return Err("history recovery for ABI write call records is not implemented".to_string());
-    }
     let frozen_chain_id = require_recovery_u64(intent.chain_id, "chainId")?;
     let account_index = require_recovery_u32(intent.account_index, "account/from")?;
     require_recovery_string(&intent.from, "account/from")?;
@@ -3584,6 +3701,8 @@ pub async fn submit_erc20_transfer_with_batch(
         None,
         broadcasted_at.clone(),
         batch_metadata,
+        None,
+        None,
     )
     .map_err(|error| {
         let recovery_result = history_recovery_intent_from_broadcast_failure_with_frozen_key(
@@ -3841,6 +3960,8 @@ pub async fn submit_native_contract_call(
         None,
         broadcasted_at.clone(),
         batch_metadata,
+        None,
+        None,
     )
     .map_err(|error| {
         let recovery_result = history_recovery_intent_from_broadcast_failure(
@@ -3868,6 +3989,249 @@ pub async fn submit_native_contract_call(
             }),
         );
         broadcast_history_write_error(&tx_hash, &error)
+    })
+}
+
+fn ensure_no_pending_nonce_conflict(intent: &NativeTransferIntent) -> Result<(), String> {
+    let records = load_history_records()?;
+    let conflict = records.iter().find(|record| {
+        record.outcome.state == ChainOutcomeState::Pending
+            && record.nonce_thread.chain_id == Some(intent.chain_id)
+            && record.nonce_thread.account_index == Some(intent.account_index)
+            && record.nonce_thread.nonce == Some(intent.nonce)
+            && record
+                .nonce_thread
+                .from
+                .as_deref()
+                .is_some_and(|from| from.eq_ignore_ascii_case(&intent.from))
+    });
+    if let Some(record) = conflict {
+        return Err(format!(
+            "pending local nonce conflict: nonce {} is already pending as tx_hash {}",
+            intent.nonce, record.submission.tx_hash
+        ));
+    }
+    Ok(())
+}
+
+fn abi_metadata_for_broadcast(
+    mut metadata: AbiCallHistoryMetadata,
+    tx_hash: &str,
+    broadcasted_at: &str,
+    rpc_chain_id: u64,
+    rpc_url: &str,
+) -> AbiCallHistoryMetadata {
+    metadata.future_submission = Some(AbiCallSubmissionPlaceholder {
+        status: Some("broadcasted".to_string()),
+        tx_hash: Some(tx_hash.to_string()),
+        submitted_at: Some(broadcasted_at.to_string()),
+        broadcasted_at: Some(broadcasted_at.to_string()),
+        error_summary: None,
+    });
+    metadata.future_outcome = Some(AbiCallOutcomePlaceholder {
+        state: Some(AbiCallOutcomeState::Pending),
+        checked_at: None,
+        receipt_status: None,
+        block_number: None,
+        gas_used: None,
+        error_summary: None,
+    });
+    metadata.broadcast = Some(AbiCallBroadcastPlaceholder {
+        tx_hash: Some(tx_hash.to_string()),
+        broadcasted_at: Some(broadcasted_at.to_string()),
+        rpc_chain_id: Some(rpc_chain_id),
+        rpc_endpoint_summary: Some(summarize_rpc_endpoint(rpc_url)),
+        error_summary: None,
+    });
+    metadata.recovery = Some(AbiCallRecoveryPlaceholder {
+        recovery_id: None,
+        status: None,
+        created_at: None,
+        recovered_at: None,
+        last_error: None,
+        replacement_tx_hash: None,
+    });
+    metadata
+}
+
+fn abi_broadcast_history_write_error(
+    tx_hash: &str,
+    intent: &NativeTransferIntent,
+    frozen_key: &str,
+    error: &str,
+) -> String {
+    format!(
+        "ABI write call broadcast but local history write failed; tx_hash={tx_hash}; chainId={}; accountIndex={}; from={}; contract={}; nonce={}; selector={}; method={}; frozenKey={}; error={error}",
+        intent.chain_id,
+        intent.account_index,
+        intent.from,
+        intent.to,
+        intent.nonce,
+        intent.typed_transaction.selector.as_deref().unwrap_or("unknown"),
+        intent
+            .typed_transaction
+            .method_name
+            .as_deref()
+            .unwrap_or("unknown"),
+        frozen_key,
+    )
+}
+
+pub async fn submit_abi_write_call(
+    intent: NativeTransferIntent,
+    calldata: Bytes,
+    abi_call_metadata: AbiCallHistoryMetadata,
+    frozen_key: String,
+) -> Result<HistoryRecord, String> {
+    if intent.typed_transaction.transaction_type != TransactionType::ContractCall {
+        return Err("ABI write submit requires transaction_type contractCall".to_string());
+    }
+    let _inflight_guard = acquire_abi_write_inflight_guard(&intent)?;
+    let wallet = with_session_mnemonic(|mnemonic| derive_wallet(mnemonic, intent.account_index))?
+        .with_chain_id(intent.chain_id);
+    let provider = Provider::<Http>::try_from(intent.rpc_url.clone()).map_err(|e| {
+        let error = e.to_string();
+        record_transaction_diagnostic(
+            DiagnosticLevel::Error,
+            "abiWriteCallProviderInvalid",
+            Some(intent.chain_id),
+            Some(intent.account_index),
+            None,
+            Some(error.clone()),
+            json!({ "selector": intent.typed_transaction.selector }),
+        );
+        error
+    })?;
+    preflight_native_transfer(&intent, wallet.address(), &provider).await?;
+    ensure_no_pending_nonce_conflict(&intent)?;
+
+    let signer = SignerMiddleware::new(provider, wallet);
+    let tx = Eip1559TransactionRequest::new()
+        .to(parse_native_transfer_address(
+            &intent,
+            "to",
+            &intent.to,
+            "abiWriteCallTransactionFieldInvalid",
+        )?)
+        .from(parse_native_transfer_address(
+            &intent,
+            "from",
+            &intent.from,
+            "abiWriteCallTransactionFieldInvalid",
+        )?)
+        .value(parse_native_transfer_u256(
+            &intent,
+            "value_wei",
+            &intent.value_wei,
+            "abiWriteCallTransactionFieldInvalid",
+        )?)
+        .data(calldata)
+        .nonce(U256::from(intent.nonce))
+        .gas(parse_native_transfer_u256(
+            &intent,
+            "gas_limit",
+            &intent.gas_limit,
+            "abiWriteCallTransactionFieldInvalid",
+        )?)
+        .max_fee_per_gas(parse_native_transfer_u256(
+            &intent,
+            "max_fee_per_gas",
+            &intent.max_fee_per_gas,
+            "abiWriteCallTransactionFieldInvalid",
+        )?)
+        .max_priority_fee_per_gas(parse_native_transfer_u256(
+            &intent,
+            "max_priority_fee_per_gas",
+            &intent.max_priority_fee_per_gas,
+            "abiWriteCallTransactionFieldInvalid",
+        )?)
+        .chain_id(intent.chain_id);
+
+    let pending = signer.send_transaction(tx, None).await.map_err(|e| {
+        let error = e.to_string();
+        record_transaction_diagnostic(
+            DiagnosticLevel::Error,
+            "abiWriteCallBroadcastFailed",
+            Some(intent.chain_id),
+            Some(intent.account_index),
+            None,
+            Some(error.clone()),
+            json!({ "selector": intent.typed_transaction.selector, "nonce": intent.nonce }),
+        );
+        error
+    })?;
+    let tx_hash = format!("{:#x}", pending.tx_hash());
+    record_transaction_diagnostic(
+        DiagnosticLevel::Info,
+        "abiWriteCallBroadcastSucceeded",
+        Some(intent.chain_id),
+        Some(intent.account_index),
+        Some(tx_hash.clone()),
+        None,
+        json!({ "selector": intent.typed_transaction.selector, "nonce": intent.nonce }),
+    );
+
+    let recovery_intent = intent.clone();
+    let broadcasted_at = now_unix_seconds()?;
+    let history_metadata = abi_metadata_for_broadcast(
+        abi_call_metadata,
+        &tx_hash,
+        &broadcasted_at,
+        intent.chain_id,
+        &intent.rpc_url,
+    );
+    let recovery_metadata = history_metadata.clone();
+    let mut history_intent = intent;
+    history_intent.rpc_url = summarize_rpc_endpoint(&history_intent.rpc_url);
+    let recovery_frozen_key = frozen_key;
+    persist_pending_history_with_kind_at_and_batch(
+        history_intent,
+        tx_hash.clone(),
+        SubmissionKind::AbiWriteCall,
+        None,
+        broadcasted_at.clone(),
+        None,
+        Some(history_metadata),
+        Some(recovery_frozen_key.clone()),
+    )
+    .map_err(|error| {
+        let mut recovery_result = history_recovery_intent_from_broadcast_failure_with_frozen_key(
+            &recovery_intent,
+            tx_hash.clone(),
+            SubmissionKind::AbiWriteCall,
+            None,
+            broadcasted_at,
+            error.clone(),
+            Some(recovery_frozen_key.clone()),
+            None,
+        );
+        if let Ok(intent) = recovery_result.as_mut() {
+            let mut metadata = recovery_metadata.clone();
+            if let Some(recovery) = metadata.recovery.as_mut() {
+                recovery.recovery_id = Some(intent.id.clone());
+                recovery.status = Some("active".to_string());
+                recovery.created_at = Some(intent.created_at.clone());
+                recovery.last_error = Some(sanitize_recovery_error(&error));
+            }
+            intent.abi_call_metadata = Some(metadata);
+        }
+        let recovery_recorded = recovery_result
+            .and_then(record_history_recovery_intent)
+            .is_ok();
+        record_transaction_diagnostic(
+            DiagnosticLevel::Error,
+            "abiWriteCallHistoryWriteAfterBroadcastFailed",
+            Some(recovery_intent.chain_id),
+            Some(recovery_intent.account_index),
+            Some(tx_hash.clone()),
+            Some(error.clone()),
+            json!({
+                "selector": recovery_intent.typed_transaction.selector,
+                "nonce": recovery_intent.nonce,
+                "recoveryRecorded": recovery_recorded,
+            }),
+        );
+        abi_broadcast_history_write_error(&tx_hash, &recovery_intent, &recovery_frozen_key, &error)
     })
 }
 
@@ -4059,4 +4423,127 @@ pub async fn submit_native_transfer_with_history_kind(
         );
         broadcast_history_write_error(&tx_hash, &error)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn abi_write_intent(nonce: u64) -> NativeTransferIntent {
+        NativeTransferIntent {
+            typed_transaction: TypedTransactionFields::contract_call(
+                "0x12345678",
+                "setValue(uint256)",
+                "0",
+            ),
+            rpc_url: "http://127.0.0.1:8545".to_string(),
+            account_index: 42,
+            chain_id: 31337,
+            from: "0x1111111111111111111111111111111111111111".to_string(),
+            to: "0x2222222222222222222222222222222222222222".to_string(),
+            value_wei: "0".to_string(),
+            nonce,
+            gas_limit: "50000".to_string(),
+            max_fee_per_gas: "2000000000".to_string(),
+            max_priority_fee_per_gas: "1000000000".to_string(),
+        }
+    }
+
+    fn abi_call_metadata() -> AbiCallHistoryMetadata {
+        AbiCallHistoryMetadata {
+            intent_kind: "abiWriteCall".to_string(),
+            draft_id: None,
+            created_at: None,
+            chain_id: Some(31337),
+            account_index: Some(42),
+            from: Some("0x1111111111111111111111111111111111111111".to_string()),
+            contract_address: Some("0x2222222222222222222222222222222222222222".to_string()),
+            source_kind: "explorerFetched".to_string(),
+            provider_config_id: None,
+            user_source_id: None,
+            version_id: Some("v1".to_string()),
+            abi_hash: Some(
+                "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+            ),
+            source_fingerprint: Some(
+                "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string(),
+            ),
+            function_signature: Some("setValue(uint256)".to_string()),
+            selector: Some("0x12345678".to_string()),
+            argument_summary: Vec::new(),
+            argument_hash: Some(
+                "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc".to_string(),
+            ),
+            native_value_wei: Some("0".to_string()),
+            gas_limit: Some("50000".to_string()),
+            max_fee_per_gas: Some("2000000000".to_string()),
+            max_priority_fee_per_gas: Some("1000000000".to_string()),
+            nonce: Some(7),
+            selected_rpc: None,
+            warnings: Vec::new(),
+            blocking_statuses: Vec::new(),
+            calldata: None,
+            future_submission: None,
+            future_outcome: None,
+            broadcast: None,
+            recovery: None,
+        }
+    }
+
+    #[test]
+    fn abi_write_inflight_guard_blocks_same_nonce_until_drop() {
+        let intent = abi_write_intent(9001);
+        let guard = acquire_abi_write_inflight_guard(&intent).expect("first guard acquired");
+
+        let error =
+            acquire_abi_write_inflight_guard(&intent).expect_err("same nonce should be blocked");
+        assert!(error.contains("already in progress"));
+
+        drop(guard);
+        let _next_guard =
+            acquire_abi_write_inflight_guard(&intent).expect("guard released after drop");
+    }
+
+    #[test]
+    fn abi_write_inflight_guard_allows_different_nonce_threads() {
+        let first = abi_write_intent(9002);
+        let mut second = abi_write_intent(9002);
+        second.from = "0x3333333333333333333333333333333333333333".to_string();
+
+        let _first_guard = acquire_abi_write_inflight_guard(&first).expect("first guard acquired");
+        let _second_guard =
+            acquire_abi_write_inflight_guard(&second).expect("different from address allowed");
+    }
+
+    #[test]
+    fn abi_broadcast_metadata_canonicalizes_rpc_endpoint_summary() {
+        let metadata = abi_metadata_for_broadcast(
+            abi_call_metadata(),
+            "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "1700000001",
+            31337,
+            "https://user:password@RPC.EXAMPLE.invalid:443/v1?apiKey=secret#fragment",
+        );
+        assert_eq!(
+            metadata
+                .broadcast
+                .as_ref()
+                .and_then(|broadcast| broadcast.rpc_endpoint_summary.as_deref()),
+            Some("https://rpc.example.invalid")
+        );
+        let serialized = serde_json::to_string(&metadata).expect("serialize metadata");
+        assert!(!serialized.contains("secret"));
+        assert!(!serialized.contains("password"));
+        assert!(!serialized.contains("/v1"));
+        assert!(!serialized.contains(":443"));
+
+        assert_eq!(
+            summarize_rpc_endpoint("http://HOST.invalid:80/v1?token=secret"),
+            "http://host.invalid"
+        );
+        assert_eq!(
+            summarize_rpc_endpoint("https://HOST.invalid:8443/v1?token=secret"),
+            "https://host.invalid:8443"
+        );
+    }
 }

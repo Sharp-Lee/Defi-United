@@ -151,7 +151,11 @@ function rpcIdentitySummary(rpcUrl: string, chainId: bigint) {
   if (!rpcUrl.trim()) return null;
   try {
     const url = new URL(rpcUrl.trim());
-    return `${url.protocol}//${url.host} / chainId ${chainId.toString()}`;
+    const query = Array.from(url.searchParams.keys())
+      .map((key) => `${key}=[redacted]`)
+      .join("&");
+    const path = url.pathname || "/";
+    return `${url.protocol}//${url.host}${path}${query ? `?${query}` : ""} / chainId ${chainId.toString()}`;
   } catch {
     return `Configured RPC / chainId ${chainId.toString()}`;
   }
@@ -574,6 +578,7 @@ export function AbiLibraryView({
           ? {
               chainId: Number(selectedChainId),
               endpointSummary: selectedRpcSummary,
+              endpointFingerprintSource: rpcUrl,
             }
           : null,
         entry: selectedPreviewEntry,
@@ -992,6 +997,7 @@ export function AbiLibraryView({
         ? {
             chainId: rpcChainId,
             endpointSummary: selectedRpcSummary,
+            endpointFingerprintSource: rpcUrl,
           }
         : null,
       entry: selectedPreviewEntry,

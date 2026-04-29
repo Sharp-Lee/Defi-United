@@ -13,7 +13,13 @@ use tokio::time::{timeout, Duration};
 
 use crate::commands::abi_registry::{load_abi_registry_state, AbiCacheEntryRecord};
 use crate::diagnostics::sanitize_diagnostic_message;
+use crate::models::{
+    AbiCallCalldataSummary, AbiCallHistoryMetadata, AbiCallSelectedRpcSummary,
+    AbiCallStatusSummary, AbiDecodedFieldHistorySummary, AbiDecodedValueHistorySummary,
+    NativeTransferIntent, TransactionType, TypedTransactionFields,
+};
 use crate::storage::ensure_app_dir;
+use crate::transactions::submit_abi_write_call;
 
 const FETCH_SOURCE_OK: &str = "ok";
 const VALIDATION_OK: &str = "ok";
@@ -23,6 +29,7 @@ const MAX_SUMMARY_STRING_CHARS: usize = 256;
 const MAX_SUMMARY_ITEMS: usize = 16;
 const MAX_SAFE_JSON_INTEGER: u64 = 9_007_199_254_740_991;
 const ABI_READ_RPC_TIMEOUT_SECONDS: u64 = 10;
+const ABI_WRITE_MAX_MULTIPLIER_FRACTION_DIGITS: usize = 18;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -83,6 +90,65 @@ pub struct AbiCalldataPreviewInput {
     pub function_signature: String,
     #[serde(default, alias = "canonical_params")]
     pub canonical_params: Vec<Value>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AbiWriteSubmitInput {
+    #[serde(flatten)]
+    pub entry: AbiManagedEntryInput,
+    #[serde(alias = "rpc_url")]
+    pub rpc_url: String,
+    #[serde(alias = "account_index")]
+    pub account_index: u32,
+    pub from: String,
+    #[serde(alias = "function_signature")]
+    pub function_signature: String,
+    #[serde(default, alias = "canonical_params")]
+    pub canonical_params: Vec<Value>,
+    #[serde(default, alias = "draft_id")]
+    pub draft_id: Option<String>,
+    #[serde(default, alias = "created_at")]
+    pub created_at: Option<String>,
+    #[serde(default, alias = "frozen_key")]
+    pub frozen_key: Option<String>,
+    #[serde(default)]
+    pub selector: Option<String>,
+    #[serde(default, alias = "calldata_hash")]
+    pub calldata_hash: Option<String>,
+    #[serde(default, alias = "calldata_byte_length")]
+    pub calldata_byte_length: Option<u64>,
+    #[serde(default, alias = "argument_hash")]
+    pub argument_hash: Option<String>,
+    #[serde(default, alias = "argument_summary")]
+    pub argument_summary: Vec<AbiDecodedValueSummary>,
+    #[serde(alias = "native_value_wei")]
+    pub native_value_wei: String,
+    #[serde(alias = "gas_limit")]
+    pub gas_limit: String,
+    #[serde(default, alias = "latest_base_fee_per_gas")]
+    pub latest_base_fee_per_gas: Option<String>,
+    #[serde(alias = "base_fee_is_custom")]
+    pub base_fee_is_custom: bool,
+    #[serde(alias = "base_fee_per_gas")]
+    pub base_fee_per_gas: String,
+    #[serde(alias = "base_fee_multiplier")]
+    pub base_fee_multiplier: String,
+    #[serde(alias = "max_fee_per_gas")]
+    pub max_fee_per_gas: String,
+    #[serde(default, alias = "max_fee_override_per_gas")]
+    pub max_fee_override_per_gas: Option<String>,
+    #[serde(alias = "max_priority_fee_per_gas")]
+    pub max_priority_fee_per_gas: String,
+    pub nonce: u64,
+    #[serde(alias = "selected_rpc")]
+    pub selected_rpc: AbiCallSelectedRpcSummary,
+    #[serde(default)]
+    pub warnings: Vec<AbiCallStatusSummary>,
+    #[serde(default, alias = "blocking_statuses")]
+    pub blocking_statuses: Vec<AbiCallStatusSummary>,
+    #[serde(default, alias = "warnings_acknowledged")]
+    pub warnings_acknowledged: bool,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -182,14 +248,14 @@ pub struct AbiReadRpcSummary {
     pub actual_chain_id: Option<u64>,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct AbiDecodedFieldSummary {
     pub name: Option<String>,
     pub value: AbiDecodedValueSummary,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct AbiDecodedValueSummary {
     pub kind: String,
@@ -359,6 +425,13 @@ pub async fn preview_managed_abi_calldata(
         .parameter_summary(parameter_summary)
         .status("success")
         .finish())
+}
+
+#[tauri::command]
+pub async fn submit_abi_write_call_command(input: AbiWriteSubmitInput) -> Result<String, String> {
+    let (intent, calldata, metadata, frozen_key) = validate_abi_write_submit_input(input)?;
+    let record = submit_abi_write_call(intent, Bytes::from(calldata), metadata, frozen_key).await?;
+    serde_json::to_string(&record).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -826,6 +899,712 @@ fn normalize_preview_input(
         function_signature,
         canonical_params: input.canonical_params,
     })
+}
+
+fn validate_abi_write_submit_input(
+    input: AbiWriteSubmitInput,
+) -> Result<
+    (
+        NativeTransferIntent,
+        Vec<u8>,
+        AbiCallHistoryMetadata,
+        String,
+    ),
+    String,
+> {
+    if !input.blocking_statuses.is_empty() {
+        return Err(format!(
+            "ABI write draft has unresolved blocking statuses: {}",
+            input
+                .blocking_statuses
+                .iter()
+                .map(|status| status.code.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    let mut entry = normalize_managed_entry_seed(input.entry);
+    if let Some((reason, error)) = validate_managed_entry_seed(&mut entry) {
+        return Err(format!(
+            "ABI write submit validation failed ({reason}): {error}"
+        ));
+    }
+    let rpc_url = input.rpc_url.trim().to_string();
+    if rpc_url.is_empty() {
+        return Err("rpcUrl is required".to_string());
+    }
+    let selected_rpc = normalized_selected_rpc_for_submit(&input.selected_rpc, &rpc_url)?;
+    let selected_chain_id = selected_rpc
+        .chain_id
+        .ok_or_else(|| "selectedRpc.chainId is required for ABI write submit".to_string())?;
+    if selected_chain_id != entry.chain_id {
+        return Err(format!(
+            "selected RPC chainId {} does not match draft chainId {}",
+            selected_chain_id, entry.chain_id
+        ));
+    }
+    let from = parse_address(&input.from, "from")?;
+    let from = to_checksum(&from, None);
+    let requested_signature = input.function_signature.trim().to_string();
+    if requested_signature.is_empty() || !requested_signature.contains('(') {
+        return Err("functionSignature must be a full ABI function signature".to_string());
+    }
+
+    let entry_record = selected_cache_entry_for_managed(&entry)
+        .map_err(|result| abi_catalog_block_error("selected ABI validation failed", result))?;
+    if let Some(blocked) = non_callable_catalog_result(&entry, &entry_record) {
+        return Err(abi_catalog_block_error(
+            "selected ABI is not callable for submit",
+            blocked,
+        ));
+    }
+
+    let artifact = read_abi_artifact_for_managed(&entry)
+        .map_err(|result| abi_catalog_block_error("ABI artifact unavailable", result))?;
+    if hash_text(&artifact) != entry.abi_hash {
+        return Err("ABI artifact hash does not match selected ABI hash".to_string());
+    }
+    let raw_abi = serde_json::from_str::<Value>(&artifact)
+        .map_err(|_| "ABI artifact could not be parsed".to_string())?;
+    let function = match select_raw_function_by_signature(&raw_abi, &requested_signature) {
+        Ok(RawFunctionSelection::Callable(function)) => function,
+        Ok(RawFunctionSelection::UnsupportedFunctionType) => {
+            return Err("ABI write function uses unsupported parameter types".to_string());
+        }
+        Err(RawFunctionSelectionError::Unknown) => {
+            return Err("functionSignature is not present in the selected ABI".to_string());
+        }
+        Err(RawFunctionSelectionError::Ambiguous) => {
+            return Err("functionSignature is ambiguous in the selected ABI".to_string());
+        }
+        Err(RawFunctionSelectionError::Malformed) => {
+            return Err("ABI artifact could not be parsed".to_string());
+        }
+    };
+    let signature = function_signature(&function);
+    let selector = selector_for_signature(&signature);
+    if signature != requested_signature {
+        return Err("functionSignature canonical form drifted".to_string());
+    }
+    if is_read_only_function(&function) {
+        return Err("ABI write submit cannot submit view or pure functions".to_string());
+    }
+    if input
+        .selector
+        .as_deref()
+        .is_some_and(|expected| !expected.eq_ignore_ascii_case(&selector))
+    {
+        return Err("calldata selector does not match frozen draft".to_string());
+    }
+    if input.selector.is_none() {
+        return Err("frozen ABI write draft must include selector".to_string());
+    }
+
+    let tokens = encode_tokens(&function.inputs, &input.canonical_params)?;
+    let calldata = function
+        .encode_input(&tokens)
+        .map_err(|error| format!("calldata encode failed: {error}"))?;
+    let summary = calldata_summary(&calldata);
+    let expected_hash = input
+        .calldata_hash
+        .as_deref()
+        .ok_or_else(|| "frozen ABI write draft must include calldataHash".to_string())?;
+    if !expected_hash.eq_ignore_ascii_case(&summary.hash) {
+        return Err("calldata hash does not match frozen draft".to_string());
+    }
+    let expected_len = input
+        .calldata_byte_length
+        .ok_or_else(|| "frozen ABI write draft must include calldataByteLength".to_string())?;
+    if expected_len != summary.byte_length as u64 {
+        return Err("calldata byte length does not match frozen draft".to_string());
+    }
+    if input
+        .argument_hash
+        .as_deref()
+        .is_some_and(|expected| !expected.eq_ignore_ascii_case(&summary.hash))
+    {
+        return Err("argument hash does not match derived calldata hash".to_string());
+    }
+
+    let native_value = parse_submit_u256("nativeValueWei", &input.native_value_wei)?;
+    if !matches!(function.state_mutability, StateMutability::Payable) && !native_value.is_zero() {
+        return Err("nonpayable ABI write function requires nativeValueWei 0".to_string());
+    }
+    let gas_limit = parse_submit_u256("gasLimit", &input.gas_limit)?;
+    if gas_limit.is_zero() {
+        return Err("gasLimit must be greater than zero".to_string());
+    }
+    let latest_base_fee = input
+        .latest_base_fee_per_gas
+        .as_deref()
+        .and_then(|value| {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed)
+            }
+        })
+        .map(|value| parse_submit_u256("latestBaseFeePerGas", value))
+        .transpose()?;
+    let base_fee = parse_submit_u256("baseFeePerGas", &input.base_fee_per_gas)?;
+    let multiplier = parse_base_fee_multiplier(&input.base_fee_multiplier)?;
+    let base_fee_multiplier = multiplier.text.clone();
+    let max_fee = parse_submit_u256("maxFeePerGas", &input.max_fee_per_gas)?;
+    let max_fee_override = input
+        .max_fee_override_per_gas
+        .as_deref()
+        .and_then(|value| {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed)
+            }
+        })
+        .map(|value| parse_submit_u256("maxFeeOverridePerGas", value))
+        .transpose()?;
+    let priority_fee = parse_submit_u256("maxPriorityFeePerGas", &input.max_priority_fee_per_gas)?;
+    let expected_max_fee = match max_fee_override {
+        Some(value) => value,
+        None => checked_add_u256(
+            ceil_multiply_u256(base_fee, multiplier.numerator, multiplier.denominator)?,
+            priority_fee,
+            "maxFeePerGas",
+        )?,
+    };
+    if max_fee != expected_max_fee {
+        return Err(format!(
+            "maxFeePerGas does not match derived ABI write fee draft: expected {expected_max_fee}, received {max_fee}"
+        ));
+    }
+    if priority_fee > max_fee {
+        return Err("maxPriorityFeePerGas cannot exceed maxFeePerGas".to_string());
+    }
+    validate_expected_abi_write_warnings(
+        &input.warnings,
+        input.warnings_acknowledged,
+        latest_base_fee,
+        input.base_fee_is_custom,
+    )?;
+    let expected_frozen_key = abi_write_frozen_key(&AbiWriteFrozenKeyParts {
+        chain_id: entry.chain_id,
+        selected_rpc_chain_id: selected_rpc.chain_id,
+        selected_rpc_provider_config_id: selected_rpc.provider_config_id.as_deref(),
+        selected_rpc_endpoint_id: selected_rpc.endpoint_id.as_deref(),
+        selected_rpc_endpoint_name: selected_rpc.endpoint_name.as_deref(),
+        selected_rpc_endpoint_summary: selected_rpc.endpoint_summary.as_deref(),
+        selected_rpc_endpoint_fingerprint: selected_rpc.endpoint_fingerprint.as_deref(),
+        account_index: input.account_index,
+        from: &from,
+        contract_address: &entry.contract_address,
+        source_kind: &entry.source_kind,
+        provider_config_id: entry.provider_config_id.as_deref(),
+        user_source_id: entry.user_source_id.as_deref(),
+        version_id: &entry.version_id,
+        abi_hash: &entry.abi_hash,
+        source_fingerprint: &entry.source_fingerprint,
+        function_signature: &signature,
+        selector: Some(&selector),
+        calldata_hash: Some(&summary.hash),
+        calldata_byte_length: Some(summary.byte_length as u64),
+        native_value_wei: &native_value.to_string(),
+        gas_limit: &gas_limit.to_string(),
+        latest_base_fee_per_gas: latest_base_fee.map(|value| value.to_string()),
+        base_fee_is_custom: input.base_fee_is_custom,
+        base_fee_per_gas: &base_fee.to_string(),
+        base_fee_multiplier: &base_fee_multiplier,
+        max_fee_per_gas: &max_fee.to_string(),
+        max_fee_override_per_gas: max_fee_override.as_ref().map(|value| value.to_string()),
+        max_priority_fee_per_gas: &priority_fee.to_string(),
+        nonce: input.nonce,
+    });
+    let frozen_key = input
+        .frozen_key
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| "frozenKey is required for ABI write submit".to_string())?;
+    if frozen_key != expected_frozen_key {
+        return Err("frozenKey does not match ABI write draft fields".to_string());
+    }
+
+    let argument_summary = function
+        .inputs
+        .iter()
+        .zip(tokens.iter())
+        .map(|(param, token)| summarize_token(token, &param.kind, Some(&param.name)))
+        .collect::<Vec<_>>();
+    let metadata = AbiCallHistoryMetadata {
+        intent_kind: "abiWriteCall".to_string(),
+        draft_id: input.draft_id,
+        created_at: input.created_at,
+        chain_id: Some(entry.chain_id),
+        account_index: Some(input.account_index),
+        from: Some(from.clone()),
+        contract_address: Some(entry.contract_address.clone()),
+        source_kind: entry.source_kind.clone(),
+        provider_config_id: entry.provider_config_id.clone(),
+        user_source_id: entry.user_source_id.clone(),
+        version_id: Some(entry.version_id.clone()),
+        abi_hash: Some(entry.abi_hash.clone()),
+        source_fingerprint: Some(entry.source_fingerprint.clone()),
+        function_signature: Some(signature.clone()),
+        selector: Some(selector.clone()),
+        argument_summary: argument_summary
+            .into_iter()
+            .map(history_summary_from_decoded_value)
+            .collect(),
+        argument_hash: Some(input.argument_hash.unwrap_or_else(|| summary.hash.clone())),
+        native_value_wei: Some(native_value.to_string()),
+        gas_limit: Some(gas_limit.to_string()),
+        max_fee_per_gas: Some(max_fee.to_string()),
+        max_priority_fee_per_gas: Some(priority_fee.to_string()),
+        nonce: Some(input.nonce),
+        selected_rpc: Some(selected_rpc),
+        warnings: input.warnings,
+        blocking_statuses: Vec::new(),
+        calldata: Some(AbiCallCalldataSummary {
+            selector: Some(selector.clone()),
+            byte_length: Some(summary.byte_length as u64),
+            hash: Some(summary.hash),
+        }),
+        future_submission: None,
+        future_outcome: None,
+        broadcast: None,
+        recovery: None,
+    };
+    let intent = NativeTransferIntent {
+        typed_transaction: TypedTransactionFields::contract_call(
+            selector,
+            signature,
+            native_value.to_string(),
+        ),
+        rpc_url,
+        account_index: input.account_index,
+        chain_id: entry.chain_id,
+        from,
+        to: entry.contract_address,
+        value_wei: native_value.to_string(),
+        nonce: input.nonce,
+        gas_limit: gas_limit.to_string(),
+        max_fee_per_gas: max_fee.to_string(),
+        max_priority_fee_per_gas: priority_fee.to_string(),
+    };
+    debug_assert_eq!(
+        intent.typed_transaction.transaction_type,
+        TransactionType::ContractCall
+    );
+    Ok((intent, calldata, metadata, expected_frozen_key))
+}
+
+struct AbiWriteFrozenKeyParts<'a> {
+    chain_id: u64,
+    selected_rpc_chain_id: Option<u64>,
+    selected_rpc_provider_config_id: Option<&'a str>,
+    selected_rpc_endpoint_id: Option<&'a str>,
+    selected_rpc_endpoint_name: Option<&'a str>,
+    selected_rpc_endpoint_summary: Option<&'a str>,
+    selected_rpc_endpoint_fingerprint: Option<&'a str>,
+    account_index: u32,
+    from: &'a str,
+    contract_address: &'a str,
+    source_kind: &'a str,
+    provider_config_id: Option<&'a str>,
+    user_source_id: Option<&'a str>,
+    version_id: &'a str,
+    abi_hash: &'a str,
+    source_fingerprint: &'a str,
+    function_signature: &'a str,
+    selector: Option<&'a str>,
+    calldata_hash: Option<&'a str>,
+    calldata_byte_length: Option<u64>,
+    native_value_wei: &'a str,
+    gas_limit: &'a str,
+    latest_base_fee_per_gas: Option<String>,
+    base_fee_is_custom: bool,
+    base_fee_per_gas: &'a str,
+    base_fee_multiplier: &'a str,
+    max_fee_per_gas: &'a str,
+    max_fee_override_per_gas: Option<String>,
+    max_priority_fee_per_gas: &'a str,
+    nonce: u64,
+}
+
+fn abi_write_frozen_key(parts: &AbiWriteFrozenKeyParts<'_>) -> String {
+    let frozen_parts = [
+        "abiWriteDraft".to_string(),
+        parts.chain_id.to_string(),
+        parts
+            .selected_rpc_chain_id
+            .map(|value| value.to_string())
+            .unwrap_or_default(),
+        parts
+            .selected_rpc_provider_config_id
+            .unwrap_or_default()
+            .to_string(),
+        parts
+            .selected_rpc_endpoint_id
+            .unwrap_or_default()
+            .to_string(),
+        parts
+            .selected_rpc_endpoint_name
+            .unwrap_or_default()
+            .to_string(),
+        parts
+            .selected_rpc_endpoint_summary
+            .unwrap_or_default()
+            .to_string(),
+        parts
+            .selected_rpc_endpoint_fingerprint
+            .unwrap_or_default()
+            .to_string(),
+        parts.account_index.to_string(),
+        parts.from.to_string(),
+        parts.contract_address.to_string(),
+        parts.source_kind.to_string(),
+        parts.provider_config_id.unwrap_or_default().to_string(),
+        parts.user_source_id.unwrap_or_default().to_string(),
+        parts.version_id.to_string(),
+        parts.abi_hash.to_string(),
+        parts.source_fingerprint.to_string(),
+        parts.function_signature.to_string(),
+        parts.selector.unwrap_or_default().to_string(),
+        parts.calldata_hash.unwrap_or_default().to_string(),
+        parts
+            .calldata_byte_length
+            .map(|value| value.to_string())
+            .unwrap_or_default(),
+        parts.native_value_wei.to_string(),
+        parts.gas_limit.to_string(),
+        parts.latest_base_fee_per_gas.clone().unwrap_or_default(),
+        if parts.base_fee_is_custom {
+            "true".to_string()
+        } else {
+            "false".to_string()
+        },
+        parts.base_fee_per_gas.to_string(),
+        parts.base_fee_multiplier.to_string(),
+        parts.max_fee_per_gas.to_string(),
+        parts.max_fee_override_per_gas.clone().unwrap_or_default(),
+        parts.max_priority_fee_per_gas.to_string(),
+        parts.nonce.to_string(),
+    ];
+    compact_hash_key(&frozen_parts.join(":"))
+}
+
+fn compact_hash_key(value: &str) -> String {
+    compact_hash_key_with_prefix("abi-draft", value)
+}
+
+fn compact_hash_key_with_prefix(prefix: &str, value: &str) -> String {
+    let mut hash = 0x811c9dc5u32;
+    for code_unit in value.encode_utf16() {
+        hash ^= code_unit as u32;
+        hash = hash.wrapping_mul(0x01000193);
+    }
+    format!("{prefix}-{hash:08x}")
+}
+
+fn abi_catalog_block_error(prefix: &str, result: AbiFunctionCatalogResult) -> String {
+    let reason = if result.reasons.is_empty() {
+        result.status
+    } else {
+        format!("{}:{}", result.status, result.reasons.join(","))
+    };
+    match result.error_summary {
+        Some(error) => format!("{prefix} ({reason}): {error}"),
+        None => format!("{prefix} ({reason})"),
+    }
+}
+
+fn parse_submit_u256(label: &str, value: &str) -> Result<U256, String> {
+    if value.trim() != value || value.is_empty() {
+        return Err(format!("{label} must be a decimal integer"));
+    }
+    U256::from_dec_str(value).map_err(|_| format!("{label} must be a decimal integer"))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ParsedBaseFeeMultiplier {
+    numerator: U256,
+    denominator: U256,
+    text: String,
+}
+
+fn parse_base_fee_multiplier(value: &str) -> Result<ParsedBaseFeeMultiplier, String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err("baseFeeMultiplier must be a non-negative decimal".to_string());
+    }
+    let (whole, fraction) = match trimmed.split_once('.') {
+        Some((whole, fraction)) => {
+            if fraction.is_empty() {
+                return Err("baseFeeMultiplier must be a non-negative decimal".to_string());
+            }
+            (whole, fraction)
+        }
+        None => (trimmed, ""),
+    };
+    if whole.is_empty()
+        || !whole.chars().all(|ch| ch.is_ascii_digit())
+        || !fraction.chars().all(|ch| ch.is_ascii_digit())
+    {
+        return Err("baseFeeMultiplier must be a non-negative decimal".to_string());
+    }
+    if fraction.len() > ABI_WRITE_MAX_MULTIPLIER_FRACTION_DIGITS {
+        return Err(format!(
+            "baseFeeMultiplier supports at most {ABI_WRITE_MAX_MULTIPLIER_FRACTION_DIGITS} decimal places"
+        ));
+    }
+    let denominator = U256::exp10(fraction.len());
+    let numerator_text = format!("{whole}{fraction}");
+    let numerator = U256::from_dec_str(&numerator_text)
+        .map_err(|_| "baseFeeMultiplier is out of range".to_string())?;
+    Ok(ParsedBaseFeeMultiplier {
+        numerator,
+        denominator,
+        text: trimmed.to_string(),
+    })
+}
+
+fn checked_add_u256(left: U256, right: U256, label: &str) -> Result<U256, String> {
+    let (value, overflowed) = left.overflowing_add(right);
+    if overflowed {
+        Err(format!("{label} overflows uint256"))
+    } else {
+        Ok(value)
+    }
+}
+
+fn checked_mul_u256(left: U256, right: U256, label: &str) -> Result<U256, String> {
+    let (value, overflowed) = left.overflowing_mul(right);
+    if overflowed {
+        Err(format!("{label} overflows uint256"))
+    } else {
+        Ok(value)
+    }
+}
+
+fn ceil_multiply_u256(value: U256, numerator: U256, denominator: U256) -> Result<U256, String> {
+    if denominator.is_zero() {
+        return Err("baseFeeMultiplier denominator cannot be zero".to_string());
+    }
+    let product = checked_mul_u256(value, numerator, "baseFeeMultiplier product")?;
+    let adjusted = checked_add_u256(
+        product,
+        denominator - U256::one(),
+        "baseFeeMultiplier product",
+    )?;
+    Ok(adjusted / denominator)
+}
+
+fn history_summary_from_decoded_value(
+    value: AbiDecodedValueSummary,
+) -> AbiDecodedValueHistorySummary {
+    AbiDecodedValueHistorySummary {
+        kind: value.kind,
+        type_label: value.type_label,
+        value: value.value,
+        byte_length: value.byte_length.map(|value| value as u64),
+        hash: value.hash,
+        items: value
+            .items
+            .unwrap_or_default()
+            .into_iter()
+            .map(history_summary_from_decoded_value)
+            .collect(),
+        fields: value
+            .fields
+            .unwrap_or_default()
+            .into_iter()
+            .map(|field| AbiDecodedFieldHistorySummary {
+                name: field.name,
+                value: history_summary_from_decoded_value(field.value),
+            })
+            .collect(),
+        truncated: value.truncated,
+    }
+}
+
+fn normalized_selected_rpc_for_submit(
+    selected_rpc: &AbiCallSelectedRpcSummary,
+    rpc_url: &str,
+) -> Result<AbiCallSelectedRpcSummary, String> {
+    let expected_endpoint = summarize_rpc_endpoint(rpc_url);
+    let expected_fingerprint = rpc_endpoint_fingerprint(rpc_url);
+    let endpoint_summary = selected_rpc.endpoint_summary.as_deref().ok_or_else(|| {
+        "selectedRpc.endpointSummary is required for ABI write submit".to_string()
+    })?;
+    if endpoint_summary != expected_endpoint {
+        return Err(
+            "submitted rpcUrl does not match frozen selectedRpc endpointSummary".to_string(),
+        );
+    }
+    let endpoint_fingerprint = selected_rpc
+        .endpoint_fingerprint
+        .as_deref()
+        .ok_or_else(|| {
+            "selectedRpc.endpointFingerprint is required for ABI write submit".to_string()
+        })?;
+    if endpoint_fingerprint != expected_fingerprint {
+        return Err(
+            "submitted rpcUrl does not match frozen selectedRpc endpointFingerprint".to_string(),
+        );
+    }
+    Ok(AbiCallSelectedRpcSummary {
+        chain_id: selected_rpc.chain_id,
+        provider_config_id: selected_rpc.provider_config_id.clone(),
+        endpoint_id: selected_rpc.endpoint_id.clone(),
+        endpoint_name: selected_rpc.endpoint_name.clone(),
+        endpoint_summary: Some(endpoint_summary.to_string()),
+        endpoint_fingerprint: Some(endpoint_fingerprint.to_string()),
+    })
+}
+
+fn rpc_endpoint_fingerprint(rpc_url: &str) -> String {
+    compact_hash_key_with_prefix(
+        "rpc-endpoint",
+        &normalized_secret_safe_rpc_identity(rpc_url),
+    )
+}
+
+fn normalized_secret_safe_rpc_identity(rpc_url: &str) -> String {
+    let trimmed = rpc_url.trim();
+    let Some((scheme, rest)) = trimmed.split_once("://") else {
+        return "[redacted_url]".to_string();
+    };
+    let scheme = scheme.to_ascii_lowercase();
+    let rest = rest.split('#').next().unwrap_or_default();
+    let authority_end = rest.find(['/', '?']).unwrap_or(rest.len());
+    let authority = rest[..authority_end]
+        .rsplit('@')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if authority.is_empty() {
+        return "[redacted_url]".to_string();
+    }
+    let authority = canonical_rpc_authority(&scheme, &authority);
+    let remainder = &rest[authority_end..];
+    let (path, query) = match remainder.split_once('?') {
+        Some((path, query)) => (if path.is_empty() { "/" } else { path }, Some(query)),
+        None => {
+            let path = if remainder.is_empty() { "/" } else { remainder };
+            (path, None)
+        }
+    };
+    let query = query
+        .filter(|query| !query.is_empty())
+        .map(|query| {
+            query
+                .split('&')
+                .filter(|part| !part.is_empty())
+                .map(|part| {
+                    let key = part.split_once('=').map(|(key, _)| key).unwrap_or(part);
+                    let key = decode_rpc_query_key(key);
+                    format!("{key}=[redacted]")
+                })
+                .collect::<Vec<_>>()
+                .join("&")
+        })
+        .filter(|query| !query.is_empty())
+        .map(|query| format!("?{query}"))
+        .unwrap_or_default();
+    format!("{scheme}://{authority}{path}{query}")
+}
+
+fn canonical_rpc_authority(scheme: &str, authority: &str) -> String {
+    let authority = authority.to_ascii_lowercase();
+    if let Some(rest) = authority.strip_prefix('[') {
+        if let Some(end) = rest.find(']') {
+            let bracketed_host = &authority[..=end + 1];
+            let suffix = &authority[end + 2..];
+            if let Some(port) = suffix.strip_prefix(':') {
+                if is_default_rpc_port(scheme, port) {
+                    return bracketed_host.to_string();
+                }
+            }
+            return authority;
+        }
+    }
+    if let Some((host, port)) = authority.rsplit_once(':') {
+        if !host.contains(':') && is_default_rpc_port(scheme, port) {
+            return host.to_string();
+        }
+    }
+    authority
+}
+
+fn is_default_rpc_port(scheme: &str, port: &str) -> bool {
+    matches!((scheme, port), ("https", "443") | ("http", "80"))
+}
+
+fn decode_rpc_query_key(value: &str) -> String {
+    let mut bytes = Vec::with_capacity(value.len());
+    let input = value.as_bytes();
+    let mut index = 0;
+    while index < input.len() {
+        match input[index] {
+            b'+' => {
+                bytes.push(b' ');
+                index += 1;
+            }
+            b'%' if index + 2 < input.len() => {
+                let high = input[index + 1];
+                let low = input[index + 2];
+                if let (Some(high), Some(low)) = (hex_value(high), hex_value(low)) {
+                    bytes.push((high << 4) | low);
+                    index += 3;
+                } else {
+                    bytes.push(input[index]);
+                    index += 1;
+                }
+            }
+            byte => {
+                bytes.push(byte);
+                index += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
+fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn validate_expected_abi_write_warnings(
+    warnings: &[AbiCallStatusSummary],
+    warnings_acknowledged: bool,
+    latest_base_fee: Option<U256>,
+    base_fee_is_custom: bool,
+) -> Result<(), String> {
+    if !warnings_acknowledged {
+        return Err("ABI write draft warnings must be acknowledged before submit".to_string());
+    }
+    let mut expected = vec!["gasEstimationUnavailable"];
+    if base_fee_is_custom {
+        expected.push("customBaseFee");
+    }
+    if latest_base_fee.is_none() {
+        expected.push("latestBaseFeeUnavailable");
+    }
+    let missing = expected
+        .into_iter()
+        .filter(|code| !warnings.iter().any(|warning| warning.code == *code))
+        .collect::<Vec<_>>();
+    if !missing.is_empty() {
+        return Err(format!(
+            "ABI write draft warnings missing expected warning codes: {}",
+            missing.join(", ")
+        ));
+    }
+    Ok(())
 }
 
 fn selected_cache_entry(input: &NormalizedInput) -> Result<AbiCacheEntryRecord, AbiReadCallResult> {
@@ -2358,6 +3137,7 @@ fn summarize_rpc_endpoint(rpc_url: &str) -> String {
     if authority.is_empty() || authority.contains(char::is_whitespace) {
         return "[redacted_endpoint]".to_string();
     }
+    let authority = canonical_rpc_authority(&scheme, authority);
 
     format!("{scheme}://{authority}")
 }
@@ -2383,10 +3163,16 @@ fn dedupe(values: Vec<String>) -> Vec<String> {
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::sync::{Mutex, OnceLock};
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     use ethers::abi::encode;
     use serde_json::json;
     use serde_json::Map;
+
+    const APP_DIR_ENV: &str = "EVM_WALLET_WORKBENCH_APP_DIR";
 
     fn abi_with_functions(functions: Vec<Function>) -> Abi {
         let mut by_name = BTreeMap::new();
@@ -2529,6 +3315,591 @@ mod tests {
         };
         overrides(&mut entry);
         entry
+    }
+
+    fn test_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    fn unique_test_dir(label: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "wallet-workbench-abi-submit-{label}-{}-{nanos}",
+            std::process::id()
+        ))
+    }
+
+    fn with_test_app_dir(test_name: &str, f: impl FnOnce(&Path)) {
+        let _guard = test_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let dir = unique_test_dir(test_name);
+        let previous = std::env::var_os(APP_DIR_ENV);
+        fs::create_dir_all(&dir).expect("create temp dir");
+        std::env::set_var(APP_DIR_ENV, &dir);
+
+        f(&dir);
+
+        if let Some(value) = previous {
+            std::env::set_var(APP_DIR_ENV, value);
+        } else {
+            std::env::remove_var(APP_DIR_ENV);
+        }
+        fs::remove_dir_all(&dir).expect("remove temp dir");
+    }
+
+    fn write_submit_fixture(
+        dir: &Path,
+        mut entry: AbiCacheEntryRecord,
+        raw_abi: &Value,
+    ) -> AbiCacheEntryRecord {
+        let artifact = serde_json::to_string(raw_abi).expect("serialize abi");
+        entry.abi_hash = hash_text(&artifact);
+        fs::write(
+            dir.join("abi-registry.json"),
+            serde_json::to_string(&json!({
+                "schemaVersion": 1,
+                "dataSources": [],
+                "cacheEntries": [entry],
+            }))
+            .expect("serialize registry"),
+        )
+        .expect("write registry");
+        let artifact_dir = dir.join("abi-artifacts");
+        fs::create_dir_all(&artifact_dir).expect("create artifact dir");
+        fs::write(
+            artifact_dir.join(format!(
+                "{}.json",
+                hash_text(&artifact).trim_start_matches("0x")
+            )),
+            artifact,
+        )
+        .expect("write artifact");
+        entry
+    }
+
+    fn abi_write_submit_input(
+        entry: &AbiCacheEntryRecord,
+        selector: String,
+        calldata: AbiCallDataSummary,
+        native_value_wei: &str,
+    ) -> AbiWriteSubmitInput {
+        let rpc_url = "https://rpc.example.invalid/v1?apiKey=secret";
+        let endpoint_fingerprint = rpc_endpoint_fingerprint(rpc_url);
+        let frozen_key = abi_write_frozen_key(&AbiWriteFrozenKeyParts {
+            chain_id: entry.chain_id,
+            selected_rpc_chain_id: Some(entry.chain_id),
+            selected_rpc_provider_config_id: entry.provider_config_id.as_deref(),
+            selected_rpc_endpoint_id: None,
+            selected_rpc_endpoint_name: Some("primary"),
+            selected_rpc_endpoint_summary: Some("https://rpc.example.invalid"),
+            selected_rpc_endpoint_fingerprint: Some(&endpoint_fingerprint),
+            account_index: 2,
+            from: "0x2222222222222222222222222222222222222222",
+            contract_address: &entry.contract_address,
+            source_kind: &entry.source_kind,
+            provider_config_id: entry.provider_config_id.as_deref(),
+            user_source_id: entry.user_source_id.as_deref(),
+            version_id: &entry.version_id,
+            abi_hash: &entry.abi_hash,
+            source_fingerprint: &entry.source_fingerprint,
+            function_signature: "setOwner(address)",
+            selector: Some(&selector),
+            calldata_hash: Some(&calldata.hash),
+            calldata_byte_length: Some(calldata.byte_length as u64),
+            native_value_wei,
+            gas_limit: "50000",
+            latest_base_fee_per_gas: Some("1000000000".to_string()),
+            base_fee_is_custom: false,
+            base_fee_per_gas: "1000000000",
+            base_fee_multiplier: "1",
+            max_fee_per_gas: "2000000000",
+            max_fee_override_per_gas: None,
+            max_priority_fee_per_gas: "1000000000",
+            nonce: 7,
+        });
+        AbiWriteSubmitInput {
+            entry: AbiManagedEntryInput {
+                chain_id: entry.chain_id,
+                contract_address: entry.contract_address.clone(),
+                source_kind: entry.source_kind.clone(),
+                provider_config_id: entry.provider_config_id.clone(),
+                user_source_id: entry.user_source_id.clone(),
+                version_id: entry.version_id.clone(),
+                abi_hash: entry.abi_hash.clone(),
+                source_fingerprint: entry.source_fingerprint.clone(),
+            },
+            rpc_url: rpc_url.to_string(),
+            account_index: 2,
+            from: "0x2222222222222222222222222222222222222222".to_string(),
+            function_signature: "setOwner(address)".to_string(),
+            canonical_params: vec![json!("0x3333333333333333333333333333333333333333")],
+            draft_id: Some("draft-1".to_string()),
+            created_at: Some("123".to_string()),
+            frozen_key: Some(frozen_key),
+            selector: Some(selector),
+            calldata_hash: Some(calldata.hash.clone()),
+            calldata_byte_length: Some(calldata.byte_length as u64),
+            argument_hash: Some(calldata.hash),
+            argument_summary: Vec::new(),
+            native_value_wei: native_value_wei.to_string(),
+            gas_limit: "50000".to_string(),
+            latest_base_fee_per_gas: Some("1000000000".to_string()),
+            base_fee_is_custom: false,
+            base_fee_per_gas: "1000000000".to_string(),
+            base_fee_multiplier: "1".to_string(),
+            max_fee_per_gas: "2000000000".to_string(),
+            max_fee_override_per_gas: None,
+            max_priority_fee_per_gas: "1000000000".to_string(),
+            nonce: 7,
+            selected_rpc: AbiCallSelectedRpcSummary {
+                chain_id: Some(entry.chain_id),
+                provider_config_id: entry.provider_config_id.clone(),
+                endpoint_id: None,
+                endpoint_name: Some("primary".to_string()),
+                endpoint_summary: Some("https://rpc.example.invalid".to_string()),
+                endpoint_fingerprint: Some(endpoint_fingerprint),
+            },
+            warnings: vec![abi_warning("warning", "gasEstimationUnavailable", "fee")],
+            blocking_statuses: Vec::new(),
+            warnings_acknowledged: true,
+        }
+    }
+
+    fn set_owner_abi() -> Value {
+        raw_abi(vec![raw_function_item(
+            "setOwner",
+            vec![raw_named_param_item("owner", "address")],
+            Vec::new(),
+        )])
+    }
+
+    fn set_owner_calldata() -> (String, AbiCallDataSummary) {
+        let abi = set_owner_abi();
+        let function = match select_raw_function_by_signature(&abi, "setOwner(address)").unwrap() {
+            RawFunctionSelection::Callable(function) => function,
+            RawFunctionSelection::UnsupportedFunctionType => panic!("setOwner should be callable"),
+        };
+        let tokens = encode_tokens(
+            &function.inputs,
+            &[json!("0x3333333333333333333333333333333333333333")],
+        )
+        .expect("encode tokens");
+        let calldata = function.encode_input(&tokens).expect("encode input");
+        (
+            selector_for_signature("setOwner(address)"),
+            calldata_summary(&calldata),
+        )
+    }
+
+    fn refresh_test_frozen_key(input: &mut AbiWriteSubmitInput) {
+        input.frozen_key = Some(abi_write_frozen_key(&AbiWriteFrozenKeyParts {
+            chain_id: input.entry.chain_id,
+            selected_rpc_chain_id: input.selected_rpc.chain_id,
+            selected_rpc_provider_config_id: input.selected_rpc.provider_config_id.as_deref(),
+            selected_rpc_endpoint_id: input.selected_rpc.endpoint_id.as_deref(),
+            selected_rpc_endpoint_name: input.selected_rpc.endpoint_name.as_deref(),
+            selected_rpc_endpoint_summary: input.selected_rpc.endpoint_summary.as_deref(),
+            selected_rpc_endpoint_fingerprint: input.selected_rpc.endpoint_fingerprint.as_deref(),
+            account_index: input.account_index,
+            from: &input.from,
+            contract_address: &input.entry.contract_address,
+            source_kind: &input.entry.source_kind,
+            provider_config_id: input.entry.provider_config_id.as_deref(),
+            user_source_id: input.entry.user_source_id.as_deref(),
+            version_id: &input.entry.version_id,
+            abi_hash: &input.entry.abi_hash,
+            source_fingerprint: &input.entry.source_fingerprint,
+            function_signature: &input.function_signature,
+            selector: input.selector.as_deref(),
+            calldata_hash: input.calldata_hash.as_deref(),
+            calldata_byte_length: input.calldata_byte_length,
+            native_value_wei: &input.native_value_wei,
+            gas_limit: &input.gas_limit,
+            latest_base_fee_per_gas: input.latest_base_fee_per_gas.clone(),
+            base_fee_is_custom: input.base_fee_is_custom,
+            base_fee_per_gas: &input.base_fee_per_gas,
+            base_fee_multiplier: &input.base_fee_multiplier,
+            max_fee_per_gas: &input.max_fee_per_gas,
+            max_fee_override_per_gas: input.max_fee_override_per_gas.clone(),
+            max_priority_fee_per_gas: &input.max_priority_fee_per_gas,
+            nonce: input.nonce,
+        }));
+    }
+
+    fn abi_warning(level: &str, code: &str, source: &str) -> AbiCallStatusSummary {
+        AbiCallStatusSummary {
+            level: level.to_string(),
+            code: code.to_string(),
+            message: Some(code.to_string()),
+            source: Some(source.to_string()),
+        }
+    }
+
+    #[test]
+    fn abi_write_submit_validation_builds_typed_history_metadata_without_raw_inputs() {
+        with_test_app_dir("abi-write-submit-valid", |dir| {
+            let raw_abi = set_owner_abi();
+            let entry = write_submit_fixture(dir, selected_entry(|_| {}), &raw_abi);
+            let (selector, calldata) = set_owner_calldata();
+            let input = abi_write_submit_input(&entry, selector.clone(), calldata.clone(), "0");
+
+            let (intent, encoded, metadata, frozen_key) =
+                validate_abi_write_submit_input(input).expect("valid ABI write submit");
+
+            assert_eq!(
+                intent.typed_transaction.transaction_type,
+                TransactionType::ContractCall
+            );
+            assert_eq!(
+                intent.typed_transaction.selector.as_deref(),
+                Some(selector.as_str())
+            );
+            assert_eq!(
+                intent.typed_transaction.method_name.as_deref(),
+                Some("setOwner(address)")
+            );
+            assert_eq!(intent.value_wei, "0");
+            assert_eq!(calldata_summary(&encoded), calldata);
+            assert_eq!(metadata.intent_kind, "abiWriteCall");
+            assert!(frozen_key.starts_with("abi-draft-"));
+            assert_eq!(
+                metadata
+                    .calldata
+                    .as_ref()
+                    .and_then(|item| item.hash.clone()),
+                Some(calldata.hash)
+            );
+            let serialized = serde_json::to_string(&metadata).expect("serialize metadata");
+            assert!(!serialized.contains("canonicalParams"));
+            assert!(!serialized.contains("apiKey=secret"));
+        });
+    }
+
+    #[test]
+    fn abi_write_submit_derives_argument_summary_from_canonical_params() {
+        with_test_app_dir("abi-write-submit-derived-summary", |dir| {
+            let raw_abi = set_owner_abi();
+            let entry = write_submit_fixture(dir, selected_entry(|_| {}), &raw_abi);
+            let (selector, calldata) = set_owner_calldata();
+            let mut input = abi_write_submit_input(&entry, selector, calldata, "0");
+            input.argument_summary = vec![AbiDecodedValueSummary {
+                kind: "string".to_string(),
+                type_label: "string".to_string(),
+                value: Some("caller supplied fake summary".to_string()),
+                byte_length: None,
+                hash: None,
+                items: None,
+                fields: None,
+                truncated: false,
+            }];
+
+            let (_, _, metadata, _) =
+                validate_abi_write_submit_input(input).expect("valid ABI write submit");
+
+            assert_eq!(metadata.argument_summary.len(), 1);
+            assert_eq!(metadata.argument_summary[0].kind, "address");
+            assert_eq!(
+                metadata.argument_summary[0].value.as_deref(),
+                Some("0x3333333333333333333333333333333333333333")
+            );
+            let serialized = serde_json::to_string(&metadata).expect("serialize metadata");
+            assert!(!serialized.contains("caller supplied fake summary"));
+        });
+    }
+
+    #[test]
+    fn abi_write_submit_validation_requires_matching_frozen_key() {
+        with_test_app_dir("abi-write-submit-frozen-key", |dir| {
+            let raw_abi = set_owner_abi();
+            let entry = write_submit_fixture(dir, selected_entry(|_| {}), &raw_abi);
+            let (selector, calldata) = set_owner_calldata();
+            let mut input = abi_write_submit_input(&entry, selector.clone(), calldata.clone(), "0");
+            input.frozen_key = None;
+
+            let error = validate_abi_write_submit_input(input).expect_err("missing key blocked");
+
+            assert!(error.contains("frozenKey is required"));
+
+            let mut input = abi_write_submit_input(&entry, selector, calldata, "0");
+            input.frozen_key = Some("abi-draft-00000000".to_string());
+
+            let error = validate_abi_write_submit_input(input).expect_err("mismatch blocked");
+
+            assert!(error.contains("frozenKey does not match"));
+        });
+    }
+
+    #[test]
+    fn abi_write_submit_validation_blocks_swapped_rpc_url_after_freeze() {
+        with_test_app_dir("abi-write-submit-rpc-swap", |dir| {
+            let raw_abi = set_owner_abi();
+            let entry = write_submit_fixture(dir, selected_entry(|_| {}), &raw_abi);
+            let (selector, calldata) = set_owner_calldata();
+            let mut input = abi_write_submit_input(&entry, selector, calldata, "0");
+            input.rpc_url = "https://rpc.example.invalid/v2?apiKey=secret".to_string();
+
+            let error = validate_abi_write_submit_input(input).expect_err("RPC swap blocked");
+
+            assert!(error.contains("endpointFingerprint"));
+        });
+    }
+
+    #[test]
+    fn abi_write_submit_validation_accepts_uppercase_rpc_host_against_lowercase_summary() {
+        with_test_app_dir("abi-write-submit-rpc-uppercase-host", |dir| {
+            let raw_abi = set_owner_abi();
+            let entry = write_submit_fixture(dir, selected_entry(|_| {}), &raw_abi);
+            let (selector, calldata) = set_owner_calldata();
+            let mut input = abi_write_submit_input(&entry, selector, calldata, "0");
+            input.rpc_url = "https://RPC.EXAMPLE.invalid:443/v1?apiKey=secret#fragment".to_string();
+
+            let (_, _, metadata, _) = validate_abi_write_submit_input(input)
+                .expect("uppercase host and default port should validate");
+
+            assert_eq!(
+                metadata
+                    .selected_rpc
+                    .as_ref()
+                    .and_then(|rpc| rpc.endpoint_summary.as_deref()),
+                Some("https://rpc.example.invalid")
+            );
+            assert_eq!(
+                summarize_rpc_endpoint("https://RPC.EXAMPLE.invalid:443/v1?apiKey=secret#fragment"),
+                "https://rpc.example.invalid"
+            );
+            assert_eq!(
+                normalized_secret_safe_rpc_identity(
+                    "https://RPC.EXAMPLE.invalid:443/v1?apiKey=secret#fragment"
+                ),
+                "https://rpc.example.invalid/v1?apiKey=[redacted]"
+            );
+            assert!(!summarize_rpc_endpoint(
+                "https://RPC.EXAMPLE.invalid:443/v1?apiKey=secret#fragment"
+            )
+            .contains("secret"));
+            assert!(!summarize_rpc_endpoint(
+                "https://RPC.EXAMPLE.invalid:443/v1?apiKey=secret#fragment"
+            )
+            .contains("/v1"));
+        });
+    }
+
+    #[test]
+    fn rpc_endpoint_fingerprint_decodes_query_keys_and_redacts_values() {
+        let encoded_key =
+            rpc_endpoint_fingerprint("https://rpc.example.invalid/v1?api%5Fkey=secret");
+        let decoded_key = rpc_endpoint_fingerprint("https://rpc.example.invalid/v1?api_key=other");
+        let plus_key = rpc_endpoint_fingerprint("https://rpc.example.invalid/v1?token+name=secret");
+        let space_key =
+            rpc_endpoint_fingerprint("https://rpc.example.invalid/v1?token%20name=other");
+        let https_default_port =
+            rpc_endpoint_fingerprint("https://RPC.EXAMPLE.invalid:443/v1?api_key=secret");
+        let https_no_port =
+            rpc_endpoint_fingerprint("https://rpc.example.invalid/v1?api_key=other");
+        let http_default_port =
+            rpc_endpoint_fingerprint("http://RPC.EXAMPLE.invalid:80/v1?api_key=secret");
+        let http_no_port = rpc_endpoint_fingerprint("http://rpc.example.invalid/v1?api_key=other");
+        let non_default_port =
+            rpc_endpoint_fingerprint("https://rpc.example.invalid:8443/v1?api_key=secret");
+        let different_path =
+            rpc_endpoint_fingerprint("https://rpc.example.invalid/v2?api%5Fkey=secret");
+
+        assert_eq!(encoded_key, decoded_key);
+        assert_eq!(plus_key, space_key);
+        assert_eq!(https_default_port, https_no_port);
+        assert_eq!(http_default_port, http_no_port);
+        assert_ne!(https_no_port, non_default_port);
+        assert_eq!(
+            summarize_rpc_endpoint("http://HOST.invalid:80/v1?api_key=secret"),
+            "http://host.invalid"
+        );
+        assert_eq!(
+            summarize_rpc_endpoint("https://HOST.invalid:8443/v1?api_key=secret"),
+            "https://host.invalid:8443"
+        );
+        assert_ne!(encoded_key, different_path);
+        assert!(!normalized_secret_safe_rpc_identity(
+            "https://user:password@rpc.example.invalid/v1?api%5Fkey=secret#fragment"
+        )
+        .contains("secret"));
+    }
+
+    #[test]
+    fn abi_write_submit_validation_blocks_unacknowledged_or_missing_expected_warnings() {
+        with_test_app_dir("abi-write-submit-warning-ack", |dir| {
+            let raw_abi = set_owner_abi();
+            let entry = write_submit_fixture(dir, selected_entry(|_| {}), &raw_abi);
+            let (selector, calldata) = set_owner_calldata();
+            let mut input = abi_write_submit_input(&entry, selector.clone(), calldata.clone(), "0");
+            input.warnings_acknowledged = false;
+
+            let error =
+                validate_abi_write_submit_input(input).expect_err("warnings must be acknowledged");
+
+            assert!(error.contains("warnings must be acknowledged"));
+
+            let mut input = abi_write_submit_input(&entry, selector.clone(), calldata.clone(), "0");
+            input.warnings.clear();
+
+            let error =
+                validate_abi_write_submit_input(input).expect_err("missing expected warning");
+
+            assert!(error.contains("gasEstimationUnavailable"));
+
+            let mut input = abi_write_submit_input(&entry, selector, calldata, "0");
+            input.latest_base_fee_per_gas = None;
+            input.base_fee_is_custom = true;
+            input.warnings = vec![
+                abi_warning("warning", "gasEstimationUnavailable", "fee"),
+                abi_warning("info", "customBaseFee", "fee"),
+                abi_warning("warning", "latestBaseFeeUnavailable", "fee"),
+            ];
+            refresh_test_frozen_key(&mut input);
+
+            validate_abi_write_submit_input(input).expect("acknowledged expected warnings pass");
+        });
+    }
+
+    #[test]
+    fn abi_write_submit_validation_blocks_cache_stale_and_source_conflict() {
+        with_test_app_dir("abi-write-submit-cache-stale", |dir| {
+            let raw_abi = set_owner_abi();
+            let entry = write_submit_fixture(
+                dir,
+                selected_entry(|entry| {
+                    entry.cache_status = "cacheStale".to_string();
+                    entry.selection_status = "sourceConflict".to_string();
+                }),
+                &raw_abi,
+            );
+            let (selector, calldata) = set_owner_calldata();
+            let input = abi_write_submit_input(&entry, selector, calldata, "0");
+
+            let error = validate_abi_write_submit_input(input).expect_err("stale source blocked");
+
+            assert!(error.contains("cacheStale"));
+            assert!(error.contains("sourceConflict"));
+        });
+    }
+
+    #[test]
+    fn abi_write_submit_validation_blocks_value_and_calldata_mismatch() {
+        with_test_app_dir("abi-write-submit-mismatch", |dir| {
+            let raw_abi = set_owner_abi();
+            let entry = write_submit_fixture(dir, selected_entry(|_| {}), &raw_abi);
+            let (selector, mut calldata) = set_owner_calldata();
+            calldata.hash =
+                "0xfffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0"
+                    .to_string();
+            let error = validate_abi_write_submit_input(abi_write_submit_input(
+                &entry,
+                selector.clone(),
+                calldata,
+                "0",
+            ))
+            .expect_err("calldata mismatch blocked");
+            assert!(error.contains("calldata hash"));
+
+            let (_, calldata) = set_owner_calldata();
+            let error = validate_abi_write_submit_input(abi_write_submit_input(
+                &entry, selector, calldata, "1",
+            ))
+            .expect_err("nonpayable value blocked");
+            assert!(error.contains("nonpayable"));
+        });
+    }
+
+    #[test]
+    fn abi_write_submit_validation_rejects_invalid_fee_multiplier() {
+        with_test_app_dir("abi-write-submit-invalid-multiplier", |dir| {
+            let raw_abi = set_owner_abi();
+            let entry = write_submit_fixture(dir, selected_entry(|_| {}), &raw_abi);
+            let (selector, calldata) = set_owner_calldata();
+            for invalid in ["", "-1", "abc", "1.", "1.0000000000000000001"] {
+                let mut input =
+                    abi_write_submit_input(&entry, selector.clone(), calldata.clone(), "0");
+                input.base_fee_multiplier = invalid.to_string();
+                refresh_test_frozen_key(&mut input);
+
+                let error =
+                    validate_abi_write_submit_input(input).expect_err("invalid multiplier blocked");
+
+                assert!(error.contains("baseFeeMultiplier"), "{invalid}: {error}");
+            }
+        });
+    }
+
+    #[test]
+    fn abi_write_submit_validation_rejects_mismatched_max_fee_without_override() {
+        with_test_app_dir("abi-write-submit-max-fee-mismatch", |dir| {
+            let raw_abi = set_owner_abi();
+            let entry = write_submit_fixture(dir, selected_entry(|_| {}), &raw_abi);
+            let (selector, calldata) = set_owner_calldata();
+            let mut input = abi_write_submit_input(&entry, selector, calldata, "0");
+            input.base_fee_per_gas = "100".to_string();
+            input.base_fee_multiplier = "1.5".to_string();
+            input.max_priority_fee_per_gas = "7".to_string();
+            input.max_fee_per_gas = "156".to_string();
+            refresh_test_frozen_key(&mut input);
+
+            let error = validate_abi_write_submit_input(input)
+                .expect_err("derived max fee mismatch blocked");
+
+            assert!(error.contains("expected 157"), "{error}");
+        });
+    }
+
+    #[test]
+    fn abi_write_submit_validation_accepts_decimal_multiplier_ceil_behavior() {
+        with_test_app_dir("abi-write-submit-decimal-multiplier", |dir| {
+            let raw_abi = set_owner_abi();
+            let entry = write_submit_fixture(dir, selected_entry(|_| {}), &raw_abi);
+            let (selector, calldata) = set_owner_calldata();
+            let mut input = abi_write_submit_input(&entry, selector, calldata, "0");
+            input.base_fee_per_gas = "101".to_string();
+            input.base_fee_multiplier = "1.25".to_string();
+            input.max_priority_fee_per_gas = "3".to_string();
+            input.max_fee_per_gas = "130".to_string();
+            refresh_test_frozen_key(&mut input);
+
+            let (intent, _, _, _) =
+                validate_abi_write_submit_input(input).expect("ceil-derived max fee accepted");
+
+            assert_eq!(intent.max_fee_per_gas, "130");
+        });
+    }
+
+    #[test]
+    fn abi_write_submit_validation_uses_max_fee_override_as_expected_max_fee() {
+        with_test_app_dir("abi-write-submit-max-fee-override", |dir| {
+            let raw_abi = set_owner_abi();
+            let entry = write_submit_fixture(dir, selected_entry(|_| {}), &raw_abi);
+            let (selector, calldata) = set_owner_calldata();
+            let mut input = abi_write_submit_input(&entry, selector.clone(), calldata.clone(), "0");
+            input.base_fee_per_gas = "101".to_string();
+            input.base_fee_multiplier = "1.25".to_string();
+            input.max_priority_fee_per_gas = "3".to_string();
+            input.max_fee_override_per_gas = Some("999".to_string());
+            input.max_fee_per_gas = "999".to_string();
+            refresh_test_frozen_key(&mut input);
+
+            validate_abi_write_submit_input(input).expect("override max fee accepted");
+
+            let mut input = abi_write_submit_input(&entry, selector, calldata, "0");
+            input.max_fee_override_per_gas = Some("999".to_string());
+            input.max_fee_per_gas = "998".to_string();
+            refresh_test_frozen_key(&mut input);
+
+            let error =
+                validate_abi_write_submit_input(input).expect_err("override mismatch blocked");
+
+            assert!(error.contains("expected 999"), "{error}");
+        });
     }
 
     #[test]

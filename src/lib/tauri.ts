@@ -319,6 +319,41 @@ export interface AbiCalldataPreviewInput extends AbiManagedEntryInput {
   canonicalParams?: unknown[];
 }
 
+export interface AbiWriteSubmitInput extends AbiCalldataPreviewInput {
+  rpcUrl: string;
+  accountIndex: number;
+  from: string;
+  draftId?: string | null;
+  createdAt?: string | null;
+  frozenKey: string;
+  selector?: string | null;
+  calldataHash?: string | null;
+  calldataByteLength?: number | null;
+  argumentHash?: string | null;
+  argumentSummary?: AbiDecodedValueSummary[];
+  nativeValueWei: string;
+  gasLimit: string;
+  latestBaseFeePerGas?: string | null;
+  baseFeeIsCustom: boolean;
+  baseFeePerGas: string;
+  baseFeeMultiplier: string;
+  maxFeePerGas: string;
+  maxFeeOverridePerGas?: string | null;
+  maxPriorityFeePerGas: string;
+  nonce: number;
+  selectedRpc?: {
+    chainId?: number | null;
+    providerConfigId?: string | null;
+    endpointId?: string | null;
+    endpointName?: string | null;
+    endpointSummary?: string | null;
+    endpointFingerprint?: string | null;
+  } | null;
+  warnings?: Array<{ level: string; code: string; message?: string | null; source?: string | null }>;
+  blockingStatuses?: Array<{ level: string; code: string; message?: string | null; source?: string | null }>;
+  warningsAcknowledged?: boolean;
+}
+
 export interface AbiCallDataSummary {
   byteLength: number;
   hash: string;
@@ -892,6 +927,11 @@ export function listManagedAbiFunctions(input: AbiManagedEntryInput) {
 
 export function previewManagedAbiCalldata(input: AbiCalldataPreviewInput) {
   return invoke<AbiCalldataPreviewResult>("preview_managed_abi_calldata", { input });
+}
+
+export async function submitAbiWriteCall(input: AbiWriteSubmitInput) {
+  const raw = await invoke<string>("submit_abi_write_call_command", { input });
+  return normalizeHistoryRecord(JSON.parse(raw));
 }
 
 export function loadTokenWatchlistState() {

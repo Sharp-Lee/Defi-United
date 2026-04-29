@@ -465,6 +465,99 @@ describe("ABI read model", () => {
     expect(result.draft?.selectedRpc?.endpointSummary).toContain("https://rpc.example.invalid");
   });
 
+  it("freezes selected RPC identity into ABI write draft keys", () => {
+    const entry = cacheEntry("usable", { selected: true, selectionStatus: "selected" });
+    const baseInput: Omit<AbiWriteDraftInput, "selectedRpc"> = {
+      selectedChainId: 1,
+      chainLabel: "Ethereum",
+      accountIndex: 0,
+      from: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      rpcConfigured: true,
+      entry,
+      fn: {
+        name: "deposit",
+        signature: "deposit(uint256)",
+        selector: "0xb6b55f25",
+        stateMutability: "payable",
+        callKind: "writeDraft",
+        supported: true,
+        unsupportedReason: null,
+        inputs: [],
+        outputs: [],
+      },
+      preview: {
+        status: "success",
+        reasons: [],
+        functionSignature: "deposit(uint256)",
+        selector: "0xb6b55f25",
+        contractAddress: contract,
+        sourceKind: entry.sourceKind,
+        providerConfigId: entry.providerConfigId,
+        userSourceId: entry.userSourceId,
+        versionId: entry.versionId,
+        abiHash: entry.abiHash,
+        sourceFingerprint: entry.sourceFingerprint,
+        parameterSummary: [],
+        calldata: { byteLength: 36, hash: "0xpreviewhash" },
+      },
+      nativeValueWei: "0",
+      gasLimit: "90000",
+      latestBaseFeeGwei: "10",
+      baseFeeGwei: "",
+      baseFeeMultiplier: "2",
+      maxFeeOverrideGwei: "",
+      priorityFeeGwei: "1",
+      nonce: "7",
+      createdAt: "2026-04-29T01:02:03.000Z",
+    };
+
+    const first = buildAbiWriteDraft({
+      ...baseInput,
+      selectedRpc: { chainId: 1, endpointSummary: "https://rpc.example/a?token=secret" },
+    });
+    const second = buildAbiWriteDraft({
+      ...baseInput,
+      selectedRpc: { chainId: 1, endpointSummary: "https://rpc.example/b?token=secret" },
+    });
+    const third = buildAbiWriteDraft({
+      ...baseInput,
+      selectedRpc: { chainId: 1, endpointSummary: "https://other-rpc.example/a?token=secret" },
+    });
+    const encodedKey = buildAbiWriteDraft({
+      ...baseInput,
+      selectedRpc: { chainId: 1, endpointSummary: "https://rpc.example/a?api%5Fkey=secret" },
+    });
+    const decodedKey = buildAbiWriteDraft({
+      ...baseInput,
+      selectedRpc: { chainId: 1, endpointSummary: "https://rpc.example/a?api_key=other-secret" },
+    });
+    const plusKeyFromRawSource = buildAbiWriteDraft({
+      ...baseInput,
+      selectedRpc: {
+        chainId: 1,
+        endpointSummary: "https://rpc.example/a?token name=[redacted]",
+        endpointFingerprintSource: "https://rpc.example/a?token+name=secret",
+      },
+    });
+    const spaceKeyFromRawSource = buildAbiWriteDraft({
+      ...baseInput,
+      selectedRpc: {
+        chainId: 1,
+        endpointSummary: "https://rpc.example/a?token name=[redacted]",
+        endpointFingerprintSource: "https://rpc.example/a?token%20name=other-secret",
+      },
+    });
+
+    expect(first.draft?.frozenKey).not.toEqual(second.draft?.frozenKey);
+    expect(first.draft?.frozenKey).not.toEqual(third.draft?.frozenKey);
+    expect(encodedKey.draft?.frozenKey).toEqual(decodedKey.draft?.frozenKey);
+    expect(plusKeyFromRawSource.draft?.selectedRpc?.endpointSummary).toBe("https://rpc.example");
+    expect(plusKeyFromRawSource.draft?.frozenKey).toEqual(spaceKeyFromRawSource.draft?.frozenKey);
+    expect(JSON.stringify(first.draft)).not.toContain("secret");
+    expect(JSON.stringify(encodedKey.draft)).not.toContain("secret");
+    expect(JSON.stringify(plusKeyFromRawSource.draft)).not.toContain("secret");
+  });
+
   it("blocks read functions, cacheStale entries, selector conflicts, missing preview, and nonpayable value", () => {
     const staleConflict = cacheEntry("blocked", {
       selected: true,
@@ -635,5 +728,27 @@ describe("ABI read model", () => {
     });
     expect(recovered.blockingStatuses).toEqual([]);
     expect(recovered.draft?.nonce).toBe(8);
+
+    const boundary = buildAbiWriteDraft({
+      ...baseInput,
+      gasLimit: "90000",
+      baseFeeGwei: "10",
+      baseFeeMultiplier: "1.123456789012345678",
+      priorityFeeGwei: "1",
+      nonce: "8",
+    });
+    expect(boundary.blockingStatuses).toEqual([]);
+    expect(boundary.draft?.baseFeeMultiplier).toBe("1.123456789012345678");
+
+    const tooPrecise = buildAbiWriteDraft({
+      ...baseInput,
+      gasLimit: "90000",
+      baseFeeGwei: "10",
+      baseFeeMultiplier: "1.1234567890123456789",
+      priorityFeeGwei: "1",
+      nonce: "8",
+    });
+    expect(tooPrecise.draft).toBeNull();
+    expect(tooPrecise.blockingStatuses.map((item) => item.code)).toContain("baseFeeMultiplier");
   });
 });

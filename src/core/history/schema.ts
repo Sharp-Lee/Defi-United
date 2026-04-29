@@ -201,6 +201,7 @@ export interface AbiCallSelectedRpcSummary {
   endpoint_id: string | null;
   endpoint_name: string | null;
   endpoint_summary: string | null;
+  endpoint_fingerprint: string | null;
 }
 
 export interface AbiCallStatusSummary {
@@ -713,6 +714,7 @@ function normalizeAbiSelectedRpcSummary(rawRpc: unknown): AbiCallSelectedRpcSumm
     endpoint_id: stringOrNull(rpc.endpoint_id ?? rpc.endpointId),
     endpoint_name: sanitizeDurableRpcSummary(rpc.endpoint_name ?? rpc.endpointName, 120),
     endpoint_summary: sanitizeDurableRpcSummary(rpc.endpoint_summary ?? rpc.endpointSummary, 200),
+    endpoint_fingerprint: stringOrNull(rpc.endpoint_fingerprint ?? rpc.endpointFingerprint),
   };
 }
 

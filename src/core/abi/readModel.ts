@@ -76,7 +76,12 @@ export interface AbiReadModelQuery {
 
 export interface AbiWriteDraftSelectedRpcSummary {
   chainId: number | null;
+  providerConfigId?: string | null;
+  endpointId?: string | null;
+  endpointName?: string | null;
   endpointSummary: string | null;
+  endpointFingerprint?: string | null;
+  endpointFingerprintSource?: string | null;
 }
 
 export interface AbiWriteDraftStatus {
@@ -131,6 +136,7 @@ export interface AbiWriteDraftReadModel {
   nativeValueWei: string;
   gasLimit: string;
   latestBaseFeePerGas: string | null;
+  baseFeeIsCustom: boolean;
   baseFeePerGas: string;
   baseFeeMultiplier: string;
   maxFeePerGas: string;
@@ -337,9 +343,17 @@ export function buildAbiWriteDraft(input: AbiWriteDraftInput): AbiWriteDraftBuil
   const argumentSummary = boundedArgumentSummary(preview.parameterSummary);
   const calldataHash = preview.calldata?.hash ?? null;
   const calldataByteLength = preview.calldata?.byteLength ?? null;
+  const selectedRpc = sanitizeSelectedRpc(input.selectedRpc);
+  const baseFeeIsCustom = customBaseFee !== null;
   const frozenParts = [
     "abiWriteDraft",
     input.selectedChainId.toString(),
+    selectedRpc?.chainId?.toString() ?? "",
+    selectedRpc?.providerConfigId ?? "",
+    selectedRpc?.endpointId ?? "",
+    selectedRpc?.endpointName ?? "",
+    selectedRpc?.endpointSummary ?? "",
+    selectedRpc?.endpointFingerprint ?? "",
     input.accountIndex.toString(),
     input.from,
     entry.contractAddress,
@@ -355,6 +369,8 @@ export function buildAbiWriteDraft(input: AbiWriteDraftInput): AbiWriteDraftBuil
     calldataByteLength?.toString() ?? "",
     nativeValue.toString(),
     gasLimit.toString(),
+    latestBaseFee?.toString() ?? "",
+    baseFeeIsCustom ? "true" : "false",
     baseFee.toString(),
     input.baseFeeMultiplier.trim(),
     maxFee.toString(),
@@ -388,13 +404,14 @@ export function buildAbiWriteDraft(input: AbiWriteDraftInput): AbiWriteDraftBuil
       nativeValueWei: nativeValue.toString(),
       gasLimit: gasLimit.toString(),
       latestBaseFeePerGas: latestBaseFee?.toString() ?? null,
+      baseFeeIsCustom,
       baseFeePerGas: baseFee.toString(),
       baseFeeMultiplier: multiplier.text,
       maxFeePerGas: maxFee.toString(),
       maxFeeOverridePerGas: maxFeeOverride?.toString() ?? null,
       maxPriorityFeePerGas: priorityFee.toString(),
       nonce,
-      selectedRpc: sanitizeSelectedRpc(input.selectedRpc),
+      selectedRpc,
       warnings: uniqueWarnings,
       blockingStatuses: [],
       canSubmit: false,
@@ -615,6 +632,12 @@ function parseMultiplier(value: string, blockingStatuses: AbiWriteDraftStatus[])
     return null;
   }
   const [whole, fraction = ""] = trimmed.split(".");
+  if (fraction.length > 18) {
+    blockingStatuses.push(
+      status("blocking", "baseFeeMultiplier", "Base fee multiplier supports at most 18 decimal places.", "fee"),
+    );
+    return null;
+  }
   const denominator = 10n ** BigInt(fraction.length);
   const numerator = BigInt(`${whole}${fraction}` || "0");
   return { numerator, denominator, text: trimmed };
@@ -677,8 +700,45 @@ function sanitizeSelectedRpc(
   if (selectedRpc === null) return null;
   return {
     chainId: selectedRpc.chainId,
-    endpointSummary: sanitizeRpcSummary(selectedRpc.endpointSummary),
+    providerConfigId: sanitizeRpcSummary(selectedRpc.providerConfigId ?? null),
+    endpointId: sanitizeRpcSummary(selectedRpc.endpointId ?? null),
+    endpointName: sanitizeRpcSummary(selectedRpc.endpointName ?? null),
+    endpointSummary: sanitizeRpcEndpointOrigin(selectedRpc.endpointSummary),
+    endpointFingerprint:
+      sanitizeRpcSummary(selectedRpc.endpointFingerprint ?? null) ??
+      rpcEndpointFingerprint(selectedRpc.endpointFingerprintSource ?? selectedRpc.endpointSummary),
   };
+}
+
+function rpcEndpointFingerprint(value: string | null) {
+  const identity = normalizedSecretSafeRpcIdentity(value);
+  return identity === null ? null : compactHashKeyWithPrefix("rpc-endpoint", identity);
+}
+
+function normalizedSecretSafeRpcIdentity(value: string | null) {
+  if (value === null) return null;
+  const match = value.match(/https?:\/\/[^\s"'<>;,]+/i);
+  if (!match) return sanitizeRpcSummary(value);
+  try {
+    const url = new URL(match[0]);
+    const query = Array.from(url.searchParams.keys())
+      .map((key) => `${key}=[redacted]`)
+      .join("&");
+    return `${url.protocol.toLowerCase()}//${url.host.toLowerCase()}${url.pathname}${query ? `?${query}` : ""}`;
+  } catch {
+    return "[redacted_url]";
+  }
+}
+
+function sanitizeRpcEndpointOrigin(value: string | null) {
+  if (value === null) return null;
+  const match = value.match(/https?:\/\/[^\s"'<>;,]+/i);
+  if (!match) return sanitizeRpcSummary(value);
+  try {
+    return new URL(match[0]).origin;
+  } catch {
+    return "[redacted_url]";
+  }
 }
 
 function sanitizeRpcSummary(value: string | null) {
@@ -698,12 +758,16 @@ function sanitizeRpcSummary(value: string | null) {
 }
 
 function compactHashKey(value: string) {
+  return compactHashKeyWithPrefix("abi-draft", value);
+}
+
+function compactHashKeyWithPrefix(prefix: string, value: string) {
   let hash = 0x811c9dc5;
   for (let index = 0; index < value.length; index += 1) {
     hash ^= value.charCodeAt(index);
     hash = Math.imul(hash, 0x01000193);
   }
-  return `abi-draft-${(hash >>> 0).toString(16).padStart(8, "0")}`;
+  return `${prefix}-${(hash >>> 0).toString(16).padStart(8, "0")}`;
 }
 
 function reasonsForCandidates(

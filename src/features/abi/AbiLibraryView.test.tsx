@@ -1,4 +1,4 @@
-import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   AbiCacheEntryRecord,
@@ -219,6 +219,9 @@ function renderAbi(
     onListFunctions: ReturnType<typeof vi.fn>;
     onPreviewCalldata: ReturnType<typeof vi.fn>;
   }> = {},
+  options: Partial<{
+    rpcUrl: string;
+  }> = {},
 ) {
   const props = {
     onRefresh: handlers.onRefresh ?? vi.fn(),
@@ -294,7 +297,7 @@ function renderAbi(
         },
       ]}
       chainName="Ethereum"
-      rpcUrl="https://rpc.example.invalid/mainnet?apikey=secret"
+      rpcUrl={options.rpcUrl ?? "https://rpc.example.invalid/mainnet?apikey=secret"}
       selectedChainId={1n}
       state={state}
       {...props}
@@ -382,6 +385,24 @@ async function buildSuccessfulWriteDraft() {
   fireEvent.change(screen.getByLabelText("Gas limit"), { target: { value: "80000" } });
   fireEvent.click(screen.getByRole("button", { name: "Build Draft" }));
   await screen.findByLabelText("ABI write draft confirmation");
+}
+
+async function buildFrozenKeyForRpc(rpcUrl: string) {
+  const onListFunctions = vi.fn(async (input: AbiManagedEntryInput) => writeFunctionCatalog(input));
+  const onPreviewCalldata = vi.fn(async (input: AbiCalldataPreviewInput) =>
+    successfulWritePreview(input),
+  );
+  renderAbi(
+    registryState({ cacheEntries: [cacheEntry("v1")] }),
+    { onListFunctions, onPreviewCalldata },
+    { rpcUrl },
+  );
+  await buildSuccessfulWriteDraft();
+  const confirmation = screen.getByLabelText("ABI write draft confirmation");
+  const match = confirmation.textContent?.match(/Frozen key(abi-draft-[0-9a-f]+)/);
+  expect(match?.[1]).toBeTruthy();
+  expect(confirmation).not.toHaveTextContent("SECRET");
+  return match![1];
 }
 
 describe("AbiLibraryView", () => {
@@ -755,6 +776,7 @@ describe("AbiLibraryView", () => {
     expect(confirmation).toHaveTextContent("1.5 gwei");
     expect(confirmation).toHaveTextContent("0xcccccccccccc");
     expect(confirmation).toHaveTextContent("https://rpc.example.invalid");
+    expect(confirmation).not.toHaveTextContent("/mainnet");
     expect(confirmation).not.toHaveTextContent("apikey=secret");
     expect(screen.getByRole("button", { name: "Submit Transaction" })).toBeDisabled();
   });
@@ -976,6 +998,23 @@ describe("AbiLibraryView", () => {
 
     expect(await screen.findByLabelText("ABI write draft confirmation")).toHaveTextContent("Nonce");
     expect(screen.getByLabelText("ABI write draft confirmation")).toHaveTextContent("8");
+  });
+
+  it("builds RPC fingerprints from raw endpoint source without losing decoded query keys", async () => {
+    const plusKeyFrozenKey = await buildFrozenKeyForRpc(
+      "https://rpc.example.invalid/mainnet?token+name=SECRET",
+    );
+    cleanup();
+    const encodedSpaceFrozenKey = await buildFrozenKeyForRpc(
+      "https://rpc.example.invalid/mainnet?token%20name=OTHER_SECRET",
+    );
+    cleanup();
+    const differentKeyFrozenKey = await buildFrozenKeyForRpc(
+      "https://rpc.example.invalid/mainnet?tokenName=SECRET",
+    );
+
+    expect(plusKeyFrozenKey).toEqual(encodedSpaceFrozenKey);
+    expect(plusKeyFrozenKey).not.toEqual(differentKeyFrozenKey);
   });
 
   it("keeps preview call and submit disabled for selector-conflict entries", async () => {
