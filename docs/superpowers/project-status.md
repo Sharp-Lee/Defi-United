@@ -12,9 +12,9 @@
 | P6-2d | Desktop Hot Contract UI | `codex/p6-2d-hot-contract-ui` | `c5a04e0` | passed in prior SDD loop | passed in prior SDD loop | yes | no | Desktop hot contract UI. |
 | P6-2e | Diagnostics, Redaction, And Local Hints | `codex/p6-2e-hot-contract-diagnostics` | `799cca8` | passed in prior SDD loop | passed | yes | no | Final controller verification passed: focused diagnostics/hot-contract Vitest, `npm run typecheck`, diagnostics/hot_contract Cargo tests, `git diff --check`, and scoped rustfmt diagnostics. |
 | Support | Project workflow record | `codex/project-workflow-record` | `6e302bf` | passed in prior SDD loop | passed in prior SDD loop | yes | no | Support task; included in integration branch. |
-| P6-2f | Integration And Security Regressions | `codex/p6-2-hot-contract-analysis` | `pending` | pending | pending | no | no | Current integration task. |
-| P6-2 | Milestone Merge | `main` | `pending` | pending | pending | no | no | Target branch is `main`; merge after P6-2f passes. |
+| P6-2f | Integration And Security Regressions | `codex/p6-2-hot-contract-analysis` | `c30a217` | passed | passed | yes | no | Controller verification passed: `npm test -- src/features src/core`, `npm run typecheck`, `cargo test --manifest-path src-tauri/Cargo.toml`, `cargo test --manifest-path src-tauri/Cargo.toml hot_contract`, `scripts/run-anvil-check.sh`, and `git diff --check`. |
+| P6-2 | Milestone Merge | `main` | `pending` | pending | pending | no | no | Target branch is `main`; merge after P6-2f passes and is pushed. |
 
 ## Next
 
-Next task: P6-2f Integration And Security Regressions. After that, do the P6-2 milestone merge.
+Next task: P6-2 milestone merge.
