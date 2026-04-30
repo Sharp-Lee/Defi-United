@@ -12,6 +12,7 @@ import {
   rawCalldataRpcEndpointFingerprint,
   summarizeRawCalldataRpcEndpoint,
 } from "../rawCalldata/RawCalldataView";
+import { buildTxAnalysisLocalHistoryModel } from "../../core/txAnalysis/localHistory";
 
 export interface TxAnalysisViewProps {
   chainId: bigint;
@@ -74,6 +75,31 @@ function uncertaintyLabel(code: string) {
   }
 }
 
+function localHistoryStatusLabel(status: string) {
+  switch (status) {
+    case "noMatch":
+      return "No local history match";
+    case "matched":
+      return "Local history match";
+    case "duplicateTxHash":
+      return "Duplicate tx hash in local history";
+    case "chainConflict":
+      return "Chain conflict";
+    case "fromMismatch":
+      return "From mismatch";
+    case "nonceMismatch":
+      return "Nonce mismatch";
+    case "toMismatch":
+      return "To mismatch";
+    case "valueMismatch":
+      return "Value mismatch";
+    case "localOnlyConflict":
+      return "Local-only conflict";
+    default:
+      return status;
+  }
+}
+
 function boundedDecodedText(value: string) {
   if (value.length <= DECODED_VALUE_DISPLAY_MAX) return value;
   return `${value.slice(0, DECODED_VALUE_EDGE)}...${value.slice(-DECODED_VALUE_EDGE)} [truncated]`;
@@ -130,15 +156,6 @@ function copySummary(
   ].join("\n");
 }
 
-function matchingHistory(records: HistoryRecord[], hash: string, chainId: number) {
-  const normalizedHash = hash.toLowerCase();
-  return records.find(
-    (record) =>
-      record.submission?.tx_hash?.toLowerCase() === normalizedHash &&
-      record.submission.chain_id === chainId,
-  );
-}
-
 async function copyText(value: string, onCopied: (label: string) => void, label: string) {
   await navigator.clipboard?.writeText(value);
   onCopied(label);
@@ -193,9 +210,27 @@ export function TxAnalysisView({
     ? rawCalldataRpcEndpointFingerprint(trimmedRpcUrl)
     : null;
   const chainIdNumber = Number(chainId);
-  const localMatch = useMemo(
-    () => matchingHistory(history, analysis?.hash ?? trimmedHash, chainIdNumber),
-    [analysis?.hash, chainIdNumber, history, trimmedHash],
+  const localHistoryModel = useMemo(
+    () =>
+      buildTxAnalysisLocalHistoryModel({
+        txHash: analysis?.hash ?? trimmedHash,
+        chainId: chainIdNumber,
+        from: analysis?.transaction?.from ?? null,
+        nonce: analysis?.transaction?.nonce ?? null,
+        to: analysis?.transaction?.to ?? null,
+        valueWei: analysis?.transaction?.valueWei ?? null,
+        history,
+      }),
+    [
+      analysis?.hash,
+      analysis?.transaction?.from,
+      analysis?.transaction?.nonce,
+      analysis?.transaction?.to,
+      analysis?.transaction?.valueWei,
+      chainIdNumber,
+      history,
+      trimmedHash,
+    ],
   );
 
   function invalidateInFlightAnalysis() {
@@ -329,7 +364,7 @@ export function TxAnalysisView({
                       copySummary(
                         analysis,
                         title,
-                        localMatch ? "match" : "noMatch",
+                        localHistoryModel.status,
                         endpointSummary,
                       ),
                       setCopied,
@@ -738,20 +773,66 @@ export function TxAnalysisView({
           <section aria-label="Local history comparison" className="confirmation-panel">
             <header className="section-header">
               <h3>Local History</h3>
-              <span className="pill">{localMatch ? "Local history match" : "No local history match"}</span>
+              <span className={localHistoryModel.status === "matched" ? "pill" : "pill danger-pill"}>
+                {localHistoryStatusLabel(localHistoryModel.status)}
+              </span>
             </header>
             <p className="section-subtitle">
               Local history is shown beside RPC facts and does not override them.
             </p>
-            {localMatch ? (
-              <dl className="confirmation-grid tx-analysis-summary-grid">
-                <div>Outcome</div>
-                <div>{localMatch.outcome?.state ?? "unknown"}</div>
-                <div>Local tx</div>
-                <div className="mono">{localMatch.submission.tx_hash}</div>
-                <div>Local chainId</div>
-                <div>{localMatch.submission.chain_id ?? "unknown"}</div>
-              </dl>
+            {localHistoryModel.records.length > 0 ? (
+              <div className="tx-analysis-source-list">
+                {localHistoryModel.records.map((record, index) => (
+                  <article
+                    className="tx-analysis-candidate"
+                    key={`${record.txHash}-${record.localChainId ?? "unknown"}-${record.nonce ?? "unknown"}-${index}`}
+                  >
+                    <div className="tx-analysis-candidate-title">
+                      <strong>{record.outcome}</strong>
+                      <span className={record.status === "matched" ? "pill" : "pill danger-pill"}>
+                        {record.status === "matched" ? "Matched local record" : localHistoryStatusLabel(record.status)}
+                      </span>
+                    </div>
+                    {record.conflicts.length > 0 && (
+                      <div className="tx-analysis-pill-row">
+                        {record.conflicts.map((conflict) => (
+                          <span className="pill danger-pill" key={conflict}>
+                            {localHistoryStatusLabel(conflict)}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                    <dl className="confirmation-grid tx-analysis-summary-grid">
+                      <div>Local tx</div>
+                      <div className="mono">{record.txHash}</div>
+                      <div>Local chainId</div>
+                      <div>{record.localChainId ?? "unknown"}</div>
+                      <div>Local from</div>
+                      <div className="mono">{record.from ?? "unknown"}</div>
+                      <div>Local nonce</div>
+                      <div>{record.nonce ?? "unknown"}</div>
+                    </dl>
+                    {record.typedRows.length > 0 && (
+                      <table>
+                        <thead>
+                          <tr>
+                            <th>Local field</th>
+                            <th>Summary</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {record.typedRows.map((row) => (
+                            <tr key={`${row.label}-${row.value}`}>
+                              <td>{row.label}</td>
+                              <td className="mono">{row.value}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    )}
+                  </article>
+                ))}
+              </div>
             ) : (
               <div className="inline-warning">No local history match</div>
             )}

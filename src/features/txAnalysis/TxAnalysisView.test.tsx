@@ -214,6 +214,74 @@ function historyRecord(hash = txHash, chainId = 1): HistoryRecord {
   } as HistoryRecord;
 }
 
+function localHistoryWithSecrets(): HistoryRecord {
+  return {
+    ...historyRecord(txHash, 1),
+    submission: {
+      ...historyRecord(txHash, 1).submission,
+      transaction_type: "rawCalldata",
+      kind: "rawCalldata",
+      selector: "0x12345678",
+      source: "private_key=local-secret",
+    },
+    raw_calldata_metadata: {
+      intent_kind: "rawCalldata",
+      draft_id: "mnemonic abandon abandon",
+      created_at: null,
+      chain_id: 1,
+      account_index: 0,
+      from,
+      to,
+      value_wei: "0",
+      gas_limit: null,
+      max_fee_per_gas: null,
+      max_priority_fee_per_gas: null,
+      nonce: 7,
+      calldata_hash_version: "keccak256-v1",
+      calldata_hash: "0xrawhash",
+      calldata_byte_length: 516,
+      selector: "0x12345678",
+      selector_status: "present",
+      preview: {
+        preview_prefix_bytes: 4,
+        preview_suffix_bytes: 4,
+        truncated: true,
+        omitted_bytes: 508,
+        display: `0x${"f".repeat(1024)}`,
+        prefix: `0x${"e".repeat(512)}`,
+        suffix: `0x${"d".repeat(512)}`,
+      },
+      warning_acknowledgements: [],
+      warning_summaries: [
+        {
+          level: "warning",
+          code: "providerError",
+          message: "api_key=local-api-secret",
+          source: "privateKey",
+        },
+      ],
+      blocking_statuses: [],
+      inference: {
+        inference_status: "selectorMatched",
+        matched_source_kind: "userImported",
+        matched_source_id: "secret-source-id",
+        matched_version_id: "v1",
+        matched_source_fingerprint: "source-fingerprint",
+        matched_abi_hash: "abi-hash",
+        selector_match_count: 1,
+        conflict_summary: null,
+        stale_status: "fresh",
+        source_status: "ok",
+      },
+      frozen_key: "signedTx=local-secret",
+      future_submission: null,
+      future_outcome: null,
+      broadcast: null,
+      recovery: null,
+    },
+  } as HistoryRecord;
+}
+
 function modelForHash(hash: string): TxAnalysisFetchReadModel {
   return model({
     hash,
@@ -270,10 +338,18 @@ describe("TxAnalysisView", () => {
   });
 
   it("invokes the handler with a secret-safe selected RPC identity", async () => {
+    const privateNote = "local note mnemonic abandon abandon";
+    const localRecord = {
+      ...localHistoryWithSecrets(),
+      accountLabel: "Treasury hot wallet",
+      note: privateNote,
+      addressBookLabel: "Alice vendor",
+      walletInventory: ["Account 1", "Account 2"],
+    } as HistoryRecord & Record<string, unknown>;
     const onFetchTxAnalysis = vi.fn<
       (input: TxAnalysisFetchInput) => Promise<TxAnalysisFetchReadModel>
     >(async () => model());
-    renderTxAnalysis({ onFetchTxAnalysis });
+    renderTxAnalysis({ history: [localRecord], onFetchTxAnalysis });
 
     fireEvent.change(screen.getByLabelText("Transaction hash"), { target: { value: txHash } });
     fireEvent.click(screen.getByRole("button", { name: "Analyze" }));
@@ -292,10 +368,16 @@ describe("TxAnalysisView", () => {
     );
     const firstCall = onFetchTxAnalysis.mock.calls[0]?.[0];
     expect(firstCall).toBeDefined();
+    const serializedInput = JSON.stringify(firstCall);
     expect(JSON.stringify(firstCall?.selectedRpc)).not.toContain("secret");
+    expect(serializedInput).not.toContain("Treasury");
+    expect(serializedInput).not.toContain("Alice vendor");
+    expect(serializedInput).not.toContain(privateNote);
+    expect(serializedInput).not.toContain("walletInventory");
+    expect(serializedInput).not.toContain("raw_calldata_metadata");
+    expect(serializedInput).not.toContain("source-fingerprint");
     expect(screen.getByText("Explorer: notConfigured")).toBeInTheDocument();
     expect(screen.getByText("Indexer: notConfigured")).toBeInTheDocument();
-    expect(screen.getAllByText("No local history match").length).toBeGreaterThan(0);
   });
 
   it("shows chain mismatch, missing transaction, pending receipt, and reverted boundaries", async () => {
@@ -586,6 +668,53 @@ describe("TxAnalysisView", () => {
     expect(section.getByText("Local history match")).toBeInTheDocument();
     expect(section.getByText("Pending")).toBeInTheDocument();
     expect(section.getByText("Local history is shown beside RPC facts and does not override them.")).toBeInTheDocument();
+  });
+
+  it("renders duplicate local history and RPC conflict diagnostics side-by-side", async () => {
+    renderTxAnalysis({
+      history: [
+        historyRecord(txHash, 5),
+        {
+          ...historyRecord(txHash, 1),
+          submission: { ...historyRecord(txHash, 1).submission, from: "0x3333333333333333333333333333333333333333", nonce: 8 },
+          outcome: { ...historyRecord(txHash, 1).outcome, state: "Confirmed" },
+        } as HistoryRecord,
+      ],
+    });
+
+    fireEvent.change(screen.getByLabelText("Transaction hash"), { target: { value: txHash } });
+    fireEvent.click(screen.getByRole("button", { name: "Analyze" }));
+
+    const section = within(await screen.findByLabelText("Local history comparison"));
+    expect(section.getByText("Duplicate tx hash in local history")).toBeInTheDocument();
+    expect(section.getAllByText("Chain conflict").length).toBeGreaterThan(0);
+    expect(section.getAllByText("From mismatch").length).toBeGreaterThan(0);
+    expect(section.getAllByText("Nonce mismatch").length).toBeGreaterThan(0);
+    expect(section.getAllByText(txHash)).toHaveLength(2);
+    expect(section.getByText("Confirmed")).toBeInTheDocument();
+  });
+
+  it("renders typed local metadata summaries without full calldata or local secrets", async () => {
+    renderTxAnalysis({ history: [localHistoryWithSecrets()] });
+
+    fireEvent.change(screen.getByLabelText("Transaction hash"), { target: { value: txHash } });
+    fireEvent.click(screen.getByRole("button", { name: "Analyze" }));
+
+    const localHistorySection = await screen.findByLabelText("Local history comparison");
+    const section = within(localHistorySection);
+    expect(section.getByText("Raw calldata")).toBeInTheDocument();
+    expect(section.getByText("0x12345678")).toBeInTheDocument();
+    expect(section.getByText("0xrawhash")).toBeInTheDocument();
+    expect(section.getByText("516")).toBeInTheDocument();
+    expect(section.getByText("selectorMatched")).toBeInTheDocument();
+
+    const text = localHistorySection.textContent ?? "";
+    expect(text).not.toContain("api_key=local-api-secret");
+    expect(text).not.toContain("private_key=local-secret");
+    expect(text).not.toContain("signedTx=local-secret");
+    expect(text).not.toContain("mnemonic abandon abandon");
+    expect(text).not.toContain("ffffffffffffffffffffffffffffffff");
+    expect(text).not.toContain("eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee");
   });
 
   it("copies only bounded summary fields", async () => {

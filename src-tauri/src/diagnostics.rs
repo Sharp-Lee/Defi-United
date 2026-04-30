@@ -267,6 +267,11 @@ pub fn export_diagnostic_events_to_path(
             "rawAbi",
             "rawCalldata",
             "canonicalParams",
+            "queryToken",
+            "logs",
+            "fullLogs",
+            "localHistoryMatch",
+            "classificationTruth",
             "fullRpcCredential",
         ],
         note: "Diagnostics events are local troubleshooting metadata only. They are not chain confirmation facts.",
@@ -1066,11 +1071,14 @@ fn sanitize_value(value: Value) -> Value {
         Value::Array(items) => Value::Array(items.into_iter().map(sanitize_value).collect()),
         Value::Object(map) => Value::Object(
             map.into_iter()
-                .map(|(key, value)| {
+                .filter_map(|(key, value)| {
+                    if is_excluded_metadata_key(&key) {
+                        return None;
+                    }
                     if is_sensitive_metadata_key(&key) {
-                        (key, Value::String("[redacted]".to_string()))
+                        Some((key, Value::String("[redacted]".to_string())))
                     } else {
-                        (key, sanitize_value(value))
+                        Some((key, sanitize_value(value)))
                     }
                 })
                 .collect(),
@@ -1081,6 +1089,13 @@ fn sanitize_value(value: Value) -> Value {
 
 fn is_sensitive_metadata_key(key: &str) -> bool {
     is_sensitive_key_name(key)
+}
+
+fn is_excluded_metadata_key(key: &str) -> bool {
+    matches!(
+        normalize_key_name(key).as_str(),
+        "logs" | "fulllogs" | "localhistorymatch" | "classificationtruth"
+    )
 }
 
 fn normalize_key_name(key: &str) -> String {
@@ -1112,6 +1127,7 @@ fn is_sensitive_key_name(key: &str) -> bool {
         || key.contains("canonicalparams")
         || key.contains("payload")
         || key.contains("apikey")
+        || key.contains("querytoken")
         || key.contains("accesstoken")
         || key == "token"
         || key == "authorization"
@@ -1605,6 +1621,117 @@ mod tests {
     }
 
     #[test]
+    fn load_and_export_redact_tx_analysis_troubleshooting_payloads() {
+        let source_path = std::env::temp_dir().join(format!(
+            "wallet-workbench-diagnostics-tx-analysis-source-{}.jsonl",
+            std::process::id()
+        ));
+        let export_path = std::env::temp_dir().join(format!(
+            "wallet-workbench-diagnostics-tx-analysis-export-{}.json",
+            std::process::id()
+        ));
+        let _ = fs::remove_file(&source_path);
+        let _ = fs::remove_file(&export_path);
+
+        let raw_calldata = format!("0xa9059cbb{}", "ab".repeat(512));
+        let raw_signed_tx = format!("0x02{}", "cd".repeat(256));
+        let revert_data = format!("0x08c379a0{}", "ef".repeat(2048));
+        let provider_error = format!(
+            "provider error url=https://user:pass@rpc.example.invalid/v3/RPC_SECRET?api_key=QUERY_SECRET&token=QUERY_TOKEN privateKey=0xPRIVATE mnemonic=abandon abandon abandon rawSignedTx={raw_signed_tx} revertData={revert_data} {}",
+            "x".repeat(4000)
+        );
+        let logs = serde_json::json!([
+            {
+                "address": "0x2222222222222222222222222222222222222222",
+                "topics": ["0xddf252ad", "0xsecret-topic"],
+                "data": raw_calldata,
+                "memo": "LOG_SECRET"
+            }
+        ]);
+        let raw = serde_json::json!({
+            "timestamp": "1700000000",
+            "level": "error",
+            "category": "txAnalysis",
+            "source": "txAnalysis",
+            "event": "analysisFetchFailed",
+            "chainId": 1,
+            "txHash": format!("0x{}", "a".repeat(64)),
+            "message": provider_error,
+            "metadata": {
+                "stage": "provider",
+                "rpcUrl": "https://user:pass@rpc.example.invalid/v3/RPC_SECRET?api_key=QUERY_SECRET&token=QUERY_TOKEN",
+                "apiKey": "API_KEY_SECRET",
+                "queryToken": "QUERY_TOKEN",
+                "privateKey": "0xPRIVATE",
+                "mnemonic": "abandon abandon abandon abandon",
+                "rawSignedTx": raw_signed_tx,
+                "calldata": raw_calldata,
+                "fullCalldata": raw_calldata,
+                "revertData": revert_data,
+                "largeRevertData": revert_data,
+                "logs": logs,
+                "fullLogs": logs,
+                "providerError": provider_error,
+                "localHistoryMatch": {
+                    "accountLabel": "Treasury secret label",
+                    "notes": "private note"
+                },
+                "classificationTruth": "erc20Transfer"
+            }
+        });
+        fs::write(&source_path, format!("{raw}\n")).expect("write diagnostics");
+
+        let events =
+            load_recent_diagnostic_events_from_path(&source_path, DiagnosticEventQuery::default())
+                .expect("load");
+        let loaded = serde_json::to_string(&events).expect("serialize loaded diagnostics");
+        export_diagnostic_events_to_path(
+            &source_path,
+            &export_path,
+            DiagnosticEventQuery::default(),
+        )
+        .expect("export");
+        let exported = fs::read_to_string(&export_path).expect("read export");
+        let exported_json: Value = serde_json::from_str(&exported).expect("export json");
+        let exported_events =
+            serde_json::to_string(exported_json.pointer("/events").expect("export events"))
+                .expect("serialize export events");
+
+        for serialized in [loaded.as_str(), exported_events.as_str()] {
+            for secret in [
+                "user:pass",
+                "rpc.example.invalid",
+                "RPC_SECRET",
+                "QUERY_SECRET",
+                "QUERY_TOKEN",
+                "API_KEY_SECRET",
+                "0xPRIVATE",
+                "abandon abandon",
+                "LOG_SECRET",
+                "0xsecret-topic",
+                "Treasury secret label",
+                "private note",
+                "classificationTruth",
+            ] {
+                assert!(
+                    !serialized.contains(secret),
+                    "tx analysis diagnostics leaked {secret}: {serialized}"
+                );
+            }
+            assert!(!serialized.contains(&raw_calldata));
+            assert!(!serialized.contains(&raw_signed_tx));
+            assert!(!serialized.contains(&revert_data));
+            assert!(!serialized.contains(&"x".repeat(1000)));
+            assert!(serialized.contains("[redacted]") || serialized.contains("[redacted_hex]"));
+            assert!(serialized.contains("analysisFetchFailed"));
+            assert!(serialized.contains("txAnalysis"));
+        }
+
+        let _ = fs::remove_file(source_path);
+        let _ = fs::remove_file(export_path);
+    }
+
+    #[test]
     fn exports_sanitized_diagnostic_events_with_scope_note() {
         let source_path = std::env::temp_dir().join(format!(
             "wallet-workbench-diagnostics-export-source-{}.jsonl",
@@ -1644,6 +1771,18 @@ mod tests {
         assert_eq!(result.count, 1);
         assert!(exported.contains("local troubleshooting metadata only"));
         assert!(exported.contains("sensitiveInformationExcluded"));
+        for disclosure in [
+            "queryToken",
+            "logs",
+            "fullLogs",
+            "localHistoryMatch",
+            "classificationTruth",
+        ] {
+            assert!(
+                exported.contains(disclosure),
+                "export disclosure missing {disclosure}: {exported}"
+            );
+        }
         assert!(!exported.contains("hunter2"));
         assert!(!exported.contains("seed=secret"));
         assert!(!exported.contains("token=secret"));

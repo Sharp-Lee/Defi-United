@@ -88,6 +88,10 @@ describe("diagnostic selectors", () => {
     expect(summary).toContain("chainId 11155111");
     expect(exclusionText).toContain("mnemonics");
     expect(exclusionText).toContain("unredacted RPC URL secrets");
+    expect(exclusionText).toContain("full logs");
+    expect(exclusionText).toContain("local history match details");
+    expect(exclusionText).toContain("classification truth");
+    expect(exclusionText).toContain("analysis labels");
   });
 
   it("redacts sensitive filter values from the displayed export scope", () => {
