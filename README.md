@@ -15,6 +15,8 @@ The current product and test mainline is the Tauri desktop app. The older browse
 - Use managed ABI read-only calls and ABI write transactions through the desktop confirmation and Rust/Tauri submit path.
 - Preview and submit raw calldata transactions with bounded calldata summaries, selector inference warnings, and Rust/Tauri signing/broadcast.
 - Run native and ERC-20 batch distribution/collection workflows through controlled desktop paths.
+- Scan configured/known assets and approvals, including ERC-20 balances/allowances and known NFT approval points, with explicit source coverage and stale/failure states.
+- Revoke clearly active ERC-20/NFT approvals through the controlled desktop confirmation, Rust/Tauri signing/broadcast, and typed history path.
 - Persist local transaction history with separate Intent, Submission, and ChainOutcome fields.
 - Reconcile pending history from RPC receipts/nonces.
 - Show history filters, nonce-thread grouping, replace/cancel relationships, categorized errors, pending-age guidance, and recovery prompts.
@@ -22,7 +24,7 @@ The current product and test mainline is the Tauri desktop app. The older browse
 - View and export non-sensitive diagnostics for RPC, chainId, history, broadcast, and reconcile troubleshooting.
 - Inspect damaged history storage, quarantine unreadable history, recover broadcasted-but-unwritten submissions, and manually review dropped records.
 
-Asset/approval scanning, revoke workflows, tx hash reverse parsing, hot contract analysis, and broader contract interaction tooling remain future P5+/P6 exploration unless a later task explicitly implements them.
+Tx hash reverse parsing, hot contract analysis, full portfolio or NFT collection discovery, batch revoke, and broader contract interaction tooling remain future P6+ exploration unless a later task explicitly implements them.
 
 Plaintext mnemonic import/export and backup UX are not part of P3. Until a future native secure recovery workflow exists, preserve the encrypted vault file together with the password needed to unlock it. On macOS the default app data directory is `~/Library/Application Support/EVMWalletWorkbench/`; the encrypted vault is `vault.json` in that directory. Losing both that vault file or an app-data backup and the password means the generated wallet cannot be recovered by the P3 desktop app.
 
@@ -75,15 +77,18 @@ src/app/                         Tauri app shell and session wiring
 src/features/history/            History filters, details, nonce threads, action guidance
 src/features/transfer/           Native transfer draft and submit UI
 src/features/tokens/             Token watchlist and ERC-20 balance scanning UI
+src/features/assets/             Asset/approval scan and revoke workflow UI
 src/features/abi/                Managed ABI library and read/write caller UI
 src/features/rawCalldata/        Raw calldata preview and submit UI
 src/features/orchestration/      Account selection and orchestration UI
 src/core/history/                History schema, selectors, reconcile helpers, action gates
 src/core/transactions/           Native/ERC-20 transfer draft helpers
 src/core/batch/                  Native/ERC-20 batch planning helpers
+src/core/assets/                 Asset/approval scan and revoke read-model helpers
 src/core/abi/                    ABI read-model helpers
 src/core/rawCalldata/            Raw calldata draft and preview helpers
 src/lib/tauri.ts                 Typed Tauri command boundary
+src-tauri/src/commands/asset_approvals.rs  Asset/approval scan and revoke commands
 src-tauri/src/                   Rust vault, accounts, transactions, storage, commands
 src-tauri/tests/                 Rust integration/regression tests
 docs/specs/evm-wallet-workbench.md
