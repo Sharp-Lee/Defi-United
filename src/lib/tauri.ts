@@ -84,6 +84,7 @@ export interface AppConfig {
 }
 
 export type AbiProviderKind =
+  | "explorerConfigured"
   | "etherscanCompatible"
   | "blockscoutCompatible"
   | "customIndexer"
@@ -498,6 +499,106 @@ export interface TxAnalysisFetchReadModel {
   addressCodes: TxAnalysisAddressCodeSummary[];
   sources: TxAnalysisSourceStatuses;
   analysis: TxAnalysisDecodeReadModel;
+  errorSummary?: string | null;
+}
+
+export interface HotContractSelectedRpcInput {
+  chainId?: number | null;
+  providerConfigId?: string | null;
+  endpointId?: string | null;
+  endpointName?: string | null;
+  endpointSummary?: string | null;
+  endpointFingerprint?: string | null;
+}
+
+export interface HotContractSourceFetchInput {
+  providerConfigId?: string | null;
+  limit?: number | null;
+  window?: string | null;
+  cursor?: string | null;
+}
+
+export interface HotContractAnalysisFetchInput {
+  rpcUrl: string;
+  chainId: number;
+  contractAddress: string;
+  selectedRpc?: HotContractSelectedRpcInput | null;
+  source?: HotContractSourceFetchInput | null;
+}
+
+export interface HotContractSourceStatus {
+  status: string;
+  reason?: string | null;
+  errorSummary?: string | null;
+}
+
+export interface HotContractSourceStatuses {
+  chainId: HotContractSourceStatus;
+  code: HotContractSourceStatus;
+  source: HotContractSourceStatus;
+}
+
+export interface HotContractRpcSummary {
+  endpoint: string;
+  expectedChainId: number;
+  actualChainId?: number | null;
+  chainStatus: string;
+}
+
+export interface HotContractCodeIdentity {
+  status: string;
+  blockTag: string;
+  byteLength?: number | null;
+  codeHashVersion?: string | null;
+  codeHash?: string | null;
+  errorSummary?: string | null;
+}
+
+export interface HotContractSampleCoverage {
+  requestedLimit: number;
+  returnedSamples: number;
+  omittedSamples: number;
+  sourceStatus: string;
+}
+
+export interface HotContractSourceSample {
+  chainId: number;
+  contractAddress: string;
+  txHash?: string | null;
+  blockTime?: string | null;
+  from?: string | null;
+  to?: string | null;
+  value?: string | null;
+  status?: string | null;
+  selector?: string | null;
+  calldataLength?: number | null;
+  calldataHash?: string | null;
+  logTopic0: string[];
+  providerLabel?: string | null;
+  blockNumber?: number | null;
+}
+
+export interface HotContractAggregateAnalysis {
+  selectors: Array<{ selector: string; count: number }>;
+  topics: Array<{ topic: string; count: number }>;
+}
+
+export interface HotContractDecodeAnalysis {
+  items: Array<{ status: string }>;
+}
+
+export interface HotContractAnalysisReadModel {
+  status: string;
+  reasons: string[];
+  chainId: number;
+  contract: { address: string };
+  rpc: HotContractRpcSummary;
+  code: HotContractCodeIdentity;
+  sources: HotContractSourceStatuses;
+  sampleCoverage: HotContractSampleCoverage;
+  samples: HotContractSourceSample[];
+  analysis: HotContractAggregateAnalysis;
+  decode: HotContractDecodeAnalysis;
   errorSummary?: string | null;
 }
 
@@ -1598,6 +1699,12 @@ export function fetchExplorerAbi(input: FetchExplorerAbiInput) {
 
 export function fetchTxAnalysis(input: TxAnalysisFetchInput) {
   return invoke<TxAnalysisFetchReadModel>("fetch_tx_analysis", { input });
+}
+
+export function fetchHotContractAnalysis(input: HotContractAnalysisFetchInput) {
+  return invoke<HotContractAnalysisReadModel>("fetch_hot_contract_analysis", {
+    input,
+  });
 }
 
 export function callReadOnlyAbiFunction(input: AbiReadCallInput) {

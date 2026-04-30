@@ -25,6 +25,7 @@ const INVALID_ABI_REGISTRY_STATE_ERROR: &str =
     "abi-registry.json contains invalid ABI registry state; fix or remove it before loading ABI registry";
 
 const SUPPORTED_PROVIDER_KINDS: &[&str] = &[
+    "explorerConfigured",
     "etherscanCompatible",
     "blockscoutCompatible",
     "customIndexer",

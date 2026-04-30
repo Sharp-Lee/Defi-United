@@ -33,6 +33,7 @@ pub fn run() {
             commands::config::remember_validated_rpc,
             commands::diagnostics::export_diagnostic_events,
             commands::diagnostics::load_diagnostic_events,
+            commands::hot_contract::fetch_hot_contract_analysis,
             commands::raw_calldata::submit_raw_calldata_command,
             commands::token_watchlist::add_watchlist_token,
             commands::token_watchlist::edit_watchlist_token,

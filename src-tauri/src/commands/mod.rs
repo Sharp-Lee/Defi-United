@@ -4,6 +4,7 @@ pub mod accounts;
 pub mod asset_approvals;
 pub mod config;
 pub mod diagnostics;
+pub mod hot_contract;
 pub mod raw_calldata;
 pub mod token_scanner;
 pub mod token_watchlist;
