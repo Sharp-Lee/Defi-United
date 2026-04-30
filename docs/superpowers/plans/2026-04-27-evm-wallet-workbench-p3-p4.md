@@ -7,8 +7,8 @@
 - 基线：从当前已合并到 `main` 的 EVM Wallet Workbench v1（Tauri 2 技术栈）开始推进；P3、P4-1 到 P4-13、P5-1、P5-2、P5-3 和 P5-4 已完成。
 - 主线：后续产品、测试、发布和技术债治理都以 Tauri desktop app 为准。
 - 非主线：浏览器版只作为历史参考或迁移来源，不继续投入功能补齐。
-- 已有 v1 能力：vault/mnemonic、账户派生与链上扫描、RPC 验证和 app-config、native transfer draft/submit、ERC-20 transfer、token watchlist/ERC-20 balances、account orchestration、native batch、ERC-20 batch、ABI management、ABI read/write caller、raw calldata sender/preview、资产/授权扫描、受控 revoke workflow、native transfer fee reference/base fee customization、pending history/reconcile、replace/cancel、anvil smoke check。
-- 后续重点：P6+ 按 spec/design -> 最小实现 -> 扩展能力的顺序推进，不把 tx hash 逆向解析或 hot contract 分析列入当前能力。
+- 已有 v1 能力：vault/mnemonic、账户派生与链上扫描、RPC 验证和 app-config、native transfer draft/submit、ERC-20 transfer、token watchlist/ERC-20 balances、account orchestration、native batch、ERC-20 batch、ABI management、ABI read/write caller、raw calldata sender/preview、资产/授权扫描、受控 revoke workflow、只读 tx hash 逆向解析、native transfer fee reference/base fee customization、pending history/reconcile、replace/cancel、anvil smoke check。
+- 后续重点：P6+ 按 spec/design -> 最小实现 -> 扩展能力的顺序推进，不把 hot contract 分析、full portfolio/NFT discovery、batch revoke 或 broader contract interaction tooling 列入当前能力。
 
 ## 2. 执行规则
 
@@ -687,7 +687,7 @@
 11. P5-2 ABI read/write 调用器（已完成）。
 12. P5-3 raw calldata 发送与预览（已完成）。
 13. P5-4 资产/授权扫描与 revoke 工作流（已完成）。
-14. P6-1 tx hash 逆向解析（后续，先 P6-1a doc-only，再拆实现/测试）。
+14. P6-1 tx hash 逆向解析（已完成）。
 15. P6-2 contract address hot 交易/selector 分析（后续）。
 
 ### 7.2 Task P4-8: ERC-20 转账 spec/design（本任务仅文档设计）
@@ -1744,7 +1744,7 @@ P6-1 在 Tauri desktop 主线中提供只读的 tx hash 逆向解析入口。用
 
 - 只改 `docs/specs/evm-wallet-workbench.md`、本计划文件和 README 的能力状态描述，不改 runtime code。
 - 不实现 Rust command、decode engine、UI、storage mutation、测试、签名或广播。
-- 不把 P6-1/P6-2 写成当前已完成能力；P5-4 可作为当前能力记录，但不能扩张为 full portfolio/NFT discovery/batch revoke。
+- 该 doc-only 任务执行时不把 P6-1/P6-2 写成当前已完成能力；P6-1 后续已在主线完成，P6-2 仍保持后续能力。P5-4 可作为当前能力记录，但不能扩张为 full portfolio/NFT discovery/batch revoke。
 
 **验收/测试建议**
 
@@ -1756,7 +1756,7 @@ P6-1 在 Tauri desktop 主线中提供只读的 tx hash 逆向解析入口。用
 - Spec 明确 reverse analysis 默认不 mutate transaction history，local typed metadata 只 side-by-side 展示。
 - 验证命令：`git diff --check`，并用 `rg` 检查 P5-4 completed / P6 future 状态措辞。
 
-##### Task P6-1b: Rust read-only command + tx/receipt/log fetch model（状态：后续）
+##### Task P6-1b: Rust read-only command + tx/receipt/log fetch model（状态：已完成）
 
 **目标**
 
@@ -1779,7 +1779,7 @@ P6-1 在 Tauri desktop 主线中提供只读的 tx hash 逆向解析入口。用
 - Read model 包含 hash、chainId、from/to、nonce、value、selector、calldata length/hash、block info、receipt status、gas used/effective gas price、logs count 和 source statuses。
 - Diagnostics/export 不包含 RPC secrets、API keys、full calldata、full logs、raw signed tx、local history matches、account labels、notes 或 broad local context。
 
-##### Task P6-1c: ABI/event selector decode engine + analysis read model（状态：后续）
+##### Task P6-1c: ABI/event selector decode engine + analysis read model（状态：已完成）
 
 **目标**
 
@@ -1803,7 +1803,7 @@ P6-1 在 Tauri desktop 主线中提供只读的 tx hash 逆向解析入口。用
 - Decode read model 显示 selector match count、ABI source/version/hash/fingerprint、function signature、argument summaries、event summaries、decode confidence 和 conflict/stale states。
 - 参数、logs 和 revert data 只输出 bounded summaries + hashes。
 
-##### Task P6-1d: frontend UI for tx hash analysis（状态：后续）
+##### Task P6-1d: frontend UI for tx hash analysis（状态：已完成）
 
 **目标**
 
@@ -1829,7 +1829,7 @@ P6-1 在 Tauri desktop 主线中提供只读的 tx hash 逆向解析入口。用
 - UI 文案对 ambiguous classification 使用 candidate/unknown 语义。
 - Desktop/mobile layout 中 identity、status、logs、decode 和 warnings 不重叠，copyable 摘要清晰。
 
-##### Task P6-1e: local history/diagnostics integration + redaction regressions（状态：后续）
+##### Task P6-1e: local history/diagnostics integration + redaction regressions（状态：已完成）
 
 **目标**
 
@@ -1855,7 +1855,7 @@ P6-1 在 Tauri desktop 主线中提供只读的 tx hash 逆向解析入口。用
 - Network privacy regressions verify explorer/indexer enrichment does not receive local history match details、account labels、notes、address book labels、wallet inventory 或 broad local context.
 - Diagnostics events 只包含 troubleshooting fields，不参与 classification truth。
 
-##### Task P6-1f: integration/security regressions（状态：后续）
+##### Task P6-1f: integration/security regressions（状态：已完成）
 
 **目标**
 
@@ -1881,10 +1881,16 @@ P6-1 在 Tauri desktop 主线中提供只读的 tx hash 逆向解析入口。用
 
 #### Task P6-2: contract address hot 交易/selector 分析
 
-- 目标：提供按合约地址的 hot 交易、selector 和交互模式分析入口，用于理解某合约近期常见调用和风险提示。
-- 依赖：P6-1；P5-1 数据源配置。
-- 关键边界：contract address 入口通常需要 explorer/indexer、ABI/selector 数据库或采样交易数据；RPC 只能提供有限链上读取，不能保证拿到历史热度；分析结果是推断，不是确定事实。
-- 是否先 spec/design：是。
+详细 spec/plan 已拆到 `docs/superpowers/plans/2026-04-30-p6-2-hot-contract-analysis.md`。
+
+- P6-2a spec/design + implementation plan（doc-only）。
+- P6-2b Rust source config/read-only fetch model。
+- P6-2c selector/topic aggregation + ABI decode read model。
+- P6-2d frontend UI for hot contract analysis。
+- P6-2e diagnostics/privacy/local integration。
+- P6-2f integration/security regressions。
+
+关键边界：contract address 入口依赖 explorer/indexer、ABI/selector 数据库或采样交易数据；RPC 只能提供有限链上读取，不能保证历史热度。分析结果是 sampled/advisory，不是确定事实；不做风险评分、全链 trend、签名、广播、history mutation、wallet recovery automation 或浏览器版补齐。
 
 ## 8. 全局验收清单
 
