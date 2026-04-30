@@ -1188,6 +1188,7 @@ export interface HistoryRecoveryIntent {
     | "erc20Transfer"
     | "abiWriteCall"
     | "rawCalldata"
+    | "assetApprovalRevoke"
     | "replacement"
     | "cancellation"
     | "unsupported";

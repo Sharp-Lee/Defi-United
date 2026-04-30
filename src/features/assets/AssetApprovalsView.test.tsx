@@ -1,7 +1,9 @@
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
+import { normalizeHistoryRecords } from "../../core/history/schema";
 import type { TokenWatchlistState } from "../../lib/tauri";
 import { renderScreen } from "../../test/render";
+import { HistoryView } from "../history/HistoryView";
 import { AssetApprovalsView } from "./AssetApprovalsView";
 
 const owner = "0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
@@ -237,7 +239,7 @@ function renderAssets(
     onScanErc721TokenApproval: handlers.onScanErc721TokenApproval ?? vi.fn(),
     onSubmitAssetApprovalRevoke: handlers.onSubmitAssetApprovalRevoke,
   };
-  renderScreen(
+  const renderResult = renderScreen(
     <AssetApprovalsView
       accounts={[
         {
@@ -260,7 +262,7 @@ function renderAssets(
       {...props}
     />,
   );
-  return props;
+  return { ...props, ...renderResult };
 }
 
 function filters() {
@@ -824,6 +826,348 @@ describe("AssetApprovalsView", () => {
     const payload = onSubmitAssetApprovalRevoke.mock.calls[0][0] as Record<string, unknown>;
     expect(payload.accountIndex).toBe(1);
     expect(payload).not.toHaveProperty("fromAccountIndex");
+  });
+
+  it("keeps symbol, name, and labels display-only when submitting an ERC-20 revoke", async () => {
+    const onSubmitAssetApprovalRevoke = vi.fn(async (_input: unknown) => ({}));
+    renderAssets(
+      state({
+        approvalWatchlist: [
+          {
+            chainId: 1,
+            owner,
+            tokenContract: tokenA,
+            kind: "erc20Allowance",
+            spender,
+            enabled: true,
+            label: "Display label A",
+            userNotes: "Display note A",
+            source: { kind: "userWatchlist" },
+            createdAt: "1",
+            updatedAt: "2",
+          },
+          {
+            chainId: 1,
+            owner,
+            tokenContract: tokenB,
+            kind: "erc20Allowance",
+            spender,
+            enabled: true,
+            label: "Display label B",
+            userNotes: "Display note B",
+            source: { kind: "userWatchlist" },
+            createdAt: "1",
+            updatedAt: "2",
+          },
+        ],
+        allowanceSnapshots: [
+          {
+            chainId: 1,
+            owner,
+            tokenContract: tokenA,
+            spender,
+            allowanceRaw: "100",
+            status: "active",
+            source: { kind: "rpcPointRead" },
+            createdAt: "1",
+            updatedAt: "2",
+          },
+          {
+            chainId: 1,
+            owner,
+            tokenContract: tokenB,
+            spender,
+            allowanceRaw: "200",
+            status: "active",
+            source: { kind: "rpcPointRead" },
+            createdAt: "1",
+            updatedAt: "2",
+          },
+        ],
+        resolvedTokenMetadata: [
+          {
+            chainId: 1,
+            tokenContract: tokenA,
+            symbol: "USDC",
+            name: "USD Coin",
+            decimals: 6,
+            source: "onChainCall",
+            status: "ok",
+            updatedAt: "2",
+          },
+          {
+            chainId: 1,
+            tokenContract: tokenB,
+            symbol: "USDC",
+            name: "USD Coin",
+            decimals: 6,
+            source: "userConfirmed",
+            status: "ok",
+            updatedAt: "2",
+          },
+        ],
+      }),
+      { onSubmitAssetApprovalRevoke },
+    );
+
+    expect(within(screen.getByLabelText("ERC-20 allowance snapshots")).getAllByText("USDC")).toHaveLength(2);
+
+    const buildButtons = within(screen.getByLabelText("ERC-20 allowance snapshots")).getAllByRole("button", {
+      name: "Build Revoke Draft",
+    });
+    fireEvent.click(buildButtons[1]);
+    fillRevokeFees();
+    acknowledgeRevokeWarnings();
+
+    const panel = revokePanel();
+    expect(panel.getByText(new RegExp(`to = token/approval contract ${tokenB}`))).toBeInTheDocument();
+    fireEvent.click(panel.getByRole("button", { name: "Submit revoke" }));
+
+    await waitFor(() => expect(onSubmitAssetApprovalRevoke).toHaveBeenCalledTimes(1));
+    const payload = onSubmitAssetApprovalRevoke.mock.calls[0][0] as Record<string, unknown>;
+    expect(payload).toMatchObject({
+      chainId: 1,
+      to: tokenB.toLowerCase(),
+      tokenApprovalContract: tokenB.toLowerCase(),
+      spender: spender.toLowerCase(),
+      method: "approve(address,uint256)",
+      selector: "0x095ea7b3",
+    });
+    expect(JSON.stringify(payload)).not.toContain("USDC");
+    expect(JSON.stringify(payload)).not.toContain("USD Coin");
+    expect(JSON.stringify(payload)).not.toContain("Display label A");
+    expect(JSON.stringify(payload)).not.toContain("Display label B");
+    expect(JSON.stringify(payload)).not.toContain("Display note A");
+    expect(JSON.stringify(payload)).not.toContain("Display note B");
+  });
+
+  it("carries an RPC-scanned ERC-20 revoke identity through submit, history, and recovery", async () => {
+    let capturedPayload: Record<string, unknown> | null = null;
+    const onSubmitAssetApprovalRevoke = vi.fn(async (input: unknown): Promise<unknown> => {
+      capturedPayload = input as Record<string, unknown>;
+      const payload = capturedPayload;
+      const identity = payload.approvalIdentity as Record<string, unknown>;
+      const txHash = "0xerc20revoke";
+      const rawRecord = {
+        schema_version: 2,
+        intent: {
+          rpc_url: payload.rpcUrl,
+          account_index: payload.accountIndex,
+          chain_id: payload.chainId,
+          from: payload.from,
+          to: payload.to,
+          value_wei: "0",
+          nonce: payload.nonce,
+          gas_limit: payload.gasLimit,
+          max_fee_per_gas: payload.maxFeePerGas,
+          max_priority_fee_per_gas: payload.maxPriorityFeePerGas,
+          transaction_type: "assetApprovalRevoke",
+          token_contract: payload.tokenApprovalContract,
+          selector: payload.selector,
+          method_name: payload.method,
+          native_value_wei: "0",
+        },
+        submission: {
+          frozen_key: payload.frozenKey,
+          tx_hash: txHash,
+          kind: "assetApprovalRevoke",
+          transaction_type: "assetApprovalRevoke",
+          source: "assetApprovalRevokeDraft",
+          chain_id: payload.chainId,
+          account_index: payload.accountIndex,
+          from: payload.from,
+          to: payload.to,
+          value_wei: "0",
+          token_contract: payload.tokenApprovalContract,
+          selector: payload.selector,
+          method_name: payload.method,
+          native_value_wei: "0",
+          nonce: payload.nonce,
+          gas_limit: payload.gasLimit,
+          max_fee_per_gas: payload.maxFeePerGas,
+          max_priority_fee_per_gas: payload.maxPriorityFeePerGas,
+          broadcasted_at: "1700000001",
+        },
+        outcome: { state: "Pending", tx_hash: txHash, finalized_at: null },
+        nonce_thread: {
+          source: "assetApprovalRevokeDraft",
+          key: `1:1:${owner.toLowerCase()}:7`,
+          chain_id: payload.chainId,
+          account_index: payload.accountIndex,
+          from: payload.from,
+          nonce: payload.nonce,
+        },
+        asset_approval_revoke_metadata: {
+          intent_kind: "assetApprovalRevoke",
+          draft_id: payload.draftId,
+          created_at: payload.createdAt,
+          frozen_at: payload.frozenAt,
+          chain_id: payload.chainId,
+          account_index: payload.accountIndex,
+          from: payload.from,
+          to: payload.to,
+          value_wei: "0",
+          approval_kind: payload.approvalKind,
+          token_approval_contract: payload.tokenApprovalContract,
+          spender: payload.spender,
+          operator: payload.operator,
+          token_id: payload.tokenId,
+          method: payload.method,
+          selector: payload.selector,
+          calldata_hash: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          calldata_byte_length: 68,
+          calldata_args: payload.calldataArgs,
+          gas_limit: payload.gasLimit,
+          max_fee_per_gas: payload.maxFeePerGas,
+          max_priority_fee_per_gas: payload.maxPriorityFeePerGas,
+          nonce: payload.nonce,
+          selected_rpc: payload.selectedRpc,
+          snapshot: {
+            identity_key: identity.identityKey,
+            status: identity.status,
+            source_kind: identity.sourceKind,
+            stale: identity.stale,
+            failure: identity.failure,
+          },
+          warning_acknowledgements: payload.warnings,
+          warning_summaries: payload.warnings,
+          blocking_statuses: [],
+          frozen_key: payload.frozenKey,
+          future_submission: { status: "broadcasted", tx_hash: txHash },
+          recovery: { recovery_id: "asset-recovery", status: "active" },
+        },
+      };
+      return normalizeHistoryRecords([rawRecord])[0];
+    });
+    const assetRender = renderAssets(
+      state({
+        allowanceSnapshots: [
+          {
+            chainId: 1,
+            owner,
+            tokenContract: tokenA,
+            spender,
+            allowanceRaw: "100",
+            status: "active",
+            source: { kind: "rpcPointRead" },
+            createdAt: "1",
+            updatedAt: "2",
+          },
+        ],
+      }),
+      { onSubmitAssetApprovalRevoke },
+    );
+
+    fireEvent.click(within(screen.getByLabelText("ERC-20 allowance snapshots")).getByRole("button", { name: "Build Revoke Draft" }));
+    fillRevokeFees();
+    acknowledgeRevokeWarnings();
+    fireEvent.click(revokePanel().getByRole("button", { name: "Submit revoke" }));
+    await waitFor(() => expect(onSubmitAssetApprovalRevoke).toHaveBeenCalledTimes(1));
+
+    expect(capturedPayload).toMatchObject({
+      chainId: 1,
+      accountIndex: 1,
+      from: owner.toLowerCase(),
+      to: tokenA.toLowerCase(),
+      approvalKind: "erc20Allowance",
+      tokenApprovalContract: tokenA.toLowerCase(),
+      spender: spender.toLowerCase(),
+      operator: null,
+      tokenId: null,
+      method: "approve(address,uint256)",
+      selector: "0x095ea7b3",
+    });
+
+    const pendingRaw = (await onSubmitAssetApprovalRevoke.mock.results[0].value) as Record<string, any>;
+    const confirmedRaw = {
+      ...pendingRaw,
+      outcome: {
+        ...pendingRaw.outcome,
+        state: "Confirmed",
+        finalized_at: "1700000100",
+        receipt: { status: 1 },
+      },
+      asset_approval_revoke_metadata: {
+        ...pendingRaw.asset_approval_revoke_metadata,
+        future_outcome: { state: "Confirmed", checked_at: "1700000100", receipt_status: 1 },
+        recovery: { recovery_id: "asset-recovery", status: "recovered", recovered_at: "1700000100" },
+      },
+    };
+    const history = normalizeHistoryRecords([pendingRaw, confirmedRaw]);
+    expect(history[0].asset_approval_revoke_metadata).toMatchObject({
+      approval_kind: "erc20Allowance",
+      token_approval_contract: tokenA.toLowerCase(),
+      spender: spender.toLowerCase(),
+      operator: null,
+      token_id: null,
+    });
+    expect(history[1].asset_approval_revoke_metadata?.future_outcome?.state).toBe("Confirmed");
+
+    const submittedPayload = (capturedPayload ?? {}) as Record<string, unknown>;
+    const recoveryIntent = {
+      schemaVersion: 1,
+      id: "asset-recovery",
+      status: "active" as const,
+      createdAt: "1700000002",
+      txHash: "0xerc20revoke",
+      kind: "assetApprovalRevoke" as const,
+      chainId: 1,
+      accountIndex: 1,
+      from: owner.toLowerCase(),
+      nonce: 7,
+      to: tokenA.toLowerCase(),
+      valueWei: "0",
+      tokenContract: tokenA.toLowerCase(),
+      recipient: null,
+      amountRaw: null,
+      decimals: null,
+      tokenSymbol: null,
+      tokenName: null,
+      tokenMetadataSource: null,
+      selector: "0x095ea7b3",
+      methodName: "approve(address,uint256)",
+      nativeValueWei: "0",
+      frozenKey: submittedPayload.frozenKey as string,
+      gasLimit: "50000",
+      maxFeePerGas: "12000000000",
+      maxPriorityFeePerGas: "2000000000",
+      replacesTxHash: null,
+      batchMetadata: null,
+      abiCallMetadata: null,
+      rawCalldataMetadata: null,
+      assetApprovalRevokeMetadata: history[0].asset_approval_revoke_metadata,
+      broadcastedAt: "1700000001",
+      writeError: "history write failed",
+      lastRecoveryError: null,
+      recoveredAt: null,
+      dismissedAt: null,
+    };
+
+    assetRender.unmount();
+    renderScreen(
+      <HistoryView
+        chainReady
+        items={history}
+        recoveryIntents={[recoveryIntent]}
+        onRefresh={vi.fn()}
+        onRecoverBroadcastedHistory={vi.fn()}
+        rpcUrl="http://127.0.0.1:8545"
+      />,
+    );
+
+    expect(screen.getAllByText("0xerc20revoke").length).toBeGreaterThan(0);
+    const historyRow = screen
+      .getAllByText("0xerc20revoke")
+      .map((element) => element.closest("tr"))
+      .find((row) => row !== null);
+    expect(historyRow).toBeDefined();
+    fireEvent.click(within(historyRow as HTMLElement).getByText("Details"));
+    const panel = within(screen.getByLabelText("History details"));
+    expect(panel.getAllByText("Asset approval revoke (assetApprovalRevoke)").length).toBeGreaterThan(0);
+    expect(panel.getAllByText("erc20Allowance").length).toBeGreaterThan(0);
+    expect(panel.getAllByText(spender.toLowerCase()).length).toBeGreaterThan(0);
+    expect(screen.getByLabelText("Broadcast recovery")).toHaveTextContent("Asset approval revoke");
+    expect(screen.getByLabelText("Broadcast recovery")).toHaveTextContent(`spender ${spender.toLowerCase()}`);
   });
 
   it("builds an NFT operator revoke draft with setApprovalForAll(operator, false)", () => {

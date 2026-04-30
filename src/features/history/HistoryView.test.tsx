@@ -295,6 +295,117 @@ function erc20Record() {
   };
 }
 
+function assetApprovalRevokeRecord({
+  txHash = "0xassetrevoke",
+  nonce = 14,
+  state = "Pending",
+  approvalKind = "erc20Allowance",
+  spender = "0x6666666666666666666666666666666666666666",
+  operator = null,
+  tokenId = null,
+}: {
+  txHash?: string;
+  nonce?: number;
+  state?: ChainOutcomeState;
+  approvalKind?: "erc20Allowance" | "erc721ApprovalForAll" | "erc721TokenApproval";
+  spender?: string | null;
+  operator?: string | null;
+  tokenId?: string | null;
+} = {}) {
+  const tokenContract = "0x4444444444444444444444444444444444444444";
+  const selector = approvalKind === "erc721ApprovalForAll" ? "0xa22cb465" : "0x095ea7b3";
+  const method =
+    approvalKind === "erc721ApprovalForAll"
+      ? "setApprovalForAll(address,bool)"
+      : "approve(address,uint256)";
+  return {
+    ...record({ txHash, nonce, state, submissionValueWei: "0", intentValueWei: "0" }),
+    intent: {
+      ...record({ txHash: `${txHash}-intent`, nonce }).intent,
+      transaction_type: "assetApprovalRevoke",
+      to: tokenContract,
+      value_wei: "0",
+      token_contract: tokenContract,
+      selector,
+      method_name: method,
+      native_value_wei: "0",
+      nonce,
+    },
+    submission: {
+      ...record({ txHash: `${txHash}-submission`, nonce }).submission,
+      frozen_key: "asset-revoke-frozen",
+      tx_hash: txHash,
+      kind: "assetApprovalRevoke",
+      transaction_type: "assetApprovalRevoke",
+      to: tokenContract,
+      value_wei: "0",
+      token_contract: tokenContract,
+      selector,
+      method_name: method,
+      native_value_wei: "0",
+      nonce,
+    },
+    nonce_thread: {
+      source: "assetApprovalRevoke",
+      key: `${1}:${1}:${accountA.toLowerCase()}:${nonce}`,
+      chain_id: 1,
+      account_index: 1,
+      from: accountA,
+      nonce,
+      replaces_tx_hash: null,
+      replaced_by_tx_hash: null,
+    },
+    asset_approval_revoke_metadata: {
+      intent_kind: "assetApprovalRevoke",
+      draft_id: "asset-revoke-draft",
+      created_at: "1700000000",
+      frozen_at: "1700000000",
+      chain_id: 1,
+      account_index: 1,
+      from: accountA,
+      to: tokenContract,
+      value_wei: "0",
+      approval_kind: approvalKind,
+      token_approval_contract: tokenContract,
+      spender,
+      operator,
+      token_id: tokenId,
+      method,
+      selector,
+      calldata_hash: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      calldata_byte_length: 68,
+      calldata_args: [
+        ...(spender ? [{ name: "spender", type: "address", display: spender }] : []),
+        ...(operator ? [{ name: "operator", type: "address", display: operator }] : []),
+        ...(tokenId ? [{ name: "tokenId", type: "uint256", display: tokenId }] : []),
+      ],
+      gas_limit: "50000",
+      latest_base_fee_per_gas: "1000000000",
+      base_fee_per_gas: "1000000000",
+      max_fee_per_gas: "2000000000",
+      max_priority_fee_per_gas: "1000000000",
+      nonce,
+      selected_rpc: { chain_id: 1, endpoint_summary: "https://rpc.example", endpoint_fingerprint: "rpc-fp" },
+      snapshot: {
+        identity_key: "asset-approval-identity",
+        status: "active",
+        source_kind: "rpcPointRead",
+        source_summary: "RPC point read",
+        stale: false,
+        failure: false,
+      },
+      warning_acknowledgements: [],
+      warning_summaries: [],
+      blocking_statuses: [],
+      frozen_key: "asset-revoke-frozen",
+      future_submission: null,
+      future_outcome: state === "Confirmed" ? { state: "Confirmed", checked_at: "1700000100" } : null,
+      broadcast: null,
+      recovery: null,
+    },
+  };
+}
+
 function nativeDistributionRecord() {
   const contract = "0xd15fE25eD0Dba12fE05e7029C88b10C25e8880E3";
   return {
@@ -827,6 +938,86 @@ describe("HistoryView", () => {
     expect(within(submissionSection).getByText("transfer")).toBeInTheDocument();
     expect(within(submissionSection).getByText("Metadata source")).toBeInTheDocument();
     expect(within(submissionSection).getByText("userConfirmed")).toBeInTheDocument();
+  });
+
+  it("shows asset approval revoke history as its own typed transaction", () => {
+    renderHistory([
+      assetApprovalRevokeRecord({ txHash: "0xrevokepending", nonce: 14 }),
+      assetApprovalRevokeRecord({
+        txHash: "0xrevokeconfirmed",
+        nonce: 15,
+        state: "Confirmed",
+      }),
+    ]);
+
+    const row = screen.getByText("0xrevokepe...ding").closest("tr") as HTMLElement;
+    expect(within(row).getByText("0 wei")).toBeInTheDocument();
+    fireEvent.click(within(row).getByText("Details"));
+
+    const panel = within(screen.getByLabelText("History details"));
+    const intentSection = panel.getByText("Intent").closest("section") as HTMLElement;
+    const submissionSection = panel.getByText("Submission").closest("section") as HTMLElement;
+
+    expect(within(intentSection).getByText("Asset approval revoke (assetApprovalRevoke)")).toBeInTheDocument();
+    expect(within(intentSection).getByText("Token approval contract")).toBeInTheDocument();
+    expect(
+      within(intentSection).getAllByText("0x4444444444444444444444444444444444444444")
+        .length,
+    ).toBeGreaterThan(0);
+    expect(within(intentSection).getByText("Approval kind")).toBeInTheDocument();
+    expect(within(intentSection).getByText("erc20Allowance")).toBeInTheDocument();
+    expect(within(intentSection).getByText("Spender")).toBeInTheDocument();
+    expect(within(intentSection).getByText("0x6666666666666666666666666666666666666666")).toBeInTheDocument();
+    expect(within(submissionSection).getByText("approve(address,uint256)")).toBeInTheDocument();
+    expect(within(submissionSection).getByText("0x095ea7b3")).toBeInTheDocument();
+    expect(panel.queryByText("Raw Calldata")).not.toBeInTheDocument();
+    expect(panel.queryByText("ABI Call")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    expect(screen.getByText("0xrevokeco...rmed")).toBeInTheDocument();
+  });
+
+  it("renders NFT operator and token-specific revoke metadata distinctly", () => {
+    const operator = "0x7777777777777777777777777777777777777777";
+    renderHistory([
+      assetApprovalRevokeRecord({
+        txHash: "0xoperatorrevoke",
+        nonce: 16,
+        approvalKind: "erc721ApprovalForAll",
+        spender: null,
+        operator,
+      }),
+      assetApprovalRevokeRecord({
+        txHash: "0xtokenrevoke",
+        nonce: 17,
+        approvalKind: "erc721TokenApproval",
+        spender: null,
+        operator,
+        tokenId: "42",
+      }),
+    ]);
+
+    fireEvent.click(within(screen.getAllByText(/0xoperator.*voke/)[0].closest("tr") as HTMLElement).getByText("Details"));
+    let panel = within(screen.getByLabelText("History details"));
+    let intentSection = panel.getByText("Intent").closest("section") as HTMLElement;
+    expect(within(intentSection).getByText("erc721ApprovalForAll")).toBeInTheDocument();
+    expect(within(intentSection).getByText("Operator")).toBeInTheDocument();
+    expect(within(intentSection).getByText(operator)).toBeInTheDocument();
+    expect(within(intentSection).getByText("setApprovalForAll(address,bool)")).toBeInTheDocument();
+    expect(within(intentSection).getByText("0xa22cb465")).toBeInTheDocument();
+    expect(within(intentSection).queryByText("0x6666666666666666666666666666666666666666")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    fireEvent.click(within(screen.getAllByText(/0xtoken.*voke/)[0].closest("tr") as HTMLElement).getByText("Details"));
+    panel = within(screen.getByLabelText("History details"));
+    intentSection = panel.getByText("Intent").closest("section") as HTMLElement;
+    expect(within(intentSection).getByText("erc721TokenApproval")).toBeInTheDocument();
+    expect(within(intentSection).getByText("Operator")).toBeInTheDocument();
+    expect(within(intentSection).getByText(operator)).toBeInTheDocument();
+    expect(within(intentSection).getByText("Token ID")).toBeInTheDocument();
+    expect(within(intentSection).getByText("42")).toBeInTheDocument();
+    expect(within(intentSection).getByText("approve(address,uint256)")).toBeInTheDocument();
+    expect(within(intentSection).queryByText("0x6666666666666666666666666666666666666666")).not.toBeInTheDocument();
   });
 
   it("renders native distribution recipient allocations from persisted batch metadata", () => {

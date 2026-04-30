@@ -1059,6 +1059,27 @@ function rawCalldataRecoverySummary(intent: HistoryRecoveryIntent) {
   return `selector ${selector} · ${bytes} bytes · ${hash}`;
 }
 
+function assetApprovalRevokeRecoverySummary(intent: HistoryRecoveryIntent) {
+  const metadata = intent.assetApprovalRevokeMetadata;
+  if (!metadata) return null;
+  const kind = metadata.approval_kind ?? "unknown approval";
+  const selector = metadata.selector ?? intent.selector ?? "unknown selector";
+  const method = metadata.method ?? intent.methodName ?? "unknown method";
+  return `${kind} · ${selector} · ${method}`;
+}
+
+function assetApprovalRevokeRecoveryIdentity(intent: HistoryRecoveryIntent) {
+  const metadata = intent.assetApprovalRevokeMetadata;
+  if (!metadata) return null;
+  return [
+    metadata.spender ? `spender ${metadata.spender}` : null,
+    metadata.operator ? `operator ${metadata.operator}` : null,
+    metadata.token_id ? `tokenId ${metadata.token_id}` : null,
+  ]
+    .filter(Boolean)
+    .join(" · ") || "No spender/operator identity";
+}
+
 function sanitizeRecoveryDisplayText(value: string) {
   return value
     .replace(/https?:\/\/\S+/gi, "[redacted_url]")
@@ -1167,6 +1188,24 @@ function HistoryBroadcastRecoveryList({
                   <div>
                     <dt>Raw frozen key</dt>
                     <dd className="mono">{intent.rawCalldataMetadata.frozen_key ?? "Unknown"}</dd>
+                  </div>
+                </>
+              )}
+              {intent.assetApprovalRevokeMetadata && (
+                <>
+                  <div>
+                    <dt>Asset approval revoke</dt>
+                    <dd className="mono">{assetApprovalRevokeRecoverySummary(intent)}</dd>
+                  </div>
+                  <div>
+                    <dt>Approval identity</dt>
+                    <dd className="mono">{assetApprovalRevokeRecoveryIdentity(intent)}</dd>
+                  </div>
+                  <div>
+                    <dt>Revoke frozen key</dt>
+                    <dd className="mono">
+                      {intent.assetApprovalRevokeMetadata.frozen_key ?? intent.frozenKey ?? "Unknown"}
+                    </dd>
                   </div>
                 </>
               )}

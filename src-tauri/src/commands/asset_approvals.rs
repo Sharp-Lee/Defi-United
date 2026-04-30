@@ -1384,6 +1384,11 @@ fn sanitized_summary(value: impl Into<String>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::{Arc, Mutex};
+    use std::thread;
+    use std::time::Duration;
 
     fn rpc() -> AssetApprovalRevokeSelectedRpcInput {
         AssetApprovalRevokeSelectedRpcInput {
@@ -1520,6 +1525,123 @@ mod tests {
         ));
     }
 
+    fn u256_result_json(value: U256) -> String {
+        let mut bytes = [0u8; 32];
+        value.to_big_endian(&mut bytes);
+        format!("\"0x{}\"", hex_lower(&bytes))
+    }
+
+    fn bool_result_json(value: bool) -> String {
+        u256_result_json(U256::from(value as u8))
+    }
+
+    fn address_result_json(value: &str) -> String {
+        let address = parse_address(value, "address").unwrap();
+        format!("\"0x{}\"", hex_lower(&encode(&[Token::Address(address)])))
+    }
+
+    fn http_body_start(bytes: &[u8]) -> Option<usize> {
+        bytes
+            .windows(4)
+            .position(|window| window == b"\r\n\r\n")
+            .map(|position| position + 4)
+    }
+
+    fn http_content_length(headers: &str) -> Option<usize> {
+        headers.lines().find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.trim()
+                .eq_ignore_ascii_case("content-length")
+                .then(|| value.trim().parse::<usize>().ok())
+                .flatten()
+        })
+    }
+
+    fn read_rpc_http_request(stream: &mut impl Read) -> std::io::Result<String> {
+        let mut bytes = Vec::new();
+        let mut buffer = [0; 1024];
+        let body_start = loop {
+            let read = stream.read(&mut buffer)?;
+            if read == 0 {
+                break http_body_start(&bytes).unwrap_or(bytes.len());
+            }
+            bytes.extend_from_slice(&buffer[..read]);
+            if let Some(body_start) = http_body_start(&bytes) {
+                break body_start;
+            }
+        };
+        let headers = String::from_utf8_lossy(&bytes[..body_start]);
+        if let Some(content_length) = http_content_length(&headers) {
+            let expected_request_len = body_start + content_length;
+            while bytes.len() < expected_request_len {
+                let read = stream.read(&mut buffer)?;
+                if read == 0 {
+                    break;
+                }
+                bytes.extend_from_slice(&buffer[..read]);
+            }
+        }
+        Ok(String::from_utf8_lossy(&bytes).to_string())
+    }
+
+    fn start_asset_revoke_point_read_rpc_server(
+        chain_id: u64,
+        eth_call_result: String,
+        expected_request_count: usize,
+    ) -> (String, Arc<Mutex<Vec<String>>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind rpc server");
+        let address = listener.local_addr().expect("local addr");
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let seen = Arc::clone(&requests);
+        thread::spawn(move || {
+            for _ in 0..expected_request_count {
+                let (mut stream, _) = listener.accept().expect("accept rpc request");
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .expect("set read timeout");
+                let request = read_rpc_http_request(&mut stream).expect("read rpc request");
+                seen.lock().expect("request lock").push(request.clone());
+                let result = if request.contains("eth_chainId") {
+                    format!("\"0x{chain_id:x}\"")
+                } else if request.contains("eth_call") {
+                    eth_call_result.clone()
+                } else if request.contains("eth_sendRawTransaction") {
+                    "\"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\""
+                        .to_string()
+                } else {
+                    "null".to_string()
+                };
+                let body = format!(r#"{{"jsonrpc":"2.0","id":1,"result":{result}}}"#);
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                stream
+                    .write_all(response.as_bytes())
+                    .expect("write rpc response");
+            }
+        });
+        (format!("http://{address}"), requests)
+    }
+
+    fn input_for_rpc(kind: &str, rpc_url: &str) -> AssetApprovalRevokeSubmitInput {
+        let mut input = base_input(kind);
+        input.rpc_url = rpc_url.to_string();
+        input.selected_rpc.endpoint_summary = Some(summarize_rpc_endpoint(rpc_url));
+        input.selected_rpc.endpoint_fingerprint = Some(rpc_endpoint_fingerprint(rpc_url));
+        refresh_frozen_key(&mut input);
+        input
+    }
+
+    fn assert_no_broadcast(requests: &Arc<Mutex<Vec<String>>>) {
+        let joined = requests.lock().expect("request lock").join("\n");
+        assert!(
+            !joined.contains("eth_sendRawTransaction"),
+            "submit-time guard must reject before broadcast; requests={joined}"
+        );
+    }
+
     #[test]
     fn validates_erc20_revoke_intent_metadata_and_frozen_key() {
         let input = base_input("erc20Allowance");
@@ -1642,5 +1764,95 @@ mod tests {
         assert!(validate_asset_approval_revoke_submit_input(input)
             .unwrap_err()
             .contains("identityKey"));
+    }
+
+    #[test]
+    fn rejects_changed_rpc_contract_counterparty_and_token_id_fields() {
+        let mut input = base_input("erc20Allowance");
+        input.rpc_url = "https://evil.example".to_string();
+        assert!(validate_asset_approval_revoke_submit_input(input)
+            .unwrap_err()
+            .contains("rpcUrl"));
+
+        let mut input = base_input("erc20Allowance");
+        input.to = "0x1111111111111111111111111111111111111111".to_string();
+        input.token_approval_contract = Some("0x1111111111111111111111111111111111111111".to_string());
+        refresh_frozen_key(&mut input);
+        assert!(validate_asset_approval_revoke_submit_input(input)
+            .unwrap_err()
+            .contains("token approval contract"));
+
+        let mut input = base_input("erc20Allowance");
+        input.spender = Some("0x1111111111111111111111111111111111111111".to_string());
+        refresh_frozen_key(&mut input);
+        assert!(validate_asset_approval_revoke_submit_input(input)
+            .unwrap_err()
+            .contains("spender does not match"));
+
+        let mut input = base_input("erc721ApprovalForAll");
+        input.operator = Some("0x1111111111111111111111111111111111111111".to_string());
+        refresh_frozen_key(&mut input);
+        assert!(validate_asset_approval_revoke_submit_input(input)
+            .unwrap_err()
+            .contains("operator does not match"));
+
+        let mut input = base_input("erc721TokenApproval");
+        input.token_id = Some("43".to_string());
+        refresh_frozen_key(&mut input);
+        assert!(validate_asset_approval_revoke_submit_input(input)
+            .unwrap_err()
+            .contains("tokenId does not match"));
+    }
+
+    #[tokio::test]
+    async fn submit_guard_rejects_remote_chain_mismatch_before_broadcast() {
+        let (rpc_url, requests) =
+            start_asset_revoke_point_read_rpc_server(5, u256_result_json(U256::from(100u64)), 1);
+        let error = submit_asset_approval_revoke_command(input_for_rpc("erc20Allowance", &rpc_url))
+            .await
+            .expect_err("chain mismatch must reject before broadcast");
+
+        assert!(error.contains("remote chainId 5 does not match draft chainId 1"));
+        assert_no_broadcast(&requests);
+    }
+
+    #[tokio::test]
+    async fn submit_guard_rejects_already_revoked_points_before_broadcast() {
+        let (rpc_url, requests) =
+            start_asset_revoke_point_read_rpc_server(1, u256_result_json(U256::zero()), 2);
+        let error = submit_asset_approval_revoke_command(input_for_rpc("erc20Allowance", &rpc_url))
+            .await
+            .expect_err("zero allowance must reject before broadcast");
+
+        assert!(error.contains("approval point is already zero"));
+        assert_no_broadcast(&requests);
+
+        let (rpc_url, requests) =
+            start_asset_revoke_point_read_rpc_server(1, bool_result_json(false), 2);
+        let error = submit_asset_approval_revoke_command(input_for_rpc(
+            "erc721ApprovalForAll",
+            &rpc_url,
+        ))
+        .await
+        .expect_err("false operator approval must reject before broadcast");
+
+        assert!(error.contains("approval point is already false"));
+        assert_no_broadcast(&requests);
+    }
+
+    #[tokio::test]
+    async fn submit_guard_rejects_changed_token_specific_operator_before_broadcast() {
+        let changed_operator = "0x1111111111111111111111111111111111111111";
+        let (rpc_url, requests) =
+            start_asset_revoke_point_read_rpc_server(1, address_result_json(changed_operator), 2);
+        let error = submit_asset_approval_revoke_command(input_for_rpc(
+            "erc721TokenApproval",
+            &rpc_url,
+        ))
+        .await
+        .expect_err("changed approved operator must reject before broadcast");
+
+        assert!(error.contains("approval point operator changed"));
+        assert_no_broadcast(&requests);
     }
 }
