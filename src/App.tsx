@@ -10,6 +10,7 @@ import {
   callReadOnlyAbiFunction,
   deleteAbiCacheEntry,
   dismissHistoryRecoveryIntent,
+  fetchTxAnalysis,
   fetchExplorerAbi,
   inspectTransactionHistoryStorage,
   importAbiPayload,
@@ -1556,6 +1557,7 @@ export function App() {
       onSubmitAbiWriteCall={handleSubmitAbiWriteCall}
       onSubmitAssetApprovalRevoke={handleSubmitAssetApprovalRevoke}
       onSubmitRawCalldata={handleSubmitRawCalldata}
+      onFetchTxAnalysis={fetchTxAnalysis}
       onValidateRpc={handleValidateRpc}
       rpcUrl={rpcUrl}
       selectedChainId={selectedChainId}

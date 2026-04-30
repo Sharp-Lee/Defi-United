@@ -13,6 +13,7 @@ import {
 import { SettingsView } from "../features/settings/SettingsView";
 import { TokensView } from "../features/tokens/TokensView";
 import { TransferView } from "../features/transfer/TransferView";
+import { TxAnalysisView } from "../features/txAnalysis/TxAnalysisView";
 import { UnlockView } from "../features/unlock/UnlockView";
 import { BUILT_IN_CHAINS } from "../core/chains/registry";
 import { getRawHistoryErrorDisplay } from "../core/history/errors";
@@ -26,6 +27,8 @@ import type {
   HistoryStorageQuarantineResult,
   PendingMutationRequest,
   RawCalldataSubmitInput,
+  TxAnalysisFetchInput,
+  TxAnalysisFetchReadModel,
   AddWatchlistTokenInput,
   UpsertApprovalWatchlistEntryInput,
   AbiCacheEntryRecord,
@@ -55,6 +58,7 @@ export type WorkspaceTab =
   | "orchestration"
   | "transfer"
   | "rawCalldata"
+  | "txAnalysis"
   | "history"
   | "diagnostics"
   | "settings";
@@ -170,6 +174,7 @@ export interface AppShellProps {
   onTransferSubmitFailed?: (error: unknown) => Promise<void> | void;
   onTransferSubmitted?: (record: HistoryRecord) => void;
   onSubmitRawCalldata?: (input: RawCalldataSubmitInput) => Promise<HistoryRecord>;
+  onFetchTxAnalysis?: (input: TxAnalysisFetchInput) => Promise<TxAnalysisFetchReadModel>;
   onNativeBatchSubmitFailed?: (error: unknown) => Promise<void> | void;
   onNativeBatchSubmitted?: (records: HistoryRecord[]) => void;
   onErc20BatchSubmitted?: (records: HistoryRecord[], result: Erc20BatchSubmitResult) => void;
@@ -183,6 +188,7 @@ const workspaceTabs: WorkspaceTab[] = [
   "orchestration",
   "transfer",
   "rawCalldata",
+  "txAnalysis",
   "history",
   "diagnostics",
   "settings",
@@ -191,6 +197,7 @@ const workspaceTabs: WorkspaceTab[] = [
 function tabLabel(tab: WorkspaceTab) {
   if (tab === "abi") return "ABI Library";
   if (tab === "rawCalldata") return "Raw Calldata";
+  if (tab === "txAnalysis") return "Tx Analysis";
   if (tab === "assets") return "Assets & Approvals";
   return tab[0].toUpperCase() + tab.slice(1);
 }
@@ -307,6 +314,9 @@ export function AppShell({
   onTransferSubmitted = () => {},
   onSubmitRawCalldata = async () => {
     throw new Error("Raw calldata submitter is not configured.");
+  },
+  onFetchTxAnalysis = async () => {
+    throw new Error("Tx analysis handler is not configured.");
   },
   onSubmitAssetApprovalRevoke = async () => {
     throw new Error("Asset approval revoke submitter is not configured.");
@@ -449,6 +459,16 @@ export function AppShell({
                 onListAbiFunctions={onListAbiFunctions}
                 onSubmitFailed={onTransferSubmitFailed}
                 onSubmitRawCalldata={onSubmitRawCalldata}
+                rpcUrl={rpcUrl}
+              />
+            )}
+            {activeTab === "txAnalysis" && (
+              <TxAnalysisView
+                chainId={selectedChainId}
+                chainName={selectedChain?.name ?? "Unknown chain"}
+                chainReady={chainReady}
+                history={history}
+                onFetchTxAnalysis={onFetchTxAnalysis}
                 rpcUrl={rpcUrl}
               />
             )}
