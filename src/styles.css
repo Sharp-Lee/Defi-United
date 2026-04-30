@@ -210,6 +210,7 @@ td {
 .settings-grid,
 .transfer-grid,
 .raw-calldata-grid,
+.hot-contract-grid,
 .tx-analysis-grid {
   max-width: 820px;
 }
@@ -271,6 +272,19 @@ td {
 
 .tx-analysis-summary-grid {
   grid-template-columns: 150px minmax(0, 1fr);
+}
+
+.hot-contract-input-grid {
+  flex-wrap: wrap;
+}
+
+.hot-contract-input-grid > label {
+  min-width: 160px;
+  flex: 1 1 180px;
+}
+
+.hot-contract-input-grid button {
+  align-self: end;
 }
 
 .tokens-grid,

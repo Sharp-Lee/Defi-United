@@ -522,6 +522,7 @@ export interface HotContractAnalysisFetchInput {
   rpcUrl: string;
   chainId: number;
   contractAddress: string;
+  seedTxHash?: string | null;
   selectedRpc?: HotContractSelectedRpcInput | null;
   source?: HotContractSourceFetchInput | null;
 }
@@ -684,6 +685,7 @@ export interface HotContractAnalysisReadModel {
   status: string;
   reasons: string[];
   chainId: number;
+  seedTxHash?: string | null;
   contract: { address: string };
   rpc: HotContractRpcSummary;
   code: HotContractCodeIdentity;

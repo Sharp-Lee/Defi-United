@@ -4,6 +4,7 @@ import type { AbiMutationHandlerResult } from "../features/abi/AbiLibraryView";
 import { AssetApprovalsView } from "../features/assets/AssetApprovalsView";
 import { DiagnosticsView } from "../features/diagnostics/DiagnosticsView";
 import { HistoryView } from "../features/history/HistoryView";
+import { HotContractAnalysisView } from "../features/hotContract/HotContractAnalysisView";
 import { AccountOrchestrationView } from "../features/orchestration/AccountOrchestrationView";
 import {
   RawCalldataView,
@@ -27,6 +28,8 @@ import type {
   HistoryStorageQuarantineResult,
   PendingMutationRequest,
   RawCalldataSubmitInput,
+  HotContractAnalysisFetchInput,
+  HotContractAnalysisReadModel,
   TxAnalysisFetchInput,
   TxAnalysisFetchReadModel,
   AddWatchlistTokenInput,
@@ -58,6 +61,7 @@ export type WorkspaceTab =
   | "orchestration"
   | "transfer"
   | "rawCalldata"
+  | "hotContract"
   | "txAnalysis"
   | "history"
   | "diagnostics"
@@ -174,6 +178,9 @@ export interface AppShellProps {
   onTransferSubmitFailed?: (error: unknown) => Promise<void> | void;
   onTransferSubmitted?: (record: HistoryRecord) => void;
   onSubmitRawCalldata?: (input: RawCalldataSubmitInput) => Promise<HistoryRecord>;
+  onFetchHotContractAnalysis?: (
+    input: HotContractAnalysisFetchInput,
+  ) => Promise<HotContractAnalysisReadModel>;
   onFetchTxAnalysis?: (input: TxAnalysisFetchInput) => Promise<TxAnalysisFetchReadModel>;
   onNativeBatchSubmitFailed?: (error: unknown) => Promise<void> | void;
   onNativeBatchSubmitted?: (records: HistoryRecord[]) => void;
@@ -188,6 +195,7 @@ const workspaceTabs: WorkspaceTab[] = [
   "orchestration",
   "transfer",
   "rawCalldata",
+  "hotContract",
   "txAnalysis",
   "history",
   "diagnostics",
@@ -197,6 +205,7 @@ const workspaceTabs: WorkspaceTab[] = [
 function tabLabel(tab: WorkspaceTab) {
   if (tab === "abi") return "ABI Library";
   if (tab === "rawCalldata") return "Raw Calldata";
+  if (tab === "hotContract") return "Hot Contract";
   if (tab === "txAnalysis") return "Tx Analysis";
   if (tab === "assets") return "Assets & Approvals";
   return tab[0].toUpperCase() + tab.slice(1);
@@ -314,6 +323,9 @@ export function AppShell({
   onTransferSubmitted = () => {},
   onSubmitRawCalldata = async () => {
     throw new Error("Raw calldata submitter is not configured.");
+  },
+  onFetchHotContractAnalysis = async () => {
+    throw new Error("Hot contract analysis handler is not configured.");
   },
   onFetchTxAnalysis = async () => {
     throw new Error("Tx analysis handler is not configured.");
@@ -469,6 +481,16 @@ export function AppShell({
                 chainReady={chainReady}
                 history={history}
                 onFetchTxAnalysis={onFetchTxAnalysis}
+                rpcUrl={rpcUrl}
+              />
+            )}
+            {activeTab === "hotContract" && (
+              <HotContractAnalysisView
+                abiRegistryState={abiRegistryState}
+                chainId={selectedChainId}
+                chainName={selectedChain?.name ?? "Unknown chain"}
+                chainReady={chainReady}
+                onFetchHotContractAnalysis={onFetchHotContractAnalysis}
                 rpcUrl={rpcUrl}
               />
             )}

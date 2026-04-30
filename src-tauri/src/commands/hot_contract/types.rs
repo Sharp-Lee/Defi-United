@@ -14,6 +14,8 @@ pub struct HotContractAnalysisFetchInput {
     pub chain_id: u64,
     #[serde(alias = "contract_address")]
     pub contract_address: String,
+    #[serde(default, alias = "seed_tx_hash")]
+    pub seed_tx_hash: Option<String>,
     #[serde(default, alias = "selected_rpc")]
     pub selected_rpc: Option<HotContractSelectedRpcInput>,
     #[serde(default)]
@@ -56,6 +58,7 @@ pub struct HotContractAnalysisReadModel {
     pub status: String,
     pub reasons: Vec<String>,
     pub chain_id: u64,
+    pub seed_tx_hash: Option<String>,
     pub contract: HotContractIdentity,
     pub rpc: HotContractRpcSummary,
     pub code: HotContractCodeIdentity,
@@ -73,6 +76,7 @@ impl HotContractAnalysisReadModel {
             status: "pending".to_string(),
             reasons: Vec::new(),
             chain_id,
+            seed_tx_hash: None,
             contract: HotContractIdentity {
                 address: contract_address,
             },
@@ -372,6 +376,7 @@ pub(crate) struct NormalizedHotContractInput {
     pub rpc_url: String,
     pub chain_id: u64,
     pub contract_address: String,
+    pub seed_tx_hash: Option<String>,
     pub selected_rpc: HotContractSelectedRpcInput,
     pub source: Option<HotContractSourceFetchInput>,
 }
@@ -402,6 +407,14 @@ impl TryFrom<HotContractAnalysisFetchInput> for NormalizedHotContractInput {
                 contract_address: contract_seed.clone(),
                 reason,
             })?;
+        let seed_tx_hash =
+            normalize_optional_seed_tx_hash(input.seed_tx_hash.as_deref()).map_err(|reason| {
+                HotContractInputError {
+                    chain_id,
+                    contract_address: contract_address.clone(),
+                    reason,
+                }
+            })?;
         let selected_rpc = input.selected_rpc.ok_or_else(|| HotContractInputError {
             chain_id,
             contract_address: contract_address.clone(),
@@ -411,10 +424,24 @@ impl TryFrom<HotContractAnalysisFetchInput> for NormalizedHotContractInput {
             rpc_url: input.rpc_url,
             chain_id,
             contract_address,
+            seed_tx_hash,
             selected_rpc,
             source: input.source,
         })
     }
+}
+
+fn normalize_optional_seed_tx_hash(value: Option<&str>) -> Result<Option<String>, String> {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    let Some(hex) = value.strip_prefix("0x") else {
+        return Err("seedTxHash must be a 32-byte 0x-prefixed hex transaction hash".to_string());
+    };
+    if hex.len() != 64 || !hex.chars().all(|char| char.is_ascii_hexdigit()) {
+        return Err("seedTxHash must be a 32-byte 0x-prefixed hex transaction hash".to_string());
+    }
+    Ok(Some(format!("0x{}", hex.to_ascii_lowercase())))
 }
 
 fn normalize_contract_address(value: &str) -> Result<String, String> {

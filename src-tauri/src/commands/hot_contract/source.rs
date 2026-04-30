@@ -10,6 +10,7 @@ use super::types::{
 const DEFAULT_SOURCE_LIMIT: u32 = 25;
 const MAX_SOURCE_LIMIT: u32 = 500;
 const MAX_SAMPLE_CALLDATA_BYTES: usize = 4096;
+const SOURCE_WINDOW_ERROR: &str = "source window must be 1h..720h or 1d..30d";
 const ERC20_APPROVE_SELECTOR: &str = "0x095ea7b3";
 const SUPPORTED_SAMPLING_PROVIDER_KINDS: &[&str] = &[
     "explorerConfigured",
@@ -64,11 +65,9 @@ impl HotContractSampleProvider for FixtureHotContractSampleProvider {
 pub fn resolve_source_status(
     chain_id: u64,
     source: Option<&HotContractSourceFetchInput>,
-    fallback_provider_config_id: Option<&str>,
 ) -> HotContractSourceStatus {
     let provider_config_id = source
         .and_then(|source| source.provider_config_id.as_deref())
-        .or(fallback_provider_config_id)
         .map(str::trim)
         .filter(|value| !value.is_empty());
 
@@ -148,7 +147,8 @@ pub fn validate_source_outbound_request(
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .map(sanitized_summary);
+        .map(normalize_source_window)
+        .transpose()?;
     let cursor = input
         .cursor
         .as_deref()
@@ -164,6 +164,27 @@ pub fn validate_source_outbound_request(
         window,
         cursor,
     })
+}
+
+fn normalize_source_window(value: &str) -> Result<String, String> {
+    let Some(unit) = value.chars().last().map(|char| char.to_ascii_lowercase()) else {
+        return Err(SOURCE_WINDOW_ERROR.to_string());
+    };
+    if unit != 'h' && unit != 'd' {
+        return Err(SOURCE_WINDOW_ERROR.to_string());
+    }
+    let amount = &value[..value.len().saturating_sub(1)];
+    if amount.is_empty() || !amount.chars().all(|char| char.is_ascii_digit()) {
+        return Err(SOURCE_WINDOW_ERROR.to_string());
+    }
+    let parsed = amount
+        .parse::<u32>()
+        .map_err(|_| SOURCE_WINDOW_ERROR.to_string())?;
+    match unit {
+        'h' if (1..=720).contains(&parsed) => Ok(format!("{parsed}h")),
+        'd' if (1..=30).contains(&parsed) => Ok(format!("{parsed}d")),
+        _ => Err(SOURCE_WINDOW_ERROR.to_string()),
+    }
 }
 
 pub(crate) fn fetch_normalized_source_samples(

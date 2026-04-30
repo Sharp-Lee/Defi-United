@@ -73,11 +73,8 @@ pub(crate) async fn fetch_hot_contract_analysis_with_sample_provider(
         normalized.contract_address.clone(),
         endpoint,
     );
-    model.sources.source = resolve_source_status(
-        normalized.chain_id,
-        normalized.source.as_ref(),
-        normalized.selected_rpc.provider_config_id.as_deref(),
-    );
+    model.seed_tx_hash = normalized.seed_tx_hash.clone();
+    model.sources.source = resolve_source_status(normalized.chain_id, normalized.source.as_ref());
     let source_unavailable_reason = if model.sources.source.status == SOURCE_OK {
         None
     } else {
@@ -87,7 +84,6 @@ pub(crate) async fn fetch_hot_contract_analysis_with_sample_provider(
         .source
         .as_ref()
         .and_then(|source| source.provider_config_id.as_deref())
-        .or(normalized.selected_rpc.provider_config_id.as_deref())
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string);

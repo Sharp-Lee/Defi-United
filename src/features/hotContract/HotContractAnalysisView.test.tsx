@@ -1,0 +1,785 @@
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { describe, expect, it, vi, beforeEach } from "vitest";
+import type {
+  AbiRegistryState,
+  HotContractAnalysisFetchInput,
+  HotContractAnalysisReadModel,
+} from "../../lib/tauri";
+import { renderScreen } from "../../test/render";
+import { HotContractAnalysisView } from "./HotContractAnalysisView";
+
+const address = "0x1111111111111111111111111111111111111111";
+const txHash = `0x${"a".repeat(64)}`;
+const rpcUrl = "https://user:secret@rpc.example.invalid/v3/secret-key?apikey=topsecret";
+
+function status(status = "ok", reason: string | null = null) {
+  return { status, reason, errorSummary: null };
+}
+
+function model(
+  overrides: Omit<Partial<HotContractAnalysisReadModel>, "sources" | "sampleCoverage"> & {
+    sources?: Partial<HotContractAnalysisReadModel["sources"]>;
+    sampleCoverage?: Partial<HotContractAnalysisReadModel["sampleCoverage"]>;
+  } = {},
+): HotContractAnalysisReadModel {
+  const base: HotContractAnalysisReadModel = {
+    status: "ok",
+    reasons: [],
+    chainId: 1,
+    contract: { address },
+    rpc: {
+      endpoint: "https://rpc.example.invalid",
+      expectedChainId: 1,
+      actualChainId: 1,
+      chainStatus: "matched",
+    },
+    code: {
+      status: "contract",
+      blockTag: "latest",
+      byteLength: 2048,
+      codeHashVersion: "keccak256-v1",
+      codeHash: "0xcodehash",
+      errorSummary: null,
+    },
+    sources: {
+      chainId: status("ok"),
+      code: status("ok"),
+      source: status("ok"),
+    },
+    sampleCoverage: {
+      requestedLimit: 25,
+      returnedSamples: 2,
+      omittedSamples: 1,
+      sourceStatus: "ok",
+    },
+    samples: [
+      {
+        chainId: 1,
+        contractAddress: address,
+        txHash,
+        blockTime: "2026-04-30T00:00:00Z",
+        from: "0x2222222222222222222222222222222222222222",
+        to: address,
+        value: "0",
+        status: "success",
+        selector: "0xa9059cbb",
+        approveAmountIsZero: false,
+        calldataLength: 68,
+        calldataHash: "0xcalldatahash",
+        logTopic0: ["0xddf252ad"],
+        providerLabel: "Sample provider",
+        blockNumber: 123,
+      },
+    ],
+    analysis: {
+      selectors: [
+        {
+          selector: "0xa9059cbb",
+          sampledCallCount: 2,
+          sampleShareBps: 5000,
+          uniqueSenderCount: 2,
+          successCount: 1,
+          revertCount: 1,
+          unknownStatusCount: 0,
+          firstBlock: 100,
+          lastBlock: 123,
+          firstBlockTime: null,
+          lastBlockTime: null,
+          nativeValue: {
+            sampleCount: 2,
+            nonZeroCount: 0,
+            zeroCount: 2,
+            totalWei: "0",
+          },
+          exampleTxHashes: [txHash],
+          source: "providerSample",
+          confidence: "candidate",
+          advisoryLabels: ["ERC-20 transfer candidate"],
+        },
+      ],
+      topics: [
+        {
+          topic: "0xddf252ad",
+          logCount: 2,
+          sampleShareBps: 5000,
+          firstBlock: 100,
+          lastBlock: 123,
+          firstBlockTime: null,
+          lastBlockTime: null,
+          exampleTxHashes: [txHash],
+          source: "providerSample",
+          confidence: "candidate",
+          advisoryLabels: ["Transfer event candidate"],
+        },
+      ],
+    },
+    decode: {
+      status: "partial",
+      items: [
+        {
+          kind: "function",
+          status: "candidate",
+          selector: "0xa9059cbb",
+          topic: null,
+          signature: "transfer(address,uint256)",
+          source: "userImported v1",
+          confidence: "candidate",
+          abiVersionId: "v1",
+          abiSelected: true,
+          reasons: ["selector matched ABI"],
+        },
+      ],
+      abiSources: [
+        {
+          contractAddress: address,
+          sourceKind: "userImported",
+          providerConfigId: null,
+          userSourceId: "safe-source",
+          versionId: "v1",
+          selected: true,
+          fetchSourceStatus: "ok",
+          validationStatus: "ok",
+          cacheStatus: "cacheFresh",
+          selectionStatus: "selected",
+          artifactStatus: "available",
+          proxyDetected: false,
+          providerProxyHint: null,
+          errorSummary: null,
+        },
+      ],
+      classificationCandidates: [
+        {
+          kind: "erc20Transfer",
+          label: "ERC-20 transfer candidate",
+          confidence: "candidate",
+          source: "selector",
+          selector: "0xa9059cbb",
+          topic: null,
+          signature: "transfer(address,uint256)",
+          reasons: ["sample selector"],
+        },
+      ],
+      uncertaintyStatuses: [
+        {
+          code: "sampledOnly",
+          severity: "warning",
+          source: "providerSample",
+          summary: "Bounded sample; totals are not complete-chain facts.",
+        },
+      ],
+    },
+    errorSummary: null,
+  };
+
+  return {
+    ...base,
+    ...overrides,
+    sources: { ...base.sources, ...overrides.sources },
+    sampleCoverage: { ...base.sampleCoverage, ...overrides.sampleCoverage },
+  };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((innerResolve) => {
+    resolve = innerResolve;
+  });
+  return { promise, resolve };
+}
+
+function abiRegistryState(
+  dataSources: AbiRegistryState["dataSources"],
+): AbiRegistryState {
+  return { schemaVersion: 1, dataSources, cacheEntries: [] };
+}
+
+function dataSource(
+  overrides: Partial<AbiRegistryState["dataSources"][number]> & { id: string },
+): AbiRegistryState["dataSources"][number] {
+  const { id, ...rest } = overrides;
+  return {
+    id,
+    chainId: 1,
+    providerKind: "etherscanCompatible",
+    baseUrl: "https://api.etherscan.io/api",
+    apiKeyRef: null,
+    enabled: true,
+    lastSuccessAt: null,
+    lastFailureAt: null,
+    failureCount: 0,
+    cooldownUntil: null,
+    rateLimited: false,
+    lastErrorSummary: null,
+    createdAt: "2026-04-30T00:00:00Z",
+    updatedAt: "2026-04-30T00:00:00Z",
+    ...rest,
+  };
+}
+
+function renderHotContract(
+  options: {
+    abiRegistryState?: AbiRegistryState | null;
+    chainReady?: boolean;
+    chainId?: bigint;
+    onFetchHotContractAnalysis?: (
+      input: HotContractAnalysisFetchInput,
+    ) => Promise<HotContractAnalysisReadModel>;
+  } = {},
+) {
+  const onFetchHotContractAnalysis =
+    options.onFetchHotContractAnalysis ??
+    vi.fn(async () => model());
+  renderScreen(
+    <HotContractAnalysisView
+      abiRegistryState={options.abiRegistryState}
+      chainId={options.chainId ?? 1n}
+      chainName="Ethereum"
+      chainReady={options.chainReady ?? true}
+      onFetchHotContractAnalysis={onFetchHotContractAnalysis}
+      rpcUrl={rpcUrl}
+    />,
+  );
+  return onFetchHotContractAnalysis;
+}
+
+describe("HotContractAnalysisView", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("disables analysis for invalid contract addresses and chain/RPC not ready", () => {
+    renderHotContract();
+
+    fireEvent.change(screen.getByLabelText("Contract address"), { target: { value: "0x1234" } });
+
+    expect(screen.getByText("Enter a 0x-prefixed 20-byte contract address.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Analyze" })).toBeDisabled();
+
+    renderHotContract({ chainReady: false });
+
+    expect(screen.getAllByText("Validate an RPC before analyzing a hot contract.").length).toBe(1);
+  });
+
+  it("disables analysis when chainId is outside the safe number range", () => {
+    const onFetchHotContractAnalysis = vi.fn<
+      (input: HotContractAnalysisFetchInput) => Promise<HotContractAnalysisReadModel>
+    >(async () => model());
+    renderHotContract({
+      abiRegistryState: abiRegistryState([
+        dataSource({ id: "unsafe-chain-source", chainId: Number.MAX_SAFE_INTEGER }),
+      ]),
+      chainId: BigInt(Number.MAX_SAFE_INTEGER) + 1n,
+      onFetchHotContractAnalysis,
+    });
+
+    fireEvent.change(screen.getByLabelText("Contract address"), { target: { value: address } });
+
+    expect(screen.getByText("Hot contract analysis requires a positive safe integer chainId.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Analyze" })).toBeDisabled();
+    expect(within(screen.getByLabelText("Source provider")).queryByRole("option", { name: /unsafe-chain-source/ })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Analyze" }));
+    expect(onFetchHotContractAnalysis).not.toHaveBeenCalled();
+  });
+
+  it("invokes analysis with bounded sample controls and a secret-safe RPC identity", async () => {
+    const onFetchHotContractAnalysis = vi.fn<
+      (input: HotContractAnalysisFetchInput) => Promise<HotContractAnalysisReadModel>
+    >(async () => model());
+    renderHotContract({
+      abiRegistryState: abiRegistryState([dataSource({ id: "configured-mainnet", chainId: 1 })]),
+      onFetchHotContractAnalysis,
+    });
+
+    fireEvent.change(screen.getByLabelText("Contract address"), { target: { value: address } });
+    fireEvent.change(screen.getByLabelText("Sample limit"), { target: { value: "2500" } });
+    fireEvent.change(screen.getByLabelText("Sample window"), { target: { value: "24h" } });
+    fireEvent.change(screen.getByLabelText("Source provider"), {
+      target: { value: "configured-mainnet" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Analyze" }));
+
+    await waitFor(() => expect(onFetchHotContractAnalysis).toHaveBeenCalledTimes(1));
+    expect(onFetchHotContractAnalysis).toHaveBeenCalledWith(
+      expect.objectContaining({
+        rpcUrl,
+        chainId: 1,
+        contractAddress: address,
+        selectedRpc: expect.objectContaining({
+          providerConfigId: null,
+          endpointSummary: "https://rpc.example.invalid",
+          endpointFingerprint: expect.stringMatching(/^rpc-endpoint-/),
+        }),
+        source: {
+          providerConfigId: "configured-mainnet",
+          limit: 500,
+          window: "24h",
+          cursor: null,
+        },
+      }),
+    );
+    const firstCall = onFetchHotContractAnalysis.mock.calls[0]?.[0];
+    expect(firstCall).toBeDefined();
+    expect(JSON.stringify(firstCall?.selectedRpc)).not.toContain("secret");
+  });
+
+  it("keeps Local/RPC only requests free of provider fallback ids", async () => {
+    const onFetchHotContractAnalysis = vi.fn<
+      (input: HotContractAnalysisFetchInput) => Promise<HotContractAnalysisReadModel>
+    >(async () => model());
+    renderHotContract({ onFetchHotContractAnalysis });
+
+    fireEvent.change(screen.getByLabelText("Contract address"), { target: { value: address } });
+    fireEvent.click(screen.getByRole("button", { name: "Analyze" }));
+
+    await waitFor(() => expect(onFetchHotContractAnalysis).toHaveBeenCalledTimes(1));
+    const firstCall = onFetchHotContractAnalysis.mock.calls[0]?.[0];
+    expect(firstCall).toBeDefined();
+    const selectedRpc = firstCall?.selectedRpc;
+    expect(selectedRpc).toBeDefined();
+    expect(selectedRpc?.providerConfigId).toBeNull();
+    expect(firstCall?.source?.providerConfigId).toBeNull();
+  });
+
+  it("validates optional tx hash seed as display-only provenance", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.assign(navigator, { clipboard: { writeText } });
+    const seedTxHash = `0x${"b".repeat(64)}`;
+    const onFetchHotContractAnalysis = vi.fn<
+      (input: HotContractAnalysisFetchInput) => Promise<HotContractAnalysisReadModel>
+    >(async () => model());
+    renderHotContract({ onFetchHotContractAnalysis });
+
+    fireEvent.change(screen.getByLabelText("Contract address"), { target: { value: address } });
+    fireEvent.change(screen.getByLabelText("Optional tx hash seed (display only)"), {
+      target: { value: "0x1234" },
+    });
+
+    expect(screen.getByText("Enter a 0x-prefixed 32-byte transaction hash or leave seed empty.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Analyze" })).toBeDisabled();
+
+    fireEvent.change(screen.getByLabelText("Optional tx hash seed (display only)"), {
+      target: { value: seedTxHash },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Analyze" }));
+
+    await waitFor(() => expect(onFetchHotContractAnalysis).toHaveBeenCalledTimes(1));
+    const firstCall = onFetchHotContractAnalysis.mock.calls[0]?.[0];
+    expect(firstCall).toBeDefined();
+    expect(firstCall).toEqual(expect.objectContaining({ seedTxHash }));
+    expect(JSON.stringify(firstCall?.selectedRpc)).not.toContain(seedTxHash);
+    expect(JSON.stringify(firstCall?.source)).not.toContain(seedTxHash);
+    expect(firstCall?.source?.cursor).toBeNull();
+    expect(firstCall?.source?.window).toBe("7d");
+    await waitFor(() => expect(screen.getAllByText(seedTxHash).length).toBeGreaterThan(0));
+
+    fireEvent.click(screen.getByRole("button", { name: "Copy summary" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    const copiedSummary = String(writeText.mock.calls.at(-1)?.[0] ?? "");
+    expect(copiedSummary).toContain(`seedTxHash=${seedTxHash}`);
+    expect(copiedSummary).not.toContain("topsecret");
+    expect(copiedSummary).not.toContain("secret-key");
+  });
+
+  it("validates and normalizes bounded sample windows", async () => {
+    const onFetchHotContractAnalysis = vi.fn<
+      (input: HotContractAnalysisFetchInput) => Promise<HotContractAnalysisReadModel>
+    >(async () => model());
+    renderHotContract({ onFetchHotContractAnalysis });
+
+    fireEvent.change(screen.getByLabelText("Contract address"), { target: { value: address } });
+    fireEvent.change(screen.getByLabelText("Sample window"), {
+      target: { value: "all-history apiKey=secret" },
+    });
+
+    expect(screen.getByText("Use a bounded sample window from 1h to 720h or 1d to 30d.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Analyze" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Analyze" }));
+    expect(onFetchHotContractAnalysis).not.toHaveBeenCalled();
+
+    fireEvent.change(screen.getByLabelText("Sample window"), { target: { value: "31d" } });
+    expect(screen.getByRole("button", { name: "Analyze" })).toBeDisabled();
+
+    fireEvent.change(screen.getByLabelText("Sample window"), { target: { value: "24H" } });
+    fireEvent.click(screen.getByRole("button", { name: "Analyze" }));
+
+    await waitFor(() => expect(onFetchHotContractAnalysis).toHaveBeenCalledTimes(1));
+    expect(onFetchHotContractAnalysis.mock.calls[0]?.[0].source?.window).toBe("24h");
+  });
+
+  it("renders source missing and RPC-only limited states", async () => {
+    renderHotContract({
+      onFetchHotContractAnalysis: vi.fn(async () =>
+        model({
+          status: "limited",
+          sources: { source: status("notConfigured", "no indexed transaction source") },
+          sampleCoverage: { sourceStatus: "notConfigured", returnedSamples: 0, omittedSamples: 0 },
+          samples: [],
+          errorSummary: "No indexed source is configured for this contract.",
+        }),
+      ),
+    });
+
+    fireEvent.change(screen.getByLabelText("Contract address"), { target: { value: address } });
+    fireEvent.click(screen.getByRole("button", { name: "Analyze" }));
+
+    expect(await screen.findByText("Source missing")).toBeInTheDocument();
+    expect(screen.getByText("RPC-only limited analysis")).toBeInTheDocument();
+    expect(screen.getByText("No indexed source is configured for this contract.")).toBeInTheDocument();
+  });
+
+  it("shows source unavailable when provider source is rate limited", async () => {
+    renderHotContract({
+      onFetchHotContractAnalysis: vi.fn(async () =>
+        model({
+          status: "sourceUnavailable",
+          sources: { source: status("rateLimited", "provider rate limited") },
+          sampleCoverage: { sourceStatus: "rateLimited", returnedSamples: 0, omittedSamples: 0 },
+          samples: [],
+        }),
+      ),
+    });
+
+    fireEvent.change(screen.getByLabelText("Contract address"), { target: { value: address } });
+    fireEvent.click(screen.getByRole("button", { name: "Analyze" }));
+
+    expect(await screen.findByText("Source unavailable")).toBeInTheDocument();
+    expect(screen.queryByText("Analysis ready")).not.toBeInTheDocument();
+    expect(screen.getByText("Source: rateLimited (provider rate limited)")).toBeInTheDocument();
+  });
+
+  it("ignores stale in-flight analysis results after the contract changes", async () => {
+    const first = deferred<HotContractAnalysisReadModel>();
+    const second = deferred<HotContractAnalysisReadModel>();
+    const nextAddress = "0x2222222222222222222222222222222222222222";
+    const onFetchHotContractAnalysis = vi.fn((input: HotContractAnalysisFetchInput) =>
+      input.contractAddress === address ? first.promise : second.promise,
+    );
+    renderHotContract({ onFetchHotContractAnalysis });
+
+    fireEvent.change(screen.getByLabelText("Contract address"), { target: { value: address } });
+    fireEvent.click(screen.getByRole("button", { name: "Analyze" }));
+    fireEvent.change(screen.getByLabelText("Contract address"), { target: { value: nextAddress } });
+
+    await act(async () => {
+      first.resolve(model());
+      await Promise.resolve();
+    });
+
+    expect(screen.queryByText(address)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Analyze" }));
+
+    await act(async () => {
+      second.resolve(model({ contract: { address: nextAddress } }));
+      await Promise.resolve();
+    });
+
+    expect(await screen.findByText(nextAddress)).toBeInTheDocument();
+  });
+
+  it("ignores stale in-flight analysis results after request controls change", async () => {
+    const first = deferred<HotContractAnalysisReadModel>();
+    const second = deferred<HotContractAnalysisReadModel>();
+    const seedTxHash = `0x${"b".repeat(64)}`;
+    const onFetchHotContractAnalysis = vi.fn((input: HotContractAnalysisFetchInput) =>
+      input.source?.window === "24h" ? second.promise : first.promise,
+    );
+    renderHotContract({
+      abiRegistryState: abiRegistryState([
+        dataSource({ id: "configured-mainnet", chainId: 1 }),
+      ]),
+      onFetchHotContractAnalysis,
+    });
+
+    fireEvent.change(screen.getByLabelText("Contract address"), { target: { value: address } });
+    fireEvent.change(screen.getByLabelText("Source provider"), {
+      target: { value: "configured-mainnet" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Analyze" }));
+
+    fireEvent.change(screen.getByLabelText("Sample window"), { target: { value: "24H" } });
+    fireEvent.change(screen.getByLabelText("Optional tx hash seed (display only)"), {
+      target: { value: seedTxHash },
+    });
+
+    await act(async () => {
+      first.resolve(model({ errorSummary: "stale-source-result" }));
+      await Promise.resolve();
+    });
+
+    expect(screen.queryByText("stale-source-result")).not.toBeInTheDocument();
+    expect(screen.queryByText("Contract Identity")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Analyze" }));
+    await act(async () => {
+      second.resolve(model({ seedTxHash }));
+      await Promise.resolve();
+    });
+
+    expect(await screen.findByText("Contract Identity")).toBeInTheDocument();
+    expect(onFetchHotContractAnalysis).toHaveBeenCalledTimes(2);
+    expect(onFetchHotContractAnalysis.mock.calls[1]?.[0].source?.window).toBe("24h");
+    expect(onFetchHotContractAnalysis.mock.calls[1]?.[0].seedTxHash).toBe(seedTxHash);
+  });
+
+  it("renders selector, topic, examples, advisory labels, and avoids full payloads", async () => {
+    const fullPayload = `0x${"f".repeat(256)}`;
+    renderHotContract();
+
+    fireEvent.change(screen.getByLabelText("Contract address"), { target: { value: address } });
+    fireEvent.click(screen.getByRole("button", { name: "Analyze" }));
+
+    expect(await screen.findByText("Contract Identity")).toBeInTheDocument();
+    expect(screen.getByText("0xa9059cbb")).toBeInTheDocument();
+    expect(screen.getByText("0xddf252ad")).toBeInTheDocument();
+    expect(screen.getAllByText("ERC-20 transfer candidate").length).toBeGreaterThan(0);
+    expect(screen.getByText("Transfer event candidate")).toBeInTheDocument();
+    expect(screen.getByText(txHash)).toBeInTheDocument();
+    expect(screen.getByText("Sampled only")).toBeInTheDocument();
+    expect(screen.getByText("transfer(address,uint256)")).toBeInTheDocument();
+    expect(screen.queryByText(fullPayload)).not.toBeInTheDocument();
+    expect(document.body.textContent).not.toContain("topsecret");
+    expect(document.body.textContent).not.toContain("secret-key");
+  });
+
+  it("uses enabled ABI data sources for the active chain as source provider options", async () => {
+    const onFetchHotContractAnalysis = vi.fn<
+      (input: HotContractAnalysisFetchInput) => Promise<HotContractAnalysisReadModel>
+    >(async () => model());
+    renderHotContract({
+      abiRegistryState: abiRegistryState([
+        dataSource({ id: "configured-mainnet", chainId: 1 }),
+        dataSource({ id: "disabled-mainnet", chainId: 1, enabled: false }),
+        dataSource({ id: "configured-base", chainId: 8453 }),
+      ]),
+      onFetchHotContractAnalysis,
+    });
+
+    const sourceSelect = screen.getByLabelText("Source provider");
+    expect(within(sourceSelect).getByRole("option", { name: "Local/RPC only" })).toBeInTheDocument();
+    expect(within(sourceSelect).getByRole("option", { name: /configured-mainnet/ })).toBeInTheDocument();
+    expect(within(sourceSelect).queryByRole("option", { name: /disabled-mainnet/ })).not.toBeInTheDocument();
+    expect(within(sourceSelect).queryByRole("option", { name: /configured-base/ })).not.toBeInTheDocument();
+    expect(within(sourceSelect).queryByRole("option", { name: /etherscan-mainnet/ })).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("Contract address"), { target: { value: address } });
+    fireEvent.change(sourceSelect, { target: { value: "configured-mainnet" } });
+    fireEvent.click(screen.getByRole("button", { name: "Analyze" }));
+
+    await waitFor(() => expect(onFetchHotContractAnalysis).toHaveBeenCalledTimes(1));
+    const firstCall = onFetchHotContractAnalysis.mock.calls[0]?.[0];
+    expect(firstCall).toBeDefined();
+    const selectedRpc = firstCall?.selectedRpc;
+    expect(selectedRpc).toBeDefined();
+    expect(selectedRpc?.providerConfigId).toBeNull();
+    const source = firstCall?.source;
+    expect(source).toBeDefined();
+    expect(source?.providerConfigId).toBe("configured-mainnet");
+  });
+
+  it("falls back to Local/RPC only when the selected ABI data source becomes unavailable", async () => {
+    const onFetchHotContractAnalysis = vi.fn<
+      (input: HotContractAnalysisFetchInput) => Promise<HotContractAnalysisReadModel>
+    >(async () => model());
+    const { rerender } = renderScreen(
+      <HotContractAnalysisView
+        abiRegistryState={abiRegistryState([dataSource({ id: "configured-mainnet", chainId: 1 })])}
+        chainId={1n}
+        chainName="Ethereum"
+        chainReady={true}
+        onFetchHotContractAnalysis={onFetchHotContractAnalysis}
+        rpcUrl={rpcUrl}
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText("Source provider"), {
+      target: { value: "configured-mainnet" },
+    });
+    expect(screen.getByLabelText("Source provider")).toHaveValue("configured-mainnet");
+
+    rerender(
+      <HotContractAnalysisView
+        abiRegistryState={abiRegistryState([dataSource({ id: "configured-base", chainId: 8453 })])}
+        chainId={1n}
+        chainName="Ethereum"
+        chainReady={true}
+        onFetchHotContractAnalysis={onFetchHotContractAnalysis}
+        rpcUrl={rpcUrl}
+      />,
+    );
+
+    expect(screen.getByLabelText("Source provider")).toHaveValue("local-only");
+    fireEvent.change(screen.getByLabelText("Contract address"), { target: { value: address } });
+    fireEvent.click(screen.getByRole("button", { name: "Analyze" }));
+
+    await waitFor(() => expect(onFetchHotContractAnalysis).toHaveBeenCalledTimes(1));
+    const firstCall = onFetchHotContractAnalysis.mock.calls[0]?.[0];
+    expect(firstCall).toBeDefined();
+    const selectedRpc = firstCall?.selectedRpc;
+    expect(selectedRpc).toBeDefined();
+    expect(selectedRpc?.providerConfigId).toBeNull();
+    const source = firstCall?.source;
+    expect(source).toBeDefined();
+    expect(source?.providerConfigId).toBeNull();
+  });
+
+  it("redacts malicious analysis error summaries on screen and in copied summaries", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.assign(navigator, { clipboard: { writeText } });
+    const maliciousCalldata = `0x${"f".repeat(256)}`;
+    const maliciousSummary = [
+      "provider failed at https://user:password@api.example.invalid/v1?apikey=secret-api-key",
+      "Authorization: Bearer secret-token-value",
+      `calldata=${maliciousCalldata}`,
+      "raw body={\"apiKey\":\"secret-json-key\",\"url\":\"https://secret.example.invalid/path\"}",
+    ].join(" ");
+    renderHotContract({
+      onFetchHotContractAnalysis: vi.fn(async () => model({ errorSummary: maliciousSummary })),
+    });
+
+    fireEvent.change(screen.getByLabelText("Contract address"), { target: { value: address } });
+    fireEvent.click(screen.getByRole("button", { name: "Analyze" }));
+    await screen.findByText("Contract Identity");
+
+    const screenText = document.body.textContent ?? "";
+    expect(screenText).toContain("[redacted_url]");
+    expect(screenText).toContain("[redacted_body]");
+    expect(screenText.toLowerCase()).not.toContain("raw body");
+    expect(screenText).not.toContain("{\"apiKey\"");
+    expect(screenText).not.toContain("\"url\"");
+    expect(screenText).not.toContain("secret-api-key");
+    expect(screenText).not.toContain("secret-token-value");
+    expect(screenText).not.toContain(maliciousCalldata);
+    expect(screenText).not.toContain("secret.example.invalid");
+
+    fireEvent.click(screen.getByRole("button", { name: "Copy summary" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    const copiedSummary = String(writeText.mock.calls.at(-1)?.[0] ?? "");
+    expect(copiedSummary).toContain("error=");
+    expect(copiedSummary).toContain("[redacted_url]");
+    expect(copiedSummary).toContain("[redacted_body]");
+    expect(copiedSummary.toLowerCase()).not.toContain("raw body");
+    expect(copiedSummary).not.toContain("{\"apiKey\"");
+    expect(copiedSummary).not.toContain("\"url\"");
+    expect(copiedSummary).not.toContain("secret-api-key");
+    expect(copiedSummary).not.toContain("secret-token-value");
+    expect(copiedSummary).not.toContain(maliciousCalldata);
+    expect(copiedSummary).not.toContain("secret.example.invalid");
+  });
+
+  it("redacts malicious source status reasons in provider visibility pills", async () => {
+    const maliciousCalldata = `0x${"f".repeat(256)}`;
+    const maliciousReason = [
+      "provider failed at https://user:password@api.example.invalid/v1?apikey=secret-api-key",
+      "Authorization: Bearer secret-token-value",
+      `calldata=${maliciousCalldata}`,
+      "raw body={\"apiKey\":\"secret-json-key\",\"url\":\"https://secret.example.invalid/path\"}",
+    ].join(" ");
+    renderHotContract({
+      onFetchHotContractAnalysis: vi.fn(async () =>
+        model({
+          sources: {
+            source: status("limited", maliciousReason),
+          },
+        }),
+      ),
+    });
+
+    fireEvent.change(screen.getByLabelText("Contract address"), { target: { value: address } });
+    fireEvent.click(screen.getByRole("button", { name: "Analyze" }));
+    await screen.findByText("Contract Identity");
+
+    const screenText = document.body.textContent ?? "";
+    expect(screenText).toContain("Source: limited");
+    expect(screenText).toContain("[redacted_url]");
+    expect(screenText).toContain("[redacted_auth]");
+    expect(screenText).toContain("[redacted_body]");
+    expect(screenText).not.toContain("secret-api-key");
+    expect(screenText).not.toContain("secret-token-value");
+    expect(screenText).not.toContain("secret-json-key");
+    expect(screenText).not.toContain(maliciousCalldata);
+    expect(screenText).not.toContain("secret.example.invalid");
+    expect(screenText.toLowerCase()).not.toContain("raw body");
+    expect(screenText).not.toContain("{\"apiKey\"");
+  });
+
+  it("copies only allowed hot contract fields and bounded summaries", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.assign(navigator, { clipboard: { writeText } });
+    renderHotContract();
+
+    fireEvent.change(screen.getByLabelText("Contract address"), { target: { value: address } });
+    fireEvent.click(screen.getByRole("button", { name: "Analyze" }));
+    await screen.findByText("Contract Identity");
+
+    fireEvent.click(screen.getByRole("button", { name: "Copy contract address" }));
+    await waitFor(() => expect(writeText).toHaveBeenLastCalledWith(address));
+
+    fireEvent.click(screen.getByRole("button", { name: "Copy selector" }));
+    await waitFor(() => expect(writeText).toHaveBeenLastCalledWith("0xa9059cbb"));
+
+    fireEvent.click(screen.getByRole("button", { name: "Copy topic" }));
+    await waitFor(() => expect(writeText).toHaveBeenLastCalledWith("0xddf252ad"));
+
+    fireEvent.click(screen.getByRole("button", { name: "Copy code hash" }));
+    await waitFor(() => expect(writeText).toHaveBeenLastCalledWith("0xcodehash"));
+
+    fireEvent.click(screen.getByRole("button", { name: "Copy ABI source identity" }));
+    await waitFor(() => expect(writeText).toHaveBeenLastCalledWith("safe-source"));
+
+    fireEvent.click(within(screen.getByLabelText("Example transactions")).getByRole("button", { name: "Copy sample tx hash" }));
+    await waitFor(() => expect(writeText).toHaveBeenLastCalledWith(txHash));
+
+    fireEvent.click(screen.getByRole("button", { name: "Copy summary" }));
+    await waitFor(() => expect(writeText).toHaveBeenLastCalledWith(expect.stringContaining(`contract=${address}`)));
+
+    const copiedValues = writeText.mock.calls.map((call) => String(call[0])).join("\n");
+    expect(copiedValues).not.toContain("topsecret");
+    expect(copiedValues).not.toContain("secret-key");
+    expect(copiedValues).not.toContain("calldata=");
+    expect(copiedValues).not.toContain("logs=");
+  });
+
+  it("copies sanitized bounded ABI source identities", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.assign(navigator, { clipboard: { writeText } });
+    const maliciousSourceId = `https://secret.example.invalid/path?apikey=secret-key-${"x".repeat(160)}`;
+    const rawPayload = `0x${"f".repeat(256)}`;
+    const maliciousProviderConfigId = `provider raw body={"apiKey":"secret-json-key","calldata":"${rawPayload}"}`;
+    const baseModel = model();
+    renderHotContract({
+      onFetchHotContractAnalysis: vi.fn(async () =>
+        model({
+          decode: {
+            ...baseModel.decode,
+            abiSources: [
+              {
+                ...baseModel.decode.abiSources[0],
+                userSourceId: maliciousSourceId,
+                providerConfigId: maliciousProviderConfigId,
+                versionId: maliciousProviderConfigId,
+              },
+            ],
+          },
+        }),
+      ),
+    });
+
+    fireEvent.change(screen.getByLabelText("Contract address"), { target: { value: address } });
+    fireEvent.click(screen.getByRole("button", { name: "Analyze" }));
+    await screen.findByText("Contract Identity");
+
+    expect(screen.queryByRole("button", { name: "Copy ABI source hash" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Copy ABI source identity" }));
+
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    const copied = String(writeText.mock.calls.at(-1)?.[0] ?? "");
+    expect(copied.length).toBeLessThanOrEqual(120);
+    expect(copied).toContain("[redacted_url]");
+    expect(copied).toContain("...");
+    expect(copied).not.toContain("secret-key");
+    expect(copied).not.toContain("secret-json-key");
+    expect(copied).not.toContain(rawPayload);
+    expect(copied.toLowerCase()).not.toContain("raw body");
+  });
+});

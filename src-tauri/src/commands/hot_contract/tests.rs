@@ -33,6 +33,21 @@ impl HotContractSampleProvider for FailingHotContractSampleProvider {
     }
 }
 
+#[derive(Debug, Clone, Default)]
+struct CapturingHotContractSampleProvider {
+    request: Arc<Mutex<Option<HotContractSourceOutboundRequest>>>,
+}
+
+impl HotContractSampleProvider for CapturingHotContractSampleProvider {
+    fn fetch_samples(
+        &self,
+        request: &HotContractSourceOutboundRequest,
+    ) -> Result<Vec<HotContractSourceSample>, String> {
+        *self.request.lock().expect("capture request") = Some(request.clone());
+        Ok(vec![sample("0xa9059cbb")])
+    }
+}
+
 #[test]
 fn rpc_endpoint_fingerprint_matches_existing_frontend_selected_rpc_vector() {
     assert_eq!(
@@ -166,6 +181,115 @@ async fn configured_source_fetch_populates_sample_coverage() {
     assert_eq!(result.sample_coverage.returned_samples, 2);
     assert_eq!(result.sample_coverage.omitted_samples, 1);
     assert_eq!(result.sample_coverage.source_status, "ok");
+}
+
+#[tokio::test]
+async fn valid_seed_tx_hash_round_trips_as_read_model_provenance_without_source_outbound() {
+    let (_app_dir, _dir) = AppDirOverride::with_registry(
+        "hot-contract-seed-provenance",
+        &[data_source(
+            "missing-source",
+            1,
+            "customIndexer",
+            true,
+            None,
+            false,
+            None,
+        )],
+    );
+    let (rpc_url, _requests, handle) = start_rpc_server(vec![
+        step("eth_chainId", json!("0x1")),
+        step("eth_getCode", json!("0x6001600203")),
+    ]);
+    let seed = format!("0x{}", "A".repeat(64));
+    let normalized_seed = seed.to_ascii_lowercase();
+    let provider = CapturingHotContractSampleProvider::default();
+    let captured = provider.request.clone();
+
+    let result = fetch_hot_contract_analysis_with_sample_provider(
+        HotContractAnalysisFetchInput {
+            seed_tx_hash: Some(seed),
+            ..base_input(&rpc_url)
+        },
+        &provider,
+    )
+    .await;
+    handle.join().expect("rpc server joins");
+
+    assert_eq!(result.status, "ok");
+    assert_eq!(
+        result.seed_tx_hash.as_deref(),
+        Some(normalized_seed.as_str())
+    );
+    let outbound = captured
+        .lock()
+        .expect("captured request lock")
+        .clone()
+        .expect("source outbound request captured");
+    let outbound_json = serde_json::to_string(&outbound).expect("serialize outbound");
+    assert_eq!(outbound.provider_config_id, "missing-source");
+    assert!(!outbound_json.contains("seed"));
+    assert!(!outbound_json.contains(&normalized_seed));
+}
+
+#[tokio::test]
+async fn selected_rpc_provider_config_id_is_not_source_fallback() {
+    let (_app_dir, _dir) = AppDirOverride::with_registry(
+        "hot-contract-selected-rpc-not-source",
+        &[data_source(
+            "provider-mainnet",
+            1,
+            "customIndexer",
+            true,
+            None,
+            false,
+            None,
+        )],
+    );
+    let (rpc_url, _requests, handle) = start_rpc_server(vec![
+        step("eth_chainId", json!("0x1")),
+        step("eth_getCode", json!("0x6001600203")),
+    ]);
+    let provider = CapturingHotContractSampleProvider::default();
+    let captured = provider.request.clone();
+
+    let result = fetch_hot_contract_analysis_with_sample_provider(
+        HotContractAnalysisFetchInput {
+            source: Some(HotContractSourceFetchInput {
+                provider_config_id: None,
+                limit: Some(25),
+                window: Some("24h".to_string()),
+                cursor: None,
+            }),
+            ..base_input(&rpc_url)
+        },
+        &provider,
+    )
+    .await;
+    handle.join().expect("rpc server joins");
+
+    assert_ne!(result.sources.source.status, "ok");
+    assert_eq!(
+        result.sources.source.reason.as_deref(),
+        Some("sourceProviderMissing")
+    );
+    assert!(captured.lock().expect("captured request lock").is_none());
+}
+
+#[tokio::test]
+async fn invalid_seed_tx_hash_returns_validation_error() {
+    let result = fetch_hot_contract_analysis_impl(HotContractAnalysisFetchInput {
+        seed_tx_hash: Some("0x1234".to_string()),
+        ..base_input("http://127.0.0.1:9/rpc")
+    })
+    .await;
+
+    assert_eq!(result.status, "validationError");
+    assert_eq!(result.seed_tx_hash, None);
+    assert_eq!(
+        result.error_summary.as_deref(),
+        Some("seedTxHash must be a 32-byte 0x-prefixed hex transaction hash")
+    );
 }
 
 #[tokio::test]
@@ -1019,13 +1143,14 @@ fn validates_minimal_source_outbound_request_shape() {
         HotContractSourceFetchInput {
             provider_config_id: Some("etherscan-mainnet".to_string()),
             limit: Some(500),
-            window: Some("24h".to_string()),
+            window: Some("24H".to_string()),
             cursor: Some("cursor-1".to_string()),
         },
     )
     .expect("valid request");
     let serialized = serde_json::to_string(&request).expect("serialize request");
 
+    assert_eq!(request.window.as_deref(), Some("24h"));
     assert!(serialized.contains("etherscan-mainnet"));
     assert!(serialized.contains(CONTRACT));
     assert!(serialized.contains("500"));
@@ -1034,6 +1159,36 @@ fn validates_minimal_source_outbound_request_shape() {
     assert!(!serialized.contains("wallet"));
     assert!(!serialized.contains("watchlist"));
     assert!(!serialized.contains("abiCatalog"));
+}
+
+#[test]
+fn rejects_unbounded_or_invalid_source_windows() {
+    for window in [
+        "all-history apiKey=secret",
+        "https://example.invalid?apiKey=secret",
+        "cursor-1",
+        "0h",
+        "31d",
+        "721h",
+    ] {
+        let result = validate_source_outbound_request(
+            1,
+            "etherscan-mainnet",
+            CONTRACT,
+            HotContractSourceFetchInput {
+                provider_config_id: Some("etherscan-mainnet".to_string()),
+                limit: Some(25),
+                window: Some(window.to_string()),
+                cursor: None,
+            },
+        );
+
+        assert!(result.is_err(), "window should be rejected: {window}");
+        assert_eq!(
+            result.err().as_deref(),
+            Some("source window must be 1h..720h or 1d..30d")
+        );
+    }
 }
 
 #[test]
@@ -1161,7 +1316,6 @@ fn loads_configured_sampling_sources_from_abi_registry_records() {
             window: None,
             cursor: None,
         }),
-        None,
     );
 
     assert_eq!(status.status, "ok");
@@ -1190,7 +1344,6 @@ fn explorer_configured_abi_data_source_can_be_sampling_source() {
             window: None,
             cursor: None,
         }),
-        None,
     );
 
     assert_eq!(status.status, "ok");
@@ -1242,6 +1395,7 @@ fn base_input(rpc_url: &str) -> HotContractAnalysisFetchInput {
         rpc_url: rpc_url.to_string(),
         chain_id: 1,
         contract_address: CONTRACT.to_string(),
+        seed_tx_hash: None,
         selected_rpc: Some(selected_rpc(rpc_url)),
         source: Some(HotContractSourceFetchInput {
             provider_config_id: Some("missing-source".to_string()),
@@ -1510,7 +1664,6 @@ fn source_status_for(provider_config_id: &str) -> super::HotContractSourceStatus
             window: None,
             cursor: None,
         }),
-        None,
     )
 }
 

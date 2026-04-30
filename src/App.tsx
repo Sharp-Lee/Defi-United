@@ -10,6 +10,7 @@ import {
   callReadOnlyAbiFunction,
   deleteAbiCacheEntry,
   dismissHistoryRecoveryIntent,
+  fetchHotContractAnalysis,
   fetchTxAnalysis,
   fetchExplorerAbi,
   inspectTransactionHistoryStorage,
@@ -1557,6 +1558,7 @@ export function App() {
       onSubmitAbiWriteCall={handleSubmitAbiWriteCall}
       onSubmitAssetApprovalRevoke={handleSubmitAssetApprovalRevoke}
       onSubmitRawCalldata={handleSubmitRawCalldata}
+      onFetchHotContractAnalysis={fetchHotContractAnalysis}
       onFetchTxAnalysis={fetchTxAnalysis}
       onValidateRpc={handleValidateRpc}
       rpcUrl={rpcUrl}

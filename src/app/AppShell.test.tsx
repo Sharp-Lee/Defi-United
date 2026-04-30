@@ -3,6 +3,36 @@ import { within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { AppShell } from "./AppShell";
 import { renderScreen } from "../test/render";
+import type { AbiRegistryState } from "../lib/tauri";
+
+function abiRegistryState(
+  dataSources: AbiRegistryState["dataSources"],
+): AbiRegistryState {
+  return { schemaVersion: 1, dataSources, cacheEntries: [] };
+}
+
+function abiDataSource(
+  overrides: Partial<AbiRegistryState["dataSources"][number]> & { id: string },
+): AbiRegistryState["dataSources"][number] {
+  const { id, ...rest } = overrides;
+  return {
+    id,
+    chainId: 1,
+    providerKind: "etherscanCompatible",
+    baseUrl: "https://api.etherscan.io/api",
+    apiKeyRef: null,
+    enabled: true,
+    lastSuccessAt: null,
+    lastFailureAt: null,
+    failureCount: 0,
+    cooldownUntil: null,
+    rateLimited: false,
+    lastErrorSummary: null,
+    createdAt: "2026-04-30T00:00:00Z",
+    updatedAt: "2026-04-30T00:00:00Z",
+    ...rest,
+  };
+}
 
 describe("AppShell", () => {
   it("renders the locked workspace when no session is active", () => {
@@ -37,6 +67,7 @@ describe("AppShell", () => {
     expect(screen.getByRole("tab", { name: "Orchestration" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Transfer" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Raw Calldata" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Hot Contract" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "History" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Diagnostics" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Settings" })).toBeInTheDocument();
@@ -197,6 +228,45 @@ describe("AppShell", () => {
     );
     expect(screen.getByRole("heading", { name: "Raw Calldata" })).toBeInTheDocument();
     expect(screen.getByLabelText("Calldata")).toHaveValue("0x");
+  });
+
+  it("renders the desktop hot contract workspace tab", () => {
+    renderScreen(
+      <AppShell
+        activeTab="hotContract"
+        onTabChange={() => {}}
+        onUnlock={async () => {}}
+        session={{ status: "ready" }}
+      />,
+    );
+
+    expect(screen.getByRole("tab", { name: "Hot Contract" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    expect(screen.getByRole("heading", { name: "Hot Contract Analysis" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Contract address")).toHaveValue("");
+  });
+
+  it("passes ABI registry state into the hot contract workspace tab", () => {
+    renderScreen(
+      <AppShell
+        abiRegistryState={abiRegistryState([
+          abiDataSource({ id: "configured-mainnet", chainId: 1 }),
+          abiDataSource({ id: "configured-base", chainId: 8453 }),
+        ])}
+        activeTab="hotContract"
+        onTabChange={() => {}}
+        onUnlock={async () => {}}
+        rpcUrl="https://rpc.example.invalid"
+        selectedChainId={1n}
+        session={{ status: "ready" }}
+      />,
+    );
+
+    const sourceSelect = screen.getByLabelText("Source provider");
+    expect(within(sourceSelect).getByRole("option", { name: /configured-mainnet/ })).toBeInTheDocument();
+    expect(within(sourceSelect).queryByRole("option", { name: /configured-base/ })).not.toBeInTheDocument();
   });
 
   it("renders the desktop assets and approvals workspace tab", () => {
