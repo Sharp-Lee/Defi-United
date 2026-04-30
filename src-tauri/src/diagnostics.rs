@@ -168,6 +168,15 @@ pub fn append_diagnostic_event_to_path(path: &Path, event: &DiagnosticEvent) -> 
 }
 
 pub fn read_diagnostic_events_from_path(path: &Path) -> Result<Vec<DiagnosticEvent>, String> {
+    read_raw_diagnostic_events_from_path(path).map(|events| {
+        events
+            .into_iter()
+            .map(sanitize_loaded_diagnostic_event)
+            .collect()
+    })
+}
+
+fn read_raw_diagnostic_events_from_path(path: &Path) -> Result<Vec<DiagnosticEvent>, String> {
     let file = match fs::File::open(path) {
         Ok(file) => file,
         Err(error) if error.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
@@ -190,15 +199,13 @@ pub fn read_diagnostic_events_from_path(path: &Path) -> Result<Vec<DiagnosticEve
                     index + 1
                 )
             })?;
-            serde_json::from_str::<DiagnosticEvent>(&line)
-                .map(sanitize_loaded_diagnostic_event)
-                .map_err(|e| {
-                    format!(
-                        "Diagnostics log at {} has invalid JSON on line {}: {e}",
-                        path.display(),
-                        index + 1
-                    )
-                })
+            serde_json::from_str::<DiagnosticEvent>(&line).map_err(|e| {
+                format!(
+                    "Diagnostics log at {} has invalid JSON on line {}: {e}",
+                    path.display(),
+                    index + 1
+                )
+            })
         })
         .collect()
 }
@@ -213,8 +220,8 @@ pub fn load_recent_diagnostic_events_from_path(
     path: &Path,
     query: DiagnosticEventQuery,
 ) -> Result<Vec<DiagnosticEvent>, String> {
-    let scope = export_scope_from_query(&query);
-    let mut events = read_diagnostic_events_from_path(path)?;
+    let scope = match_scope_from_query(&query);
+    let mut events = read_raw_diagnostic_events_from_path(path)?;
     events.retain(|event| diagnostic_event_matches_query(event, &scope));
     events.sort_by(|left, right| {
         diagnostic_event_timestamp_millis(right)
@@ -222,7 +229,10 @@ pub fn load_recent_diagnostic_events_from_path(
             .then_with(|| right.timestamp.cmp(&left.timestamp))
     });
     events.truncate(scope.limit);
-    Ok(events)
+    Ok(events
+        .into_iter()
+        .map(sanitize_loaded_diagnostic_event)
+        .collect())
 }
 
 pub fn export_diagnostic_events(
@@ -239,20 +249,7 @@ pub fn export_diagnostic_events_to_path(
     query: DiagnosticEventQuery,
 ) -> Result<DiagnosticExportResult, String> {
     let scope = export_scope_from_query(&query);
-    let events = load_recent_diagnostic_events_from_path(
-        diagnostics_source_path,
-        DiagnosticEventQuery {
-            limit: Some(scope.limit),
-            category: scope.category.clone(),
-            since_timestamp: scope.since_timestamp,
-            until_timestamp: scope.until_timestamp,
-            chain_id: scope.chain_id,
-            account: scope.account.clone(),
-            tx_hash: scope.tx_hash.clone(),
-            level: scope.level.clone(),
-            status: scope.status.clone(),
-        },
-    )?;
+    let events = load_recent_diagnostic_events_from_path(diagnostics_source_path, query)?;
     let export = DiagnosticExportFile {
         exported_at: now_unix_seconds()?,
         event_count: events.len(),
@@ -268,9 +265,23 @@ pub fn export_diagnostic_events_to_path(
             "rawCalldata",
             "canonicalParams",
             "queryToken",
+            "sourceApiKey",
+            "sourceQueryToken",
+            "providerRawResponse",
+            "providerRawResponseBody",
+            "rawProviderBody",
+            "providerRawBody",
+            "sourceRawResponse",
+            "sourceRawBody",
+            "rawSourceBody",
+            "sourceRawResponseBody",
+            "sampleCalldata",
+            "sampleLogs",
+            "hotContractSample",
             "logs",
             "fullLogs",
             "localHistoryMatch",
+            "localHistoryExamples",
             "classificationTruth",
             "fullRpcCredential",
         ],
@@ -304,10 +315,7 @@ fn diagnostic_export_path(dir: &Path) -> Result<PathBuf, String> {
 
 fn export_scope_from_query(query: &DiagnosticEventQuery) -> DiagnosticExportScope {
     DiagnosticExportScope {
-        limit: query
-            .limit
-            .unwrap_or(DEFAULT_RECENT_DIAGNOSTIC_EVENT_LIMIT)
-            .clamp(1, MAX_DIAGNOSTIC_EVENT_LIMIT),
+        limit: clamped_query_limit(query),
         category: sanitized_scope_text_filter(query.category.as_deref()),
         since_timestamp: query.since_timestamp,
         until_timestamp: query.until_timestamp,
@@ -317,6 +325,27 @@ fn export_scope_from_query(query: &DiagnosticEventQuery) -> DiagnosticExportScop
         level: query.level.clone(),
         status: sanitized_scope_text_filter(query.status.as_deref()),
     }
+}
+
+fn match_scope_from_query(query: &DiagnosticEventQuery) -> DiagnosticExportScope {
+    DiagnosticExportScope {
+        limit: clamped_query_limit(query),
+        category: normalized_filter(query.category.as_deref()),
+        since_timestamp: query.since_timestamp,
+        until_timestamp: query.until_timestamp,
+        chain_id: query.chain_id,
+        account: normalized_filter(query.account.as_deref()),
+        tx_hash: normalized_filter(query.tx_hash.as_deref()),
+        level: query.level.clone(),
+        status: normalized_filter(query.status.as_deref()),
+    }
+}
+
+fn clamped_query_limit(query: &DiagnosticEventQuery) -> usize {
+    query
+        .limit
+        .unwrap_or(DEFAULT_RECENT_DIAGNOSTIC_EVENT_LIMIT)
+        .clamp(1, MAX_DIAGNOSTIC_EVENT_LIMIT)
 }
 
 fn normalized_filter(value: Option<&str>) -> Option<String> {
@@ -376,6 +405,7 @@ fn is_suspicious_scope_text(value: &str) -> bool {
         || lower.contains('@')
         || lower.contains('?')
         || lower.contains("token=")
+        || contains_bare_endpoint_like_host(value)
         || lower.contains("password")
         || lower.contains("seed")
         || lower.contains("mnemonic")
@@ -403,6 +433,61 @@ fn is_suspicious_scope_text(value: &str) -> bool {
         || lower.contains("signed transaction")
         || lower.contains("rawtx")
         || lower.contains("raw transaction")
+}
+
+fn contains_bare_endpoint_like_host(value: &str) -> bool {
+    value
+        .split(|ch: char| ch.is_whitespace() || matches!(ch, ',' | ';' | '"' | '\''))
+        .any(is_bare_endpoint_like_host_token)
+}
+
+fn is_bare_endpoint_like_host_token(token: &str) -> bool {
+    let token = token.trim_matches(|ch: char| {
+        matches!(
+            ch,
+            '(' | ')' | '[' | ']' | '{' | '}' | '<' | '>' | ',' | ';'
+        )
+    });
+    if token.is_empty() || token.contains("://") {
+        return false;
+    }
+
+    let authority_start = if let Some(index) = token.rfind('@') {
+        let userinfo = &token[..index];
+        if userinfo.contains('=') || !userinfo.contains(':') {
+            return false;
+        }
+        index + 1
+    } else {
+        0
+    };
+    let authority = &token[authority_start..];
+    let authority_end = authority
+        .char_indices()
+        .find(|(_, ch)| matches!(*ch, '/' | '?' | '#'))
+        .map(|(index, _)| index)
+        .unwrap_or(authority.len());
+    let host = authority[..authority_end]
+        .split(':')
+        .next()
+        .unwrap_or_default();
+    let labels = host.split('.').collect::<Vec<_>>();
+    if labels.len() < 2 {
+        return false;
+    }
+
+    let valid_labels = labels.iter().all(|label| {
+        !label.is_empty()
+            && label
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || ch == '-')
+            && !label.starts_with('-')
+            && !label.ends_with('-')
+    });
+    let Some(tld) = labels.last() else {
+        return false;
+    };
+    valid_labels && tld.len() >= 2 && tld.chars().all(|ch| ch.is_ascii_alphabetic())
 }
 
 fn contains_sensitive_scope_calldata_alias(value: &str) -> bool {
@@ -599,10 +684,10 @@ fn collect_metadata_strings_for_keys(value: &Value, keys: &[&str], output: &mut 
 }
 
 pub fn sanitize_diagnostic_message(value: &str) -> String {
-    let redacted_abi_payloads = redact_bracketed_abi_message_payloads(value);
+    let redacted_payloads = redact_sensitive_message_payloads(value);
     let mut redact_mode = RedactMode::None;
     let mut sanitized_parts = Vec::new();
-    let tokens = redacted_abi_payloads.split_whitespace().collect::<Vec<_>>();
+    let tokens = redacted_payloads.split_whitespace().collect::<Vec<_>>();
     let mut index = 0;
     while index < tokens.len() {
         let token = tokens[index];
@@ -661,14 +746,22 @@ pub fn sanitize_diagnostic_message(value: &str) -> String {
     sanitized
 }
 
-fn redact_bracketed_abi_message_payloads(value: &str) -> String {
+fn redact_sensitive_message_payloads(value: &str) -> String {
+    let redacted = redact_bracketed_sensitive_message_payloads(value);
+    redact_unbracketed_raw_body_message_payloads(&redacted)
+}
+
+fn redact_bracketed_sensitive_message_payloads(value: &str) -> String {
     let mut sanitized = String::with_capacity(value.len());
     let mut cursor = 0;
     while let Some((key_start, separator_index, value_end)) =
-        find_next_bracketed_abi_payload(value, cursor)
+        find_next_bracketed_sensitive_payload(value, cursor)
     {
         sanitized.push_str(&value[cursor..key_start]);
-        sanitized.push_str(&value[key_start..=separator_index]);
+        let (_, key) = bracketed_payload_key_before_separator(value, separator_index);
+        if !is_source_raw_body_payload_message_key(key) {
+            sanitized.push_str(&value[key_start..=separator_index]);
+        }
         sanitized.push_str("[redacted]");
         cursor = value_end;
     }
@@ -676,15 +769,214 @@ fn redact_bracketed_abi_message_payloads(value: &str) -> String {
     sanitized
 }
 
-fn find_next_bracketed_abi_payload(value: &str, cursor: usize) -> Option<(usize, usize, usize)> {
+fn redact_unbracketed_raw_body_message_payloads(value: &str) -> String {
+    let mut sanitized = String::with_capacity(value.len());
+    let mut cursor = 0;
+    while let Some((redact_start, payload_end)) =
+        find_next_unbracketed_raw_body_payload(value, cursor)
+    {
+        sanitized.push_str(&value[cursor..redact_start]);
+        sanitized.push_str("[redacted]");
+        cursor = payload_end;
+    }
+    sanitized.push_str(&value[cursor..]);
+    sanitized
+}
+
+fn find_next_unbracketed_raw_body_payload(value: &str, cursor: usize) -> Option<(usize, usize)> {
+    let phrase_match = find_next_unbracketed_raw_body_phrase_payload(value, cursor);
+    let alias_match = find_next_unbracketed_raw_body_alias_payload(value, cursor);
+    match (phrase_match, alias_match) {
+        (Some(phrase), Some(alias)) => Some(if phrase.0 <= alias.0 { phrase } else { alias }),
+        (Some(phrase), None) => Some(phrase),
+        (None, Some(alias)) => Some(alias),
+        (None, None) => None,
+    }
+}
+
+fn find_next_unbracketed_raw_body_phrase_payload(
+    value: &str,
+    cursor: usize,
+) -> Option<(usize, usize)> {
+    let mut search_cursor = cursor;
+    while let Some((phrase_start, phrase_end, phrase)) = next_raw_body_phrase(value, search_cursor)
+    {
+        let payload_start = unbracketed_raw_body_payload_start_after_marker(value, phrase_end);
+        if payload_start == phrase_end {
+            search_cursor = phrase_end;
+            continue;
+        }
+        let Some(first) = value[payload_start..].chars().next() else {
+            return None;
+        };
+        if matches!(first, '[' | '{') {
+            let payload_end =
+                matching_bracketed_payload_end(value, payload_start).unwrap_or(value.len());
+            if payload_start < payload_end {
+                let redact_start = if is_source_raw_body_phrase(phrase) {
+                    phrase_start
+                } else {
+                    payload_start
+                };
+                return Some((redact_start, payload_end));
+            }
+        }
+        if matches!(first, ':' | '=' | ';' | '.') {
+            search_cursor = phrase_end;
+            continue;
+        }
+
+        let payload_end = unbracketed_raw_body_payload_end(value, payload_start);
+        if payload_start < payload_end {
+            let redact_start = if is_source_raw_body_phrase(phrase) {
+                phrase_start
+            } else {
+                payload_start
+            };
+            return Some((redact_start, payload_end));
+        }
+        search_cursor = phrase_end;
+    }
+    None
+}
+
+fn find_next_unbracketed_raw_body_alias_payload(
+    value: &str,
+    cursor: usize,
+) -> Option<(usize, usize)> {
+    for (relative_separator, separator) in value[cursor..].char_indices() {
+        if separator != '=' && separator != ':' {
+            continue;
+        }
+        let separator_index = cursor + relative_separator;
+        let (key_start, key) = bracketed_payload_key_before_separator(value, separator_index);
+        if !is_raw_body_payload_message_key(key) {
+            continue;
+        }
+
+        let payload_start = unbracketed_raw_body_payload_start_after_marker(
+            value,
+            separator_index + separator.len_utf8(),
+        );
+        let Some(first) = value[payload_start..].chars().next() else {
+            return None;
+        };
+        if matches!(first, '[' | '{' | ';' | '.') {
+            continue;
+        }
+
+        let payload_end = unbracketed_raw_body_payload_end(value, payload_start);
+        if payload_start < payload_end {
+            let redact_start = if is_source_raw_body_payload_message_key(key) {
+                key_start
+            } else {
+                payload_start
+            };
+            return Some((redact_start, payload_end));
+        }
+    }
+    None
+}
+
+fn unbracketed_raw_body_payload_start_after_marker(value: &str, marker_end: usize) -> usize {
+    let mut payload_start = value[marker_end..]
+        .char_indices()
+        .find(|(_, ch)| !ch.is_whitespace())
+        .map(|(index, _)| marker_end + index)
+        .unwrap_or(value.len());
+
+    if let Some(separator) = value[payload_start..].chars().next() {
+        if separator == ':' || separator == '=' {
+            payload_start += separator.len_utf8();
+            payload_start = value[payload_start..]
+                .char_indices()
+                .find(|(_, ch)| !ch.is_whitespace())
+                .map(|(index, _)| payload_start + index)
+                .unwrap_or(value.len());
+        }
+    }
+
+    payload_start
+}
+
+fn next_raw_body_phrase(
+    value: &str,
+    cursor: usize,
+) -> Option<(usize, usize, &'static [&'static str])> {
+    for (relative_start, _) in value[cursor..].char_indices() {
+        let start = cursor + relative_start;
+        for phrase in RAW_BODY_PHRASES {
+            if let Some(end) = raw_body_phrase_at(value, start, phrase) {
+                return Some((start, end, *phrase));
+            }
+        }
+    }
+    None
+}
+
+fn raw_body_phrase_at(value: &str, start: usize, phrase: &[&str]) -> Option<usize> {
+    if value[..start]
+        .chars()
+        .next_back()
+        .is_some_and(is_secret_key_char)
+    {
+        return None;
+    }
+
+    let mut cursor = start;
+    for (index, expected) in phrase.iter().enumerate() {
+        if index > 0 {
+            let next_word = value[cursor..]
+                .char_indices()
+                .find(|(_, ch)| !ch.is_whitespace())
+                .map(|(relative_index, _)| cursor + relative_index)?;
+            if next_word == cursor {
+                return None;
+            }
+            cursor = next_word;
+        }
+
+        let word_end = value[cursor..]
+            .char_indices()
+            .find(|(_, ch)| !ch.is_ascii_alphabetic())
+            .map(|(relative_index, _)| cursor + relative_index)
+            .unwrap_or(value.len());
+        if !value[cursor..word_end].eq_ignore_ascii_case(expected) {
+            return None;
+        }
+        cursor = word_end;
+    }
+
+    if value[cursor..]
+        .chars()
+        .next()
+        .is_some_and(is_secret_key_char)
+    {
+        return None;
+    }
+    Some(cursor)
+}
+
+fn unbracketed_raw_body_payload_end(value: &str, start: usize) -> usize {
+    value[start..]
+        .char_indices()
+        .find(|(_, ch)| *ch == ';')
+        .map(|(index, _)| start + index)
+        .unwrap_or(value.len())
+}
+
+fn find_next_bracketed_sensitive_payload(
+    value: &str,
+    cursor: usize,
+) -> Option<(usize, usize, usize)> {
     let search = &value[cursor..];
     for (relative_separator, separator) in search.char_indices() {
         if separator != '=' && separator != ':' {
             continue;
         }
         let separator_index = cursor + relative_separator;
-        let (key_start, key) = abi_payload_key_before_separator(value, separator_index);
-        if !is_abi_payload_message_key(key) {
+        let (key_start, key) = bracketed_payload_key_before_separator(value, separator_index);
+        if !is_bracketed_payload_message_key(key) {
             continue;
         }
         let value_start = value[separator_index + separator.len_utf8()..]
@@ -704,7 +996,7 @@ fn find_next_bracketed_abi_payload(value: &str, cursor: usize) -> Option<(usize,
     None
 }
 
-fn abi_payload_key_before_separator(value: &str, separator_index: usize) -> (usize, &str) {
+fn bracketed_payload_key_before_separator(value: &str, separator_index: usize) -> (usize, &str) {
     let before = &value[..separator_index];
     let trimmed_end = before.trim_end_matches(char::is_whitespace).len();
     let before = &before[..trimmed_end];
@@ -721,6 +1013,9 @@ fn abi_payload_key_before_separator(value: &str, separator_index: usize) -> (usi
             );
         }
     }
+    if let Some((phrase_start, phrase)) = raw_body_phrase_before_separator(before) {
+        return (phrase_start, phrase);
+    }
     let key_start = before
         .char_indices()
         .rev()
@@ -728,6 +1023,62 @@ fn abi_payload_key_before_separator(value: &str, separator_index: usize) -> (usi
         .map(|(index, ch)| index + ch.len_utf8())
         .unwrap_or(0);
     (key_start, &before[key_start..])
+}
+
+const RAW_BODY_PHRASES: &[&[&str]] = &[
+    &["provider", "raw", "response", "body"],
+    &["provider", "raw", "response"],
+    &["raw", "provider", "body"],
+    &["provider", "raw", "body"],
+    &["source", "raw", "response", "body"],
+    &["source", "raw", "response"],
+    &["source", "raw", "body"],
+    &["raw", "source", "body"],
+];
+
+fn is_source_raw_body_phrase(phrase: &[&str]) -> bool {
+    matches!(
+        phrase,
+        ["source", "raw", "response", "body"]
+            | ["source", "raw", "body"]
+            | ["raw", "source", "body"]
+    )
+}
+
+fn raw_body_phrase_before_separator(value: &str) -> Option<(usize, &str)> {
+    RAW_BODY_PHRASES
+        .iter()
+        .filter_map(|phrase| raw_body_phrase_match_before_separator(value, phrase))
+        .max_by_key(|(start, _)| *start)
+}
+
+fn raw_body_phrase_match_before_separator<'a>(
+    value: &'a str,
+    phrase: &[&str],
+) -> Option<(usize, &'a str)> {
+    let mut cursor = value.len();
+    for expected in phrase.iter().rev() {
+        cursor = value[..cursor].trim_end_matches(char::is_whitespace).len();
+        let mut word_start = cursor;
+        while let Some((index, ch)) = value[..word_start].char_indices().next_back() {
+            if !ch.is_ascii_alphabetic() {
+                break;
+            }
+            word_start = index;
+        }
+        if !value[word_start..cursor].eq_ignore_ascii_case(expected) {
+            return None;
+        }
+        cursor = word_start;
+    }
+    if value[..cursor]
+        .chars()
+        .next_back()
+        .is_some_and(is_secret_key_char)
+    {
+        return None;
+    }
+    Some((cursor, &value[cursor..]))
 }
 
 fn matching_bracketed_payload_end(value: &str, start: usize) -> Option<usize> {
@@ -815,6 +1166,9 @@ fn sanitize_token(token: &str) -> String {
     {
         return format!("{}[redacted_url]", &token[..index]);
     }
+    if let Some(redacted) = redact_bare_endpoint_like_host_token(token) {
+        return redacted;
+    }
 
     let trimmed = token.trim_matches(|ch: char| !ch.is_ascii_hexdigit() && ch != 'x' && ch != 'X');
     if is_long_hex_payload(trimmed) {
@@ -822,6 +1176,42 @@ fn sanitize_token(token: &str) -> String {
     }
 
     redact_unprefixed_hex_runs(token)
+}
+
+fn redact_bare_endpoint_like_host_token(token: &str) -> Option<String> {
+    let mut candidate_starts = vec![0];
+    candidate_starts.extend(
+        token
+            .char_indices()
+            .filter_map(|(index, ch)| matches!(ch, '=' | ':').then_some(index + ch.len_utf8())),
+    );
+
+    for candidate_start in candidate_starts {
+        let mut value_start = candidate_start;
+        while let Some(ch) = token[value_start..].chars().next() {
+            if ch.is_ascii_alphanumeric() {
+                break;
+            }
+            value_start += ch.len_utf8();
+        }
+        if value_start >= token.len() {
+            continue;
+        }
+
+        let candidate = &token[value_start..];
+        let trimmed_candidate = candidate.trim_end_matches(|ch: char| {
+            matches!(ch, ')' | ']' | '}' | '>' | ',' | ';' | '"' | '\'')
+        });
+        let value_end = value_start + trimmed_candidate.len();
+        if is_bare_endpoint_like_host_token(&token[value_start..value_end]) {
+            return Some(format!(
+                "{}[redacted_url]{}",
+                &token[..value_start],
+                &token[value_end..]
+            ));
+        }
+    }
+    None
 }
 
 fn sanitize_secret_key_value_token(token: &str) -> Option<(String, RedactMode)> {
@@ -887,9 +1277,35 @@ fn is_abi_payload_message_key(key: &str) -> bool {
     key.contains("rawabi") || key.contains("canonicalparams") || is_calldata_alias_message_key(&key)
 }
 
+fn is_bracketed_payload_message_key(key: &str) -> bool {
+    is_abi_payload_message_key(key) || is_raw_body_payload_message_key(key)
+}
+
+fn is_raw_body_payload_message_key(key: &str) -> bool {
+    matches!(
+        normalize_key_name(key).as_str(),
+        "providerrawresponse"
+            | "providerrawresponsebody"
+            | "rawproviderbody"
+            | "providerrawbody"
+            | "sourcerawresponse"
+            | "sourcerawbody"
+            | "rawsourcebody"
+            | "sourcerawresponsebody"
+    )
+}
+
+fn is_source_raw_body_payload_message_key(key: &str) -> bool {
+    matches!(
+        normalize_key_name(key).as_str(),
+        "sourcerawbody" | "rawsourcebody" | "sourcerawresponsebody"
+    )
+}
+
 fn is_calldata_alias_message_key(key: &str) -> bool {
     let key = normalize_key_name(key);
     key.contains("rawcalldata")
+        || key.contains("samplecalldata")
         || matches!(
             key.as_str(),
             "calldata" | "fullcalldata" | "canonicalcalldata"
@@ -1075,6 +1491,14 @@ fn sanitize_value(value: Value) -> Value {
                     if is_excluded_metadata_key(&key) {
                         return None;
                     }
+                    if normalize_key_name(&key) == "txhash" {
+                        return match value {
+                            Value::String(value) => {
+                                Some((key, Value::String(sanitize_structured_tx_hash(&value))))
+                            }
+                            _ => None,
+                        };
+                    }
                     if is_sensitive_metadata_key(&key) {
                         Some((key, Value::String("[redacted]".to_string())))
                     } else {
@@ -1094,7 +1518,25 @@ fn is_sensitive_metadata_key(key: &str) -> bool {
 fn is_excluded_metadata_key(key: &str) -> bool {
     matches!(
         normalize_key_name(key).as_str(),
-        "logs" | "fulllogs" | "localhistorymatch" | "classificationtruth"
+        "logs"
+            | "fulllogs"
+            | "samplelogs"
+            | "providerrawresponse"
+            | "providerrawresponsebody"
+            | "rawproviderbody"
+            | "providerrawbody"
+            | "sourcerawresponse"
+            | "sourcerawbody"
+            | "rawsourcebody"
+            | "sourcerawresponsebody"
+            | "hotcontractsample"
+            | "accountlabel"
+            | "notes"
+            | "walletinventory"
+            | "typedmetadata"
+            | "localhistorymatch"
+            | "localhistoryexamples"
+            | "classificationtruth"
     )
 }
 
@@ -1121,10 +1563,20 @@ fn is_sensitive_key_name(key: &str) -> bool {
         || key.contains("rawtransaction")
         || key.contains("rawabi")
         || key.contains("rawcalldata")
+        || key.contains("samplecalldata")
         || key == "calldata"
         || key == "fullcalldata"
         || key == "canonicalcalldata"
         || key.contains("canonicalparams")
+        || key.contains("providerrawresponse")
+        || key.contains("rawproviderbody")
+        || key.contains("providerrawbody")
+        || key.contains("sourcerawresponse")
+        || key.contains("sourcerawbody")
+        || key.contains("rawsourcebody")
+        || key.contains("samplelogs")
+        || key.contains("localhistoryexamples")
+        || key.contains("classificationtruth")
         || key.contains("payload")
         || key.contains("apikey")
         || key.contains("querytoken")
@@ -1309,6 +1761,22 @@ mod tests {
         assert!(!serialized.contains("SECRET_TOKEN"));
         assert!(!serialized.contains(&"x".repeat(900)));
         assert!(serialized.contains("[redacted]"));
+    }
+
+    #[test]
+    fn redacts_bracketed_raw_body_phrase_payloads_without_separator() {
+        let provider = sanitize_diagnostic_message(
+            r#"provider raw response body {"note":"private }; label"} safeAfter=value"#,
+        );
+        assert_eq!(
+            provider,
+            "provider raw response body [redacted] safeAfter=value"
+        );
+
+        let source = sanitize_diagnostic_message(
+            r#"source raw body [{"label":"private }; label"}] safeAfter=value"#,
+        );
+        assert_eq!(source, "[redacted] safeAfter=value");
     }
 
     #[test]
@@ -1732,6 +2200,309 @@ mod tests {
     }
 
     #[test]
+    fn load_and_export_redact_hot_contract_provider_payloads_and_local_context() {
+        let source_path = std::env::temp_dir().join(format!(
+            "wallet-workbench-diagnostics-hot-contract-source-{}.jsonl",
+            std::process::id()
+        ));
+        let export_path = std::env::temp_dir().join(format!(
+            "wallet-workbench-diagnostics-hot-contract-export-{}.json",
+            std::process::id()
+        ));
+        let _ = fs::remove_file(&source_path);
+        let _ = fs::remove_file(&export_path);
+
+        let full_calldata = format!("0xa9059cbb{}", "ab".repeat(512));
+        let full_provider_url =
+            "https://user:pass@api.example.invalid/api?apikey=SOURCE_API_KEY&token=QUERY_TOKEN";
+        let raw_provider_body = format!(
+            r#"{{"result":[{{"hash":"0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","input":"{full_calldata}","apiKey":"SOURCE_API_KEY","note":"provider raw body secret"}}]}}"#
+        );
+        let raw_provider_message_body = r#"{"items": [{"note": "message provider raw note"}]}"#;
+        let provider_raw_response_body_message = r#"{ "details": "message response body detail" }"#;
+        let provider_raw_response_body_phrase_message = r#"{ "note": "message spaced body note" }"#;
+        let provider_raw_response_phrase_message =
+            r#"{ "label": "message provider raw response note" }"#;
+        let unbracketed_raw_provider_body_message =
+            "provider raw response body api_key=provider-secret queryToken=query-secret label=hidden-label; safeUnbracketed=value";
+        let colon_unbracketed_raw_provider_body_message =
+            "provider raw response body: api_key=provider-secret label=colon-hidden-label; safeColon=value";
+        let alias_unbracketed_provider_raw_response_message =
+            "providerRawResponse=api_key=provider-secret label=alias-hidden-label; safeAlias=value";
+        let period_unbracketed_provider_raw_response_message =
+            "providerRawResponse=label=first. privateLabel=period-hidden-label; safePeriod=value";
+        let source_equal_unbracketed_raw_response_body_message =
+            "source raw response body=label=source-equal-hidden-label; safeSourceEqual=value";
+        let plain_phrase_raw_provider_body_message =
+            "provider raw response body Invalid API Key; safePlain=value";
+        let plain_alias_provider_raw_response_message =
+            "providerRawResponse=private raw provider note; safeAliasPlain=value";
+        let plain_source_raw_body_message =
+            "sourceRawBody=private source body note; safeSourcePlain=value";
+        let raw_provider_body_phrase_message = r#"{ "note": "message raw provider body note" }"#;
+        let provider_raw_body_phrase_message = r#"{ "note": "message provider raw body note" }"#;
+        let source_raw_response_phrase_message =
+            r#"{ "note": "message source raw response note" }"#;
+        let source_raw_body_message = r#"{ "note": "message source raw body note" }"#;
+        let raw_source_body_message = r#"[{ "note": "message raw source body note" }]"#;
+        let source_raw_response_body_message =
+            r#"{ "note": "message source raw response body note" }"#;
+        let source_raw_body_phrase_message =
+            r#"{ "label": "message spaced source raw body label" }"#;
+        let raw_source_body_phrase_message =
+            r#"{ "label": "message spaced raw source body label" }"#;
+        let source_raw_response_body_phrase_message =
+            "label=source-hidden-label; safeSourceAlias=value";
+        let source_raw_message_body = r#"{ "details": "message source raw detail" }"#;
+        let provider_raw_message_body = r#"[{ "label": "message provider body label" }]"#;
+        let provider_note = "raw provider body label=metadata-hidden-label; safeMetadata=value";
+        let source_raw_response = serde_json::json!({
+            "note": "source raw response neutral secret",
+            "items": [{ "details": "source raw nested details" }]
+        });
+        let source_raw_body = serde_json::json!({
+            "note": "source raw body neutral secret",
+            "items": [{ "details": "source raw body nested details" }]
+        });
+        let raw_source_body = serde_json::json!({
+            "note": "raw source body neutral secret",
+            "items": [{ "details": "raw source body nested details" }]
+        });
+        let source_raw_response_body = serde_json::json!({
+            "note": "source raw response body neutral secret",
+            "items": [{ "details": "source raw response body nested details" }]
+        });
+        let raw_provider_body_metadata = serde_json::json!({
+            "label": "raw provider body neutral secret",
+            "items": [{ "note": "raw provider body nested note" }]
+        });
+        let provider_raw_body = serde_json::json!({
+            "details": "provider raw body neutral secret",
+            "items": [{ "label": "provider raw body nested label" }]
+        });
+        let logs = serde_json::json!([
+            {
+                "address": "0x1111111111111111111111111111111111111111",
+                "topics": [
+                    "0xddf252ad",
+                    "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                ],
+                "data": full_calldata,
+                "walletLabel": "Treasury wallet label"
+            }
+        ]);
+        let local_history_examples = serde_json::json!([
+            {
+                "accountLabel": "Treasury wallet label",
+                "notes": "private local note",
+                "walletInventory": ["VIP wallet inventory"],
+                "typedMetadata": { "memo": "raw typed metadata" }
+            }
+        ]);
+        let hot_contract_sample = serde_json::json!({
+            "txHash": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "selector": "0xa9059cbb",
+            "sampleCalldata": full_calldata,
+            "sampleLogs": logs,
+            "providerRawResponse": raw_provider_body,
+            "sourceRawResponse": source_raw_response,
+            "sourceRawBody": source_raw_body,
+            "rawSourceBody": raw_source_body,
+            "sourceRawResponseBody": source_raw_response_body,
+            "rawProviderBody": raw_provider_body_metadata,
+            "providerRawBody": provider_raw_body,
+            "localHistoryExamples": local_history_examples,
+            "classificationTruth": "ground-truth-secret"
+        });
+        let metadata = serde_json::json!({
+            "stage": "source",
+            "status": "partial",
+            "chainId": 1,
+            "contractAddress": "0x1111111111111111111111111111111111111111",
+            "selector": "0xa9059cbb",
+            "topic": "0xddf252ad",
+            "txHash": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "sampleCount": 2,
+            "sourceKind": "customIndexer",
+            "sourceStatus": "ok",
+            "providerNote": provider_note,
+            "providerUrl": full_provider_url,
+            "sourceApiKey": "SOURCE_API_KEY",
+            "sourceQueryToken": "QUERY_TOKEN",
+            "providerRawResponse": raw_provider_body,
+            "sourceRawResponse": source_raw_response,
+            "sourceRawBody": source_raw_body,
+            "rawSourceBody": raw_source_body,
+            "sourceRawResponseBody": source_raw_response_body,
+            "rawProviderBody": raw_provider_body_metadata,
+            "providerRawBody": provider_raw_body,
+            "hotContractSample": hot_contract_sample,
+            "sampleCalldata": full_calldata,
+            "sampleLogs": logs,
+            "localHistoryExamples": local_history_examples,
+            "accountLabel": "Standalone treasury label",
+            "notes": "Standalone private note",
+            "walletInventory": ["Standalone VIP wallet inventory"],
+            "typedMetadata": { "memo": "standalone raw typed metadata" },
+            "classificationTruth": "ground-truth-secret"
+        });
+        let raw = serde_json::json!({
+            "timestamp": "1700000000",
+            "level": "warn",
+            "category": "hotContract",
+            "source": "hotContract",
+            "event": "providerSampleFetched",
+            "chainId": 1,
+            "message": format!("hotContractSample providerUrl={full_provider_url} Authorization Bearer BEARER_SECRET Basic BASIC_SECRET sourceApiKey=SOURCE_API_KEY sourceQueryToken=QUERY_TOKEN sampleCalldata={full_calldata} providerRawResponse={raw_provider_body} providerRawResponse={raw_provider_message_body}; providerRawResponseBody={provider_raw_response_body_message} safeMid=value provider raw response body: {provider_raw_response_body_phrase_message} safeAfter=value {unbracketed_raw_provider_body_message} raw provider body: {raw_provider_body_phrase_message} safeRawProviderAfter=value provider raw body: {provider_raw_body_phrase_message} safeProviderRawAfter=value source raw response: {source_raw_response_phrase_message} safeSourceRawAfter=value sourceRawResponse={source_raw_message_body}; sourceRawBody={source_raw_body_message}; rawSourceBody={raw_source_body_message}; sourceRawResponseBody={source_raw_response_body_message}; source raw body: {source_raw_body_phrase_message} safeAliasAfterA=value raw source body: {raw_source_body_phrase_message} safeAliasAfterB=value source raw response body {source_raw_response_body_phrase_message} providerRawBody={provider_raw_message_body}"),
+            "metadata": metadata
+        });
+        let alias_raw = serde_json::json!({
+            "timestamp": "1700000001",
+            "level": "warn",
+            "category": "hotContract",
+            "source": "hotContract",
+            "event": "providerSampleFetched",
+            "chainId": 1,
+            "message": format!("provider raw response: {provider_raw_response_phrase_message} safeProviderRawResponse=value {colon_unbracketed_raw_provider_body_message} {alias_unbracketed_provider_raw_response_message} {period_unbracketed_provider_raw_response_message} {source_equal_unbracketed_raw_response_body_message} {plain_phrase_raw_provider_body_message} {plain_alias_provider_raw_response_message} {plain_source_raw_body_message}"),
+            "metadata": {}
+        });
+        fs::write(&source_path, format!("{raw}\n{alias_raw}\n"))
+            .expect("write hot contract diagnostics");
+
+        let events =
+            load_recent_diagnostic_events_from_path(&source_path, DiagnosticEventQuery::default())
+                .expect("load");
+        let loaded = serde_json::to_string(&events).expect("serialize loaded diagnostics");
+        export_diagnostic_events_to_path(
+            &source_path,
+            &export_path,
+            DiagnosticEventQuery::default(),
+        )
+        .expect("export");
+        let exported = fs::read_to_string(&export_path).expect("read export");
+        let exported_json: Value = serde_json::from_str(&exported).expect("export json");
+        let exported_events =
+            serde_json::to_string(exported_json.pointer("/events").expect("export events"))
+                .expect("serialize export events");
+
+        for serialized in [loaded.as_str(), exported_events.as_str()] {
+            for secret in [
+                "user:pass",
+                "api.example.invalid",
+                "SOURCE_API_KEY",
+                "QUERY_TOKEN",
+                "BEARER_SECRET",
+                "BASIC_SECRET",
+                "provider-secret",
+                "query-secret",
+                "hidden-label",
+                "colon-hidden-label",
+                "alias-hidden-label",
+                "period-hidden-label",
+                "source-equal-hidden-label",
+                "Invalid API Key",
+                "private raw provider note",
+                "private source body note",
+                "metadata-hidden-label",
+                "provider raw body secret",
+                "message provider raw note",
+                "message response body detail",
+                "message spaced body note",
+                "message provider raw response note",
+                "message raw provider body note",
+                "message provider raw body note",
+                "message source raw response note",
+                "message source raw body note",
+                "message raw source body note",
+                "message source raw response body note",
+                "message spaced source raw body label",
+                "message spaced raw source body label",
+                "source-hidden-label",
+                "message source raw detail",
+                "message provider body label",
+                "source raw response neutral secret",
+                "source raw nested details",
+                "source raw body neutral secret",
+                "source raw body nested details",
+                "raw source body neutral secret",
+                "raw source body nested details",
+                "source raw response body neutral secret",
+                "source raw response body nested details",
+                "raw provider body neutral secret",
+                "raw provider body nested note",
+                "provider raw body neutral secret",
+                "provider raw body nested label",
+                "Treasury wallet label",
+                "private local note",
+                "VIP wallet inventory",
+                "raw typed metadata",
+                "Standalone treasury label",
+                "Standalone private note",
+                "Standalone VIP wallet inventory",
+                "standalone raw typed metadata",
+                "ground-truth-secret",
+                "classificationTruth",
+            ] {
+                assert!(
+                    !serialized.contains(secret),
+                    "hot contract diagnostics leaked {secret}: {serialized}"
+                );
+            }
+            assert!(!serialized.contains(&full_calldata));
+            assert!(serialized.contains("sampleCalldata=[redacted]"));
+            assert!(serialized.contains("providerRawResponse=[redacted]"));
+            assert!(serialized.contains("providerRawResponseBody=[redacted]"));
+            assert!(serialized.contains("provider raw response body:[redacted]"));
+            assert!(serialized.contains("safeMid=value"));
+            assert!(serialized.contains("safeAfter=value"));
+            assert!(serialized.contains("safeUnbracketed=value"));
+            assert!(serialized.contains("safeColon=value"));
+            assert!(serialized.contains("safeAlias=value"));
+            assert!(serialized.contains("safeSourceEqual=value"));
+            assert!(serialized.contains("safePlain=value"));
+            assert!(serialized.contains("safeAliasPlain=value"));
+            assert!(serialized.contains("safeSourcePlain=value"));
+            assert!(serialized.contains("safeMetadata=value"));
+            assert!(serialized.contains("raw provider body:[redacted]"));
+            assert!(serialized.contains("safeRawProviderAfter=value"));
+            assert!(serialized.contains("provider raw body:[redacted]"));
+            assert!(serialized.contains("safeProviderRawAfter=value"));
+            assert!(serialized.contains("provider raw response:[redacted]"));
+            assert!(serialized.contains("safeProviderRawResponse=[redacted]"));
+            assert!(serialized.contains("source raw response:[redacted]"));
+            assert!(serialized.contains("safeSourceRawAfter=value"));
+            assert!(serialized.contains("safeAliasAfterA=value"));
+            assert!(serialized.contains("safeAliasAfterB=value"));
+            assert!(serialized.contains("safePeriod=value"));
+            assert!(serialized.contains("safeSourceAlias=value"));
+            assert!(!serialized.contains("\"hotContractSample\""));
+            assert!(!serialized.contains("\"sampleLogs\""));
+            assert!(!serialized.contains("\"providerRawResponse\""));
+            assert!(!serialized.contains("\"sourceRawResponse\""));
+            assert!(!serialized.contains("sourceRawBody"));
+            assert!(!serialized.contains("rawSourceBody"));
+            assert!(!serialized.contains("sourceRawResponseBody"));
+            assert!(!serialized.contains("source raw body"));
+            assert!(!serialized.contains("raw source body"));
+            assert!(!serialized.contains("source raw response body"));
+            assert!(!serialized.contains("\"rawProviderBody\""));
+            assert!(!serialized.contains("\"providerRawBody\""));
+            assert!(!serialized.contains("\"localHistoryExamples\""));
+            assert!(serialized.contains("0x1111111111111111111111111111111111111111"));
+            assert!(serialized.contains("0xa9059cbb"));
+            assert!(serialized.contains("0xddf252ad"));
+            assert!(serialized
+                .contains("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"));
+            assert!(serialized.contains("sampleCount"));
+            assert!(serialized.contains("customIndexer"));
+            assert!(serialized.contains("partial"));
+        }
+
+        let _ = fs::remove_file(source_path);
+        let _ = fs::remove_file(export_path);
+    }
+
+    #[test]
     fn exports_sanitized_diagnostic_events_with_scope_note() {
         let source_path = std::env::temp_dir().join(format!(
             "wallet-workbench-diagnostics-export-source-{}.jsonl",
@@ -1773,9 +2544,20 @@ mod tests {
         assert!(exported.contains("sensitiveInformationExcluded"));
         for disclosure in [
             "queryToken",
+            "sourceApiKey",
+            "sourceQueryToken",
+            "providerRawResponse",
+            "providerRawResponseBody",
+            "rawProviderBody",
+            "providerRawBody",
+            "sourceRawResponse",
+            "sampleCalldata",
+            "sampleLogs",
             "logs",
             "fullLogs",
             "localHistoryMatch",
+            "localHistoryExamples",
+            "hotContractSample",
             "classificationTruth",
         ] {
             assert!(
@@ -1787,6 +2569,132 @@ mod tests {
         assert!(!exported.contains("seed=secret"));
         assert!(!exported.contains("token=secret"));
         assert!(!exported.contains("signed-secret"));
+        let _ = fs::remove_file(source_path);
+        let _ = fs::remove_file(export_path);
+    }
+
+    #[test]
+    fn export_redacts_bare_provider_host_scope_filters_in_file_and_result() {
+        let source_path = std::env::temp_dir().join(format!(
+            "wallet-workbench-diagnostics-export-bare-host-source-{}.jsonl",
+            std::process::id()
+        ));
+        let export_path = std::env::temp_dir().join(format!(
+            "wallet-workbench-diagnostics-export-bare-host-{}.json",
+            std::process::id()
+        ));
+        let _ = fs::remove_file(&source_path);
+        let _ = fs::remove_file(&export_path);
+        let raw = serde_json::json!({
+            "timestamp": "1700000000",
+            "level": "warn",
+            "category": "api.example.invalid",
+            "source": "scope",
+            "event": "scopeMatched",
+            "chainId": 1,
+            "message": "scope filter regression api.example.invalid provider.example.invalid/accounts etherscan.io api.example.invalid/rpc?token=endpoint-secret user:pass@api.example.invalid/rpc",
+            "metadata": {
+                "account": "provider.example.invalid/accounts",
+                "status": "etherscan.io",
+                "note": "api.example.invalid api.example.invalid/rpc?token=endpoint-secret",
+                "nested": {
+                    "account": "provider.example.invalid/accounts",
+                    "status": "etherscan.io",
+                    "note": "user:pass@api.example.invalid/rpc"
+                }
+            }
+        });
+        fs::write(&source_path, format!("{raw}\n")).expect("source");
+
+        let loaded = load_recent_diagnostic_events_from_path(
+            &source_path,
+            DiagnosticEventQuery {
+                category: Some("api.example.invalid".to_string()),
+                account: Some("provider.example.invalid/accounts".to_string()),
+                status: Some("etherscan.io".to_string()),
+                ..DiagnosticEventQuery::default()
+            },
+        )
+        .expect("load");
+        assert_eq!(loaded.len(), 1);
+
+        let result = export_diagnostic_events_to_path(
+            &source_path,
+            &export_path,
+            DiagnosticEventQuery {
+                category: Some("api.example.invalid".to_string()),
+                account: Some("provider.example.invalid/accounts".to_string()),
+                status: Some("etherscan.io".to_string()),
+                ..DiagnosticEventQuery::default()
+            },
+        )
+        .expect("export");
+        let exported = fs::read_to_string(&export_path).expect("read export");
+        let exported_json: Value = serde_json::from_str(&exported).expect("export json");
+        let returned_json = serde_json::to_value(&result).expect("result json");
+        let loaded_events = serde_json::to_string(&loaded).expect("serialize loaded events");
+        let exported_events =
+            serde_json::to_string(exported_json.pointer("/events").expect("export events"))
+                .expect("serialize exported events");
+
+        assert_eq!(result.count, 1);
+        for serialized in [loaded_events.as_str(), exported_events.as_str()] {
+            for secret in [
+                "api.example.invalid",
+                "provider.example.invalid/accounts",
+                "etherscan.io",
+                "endpoint-secret",
+                "token=endpoint-secret",
+                "user:pass",
+                "pass@",
+                "/rpc",
+            ] {
+                assert!(
+                    !serialized.contains(secret),
+                    "diagnostic events leaked bare host/path {secret}: {serialized}"
+                );
+            }
+            assert!(serialized.contains("[redacted_url]"));
+        }
+        assert_eq!(result.scope.category.as_deref(), Some("[redacted]"));
+        assert_eq!(result.scope.account.as_deref(), Some("[redacted]"));
+        assert_eq!(result.scope.status.as_deref(), Some("[redacted]"));
+        assert_eq!(
+            exported_json
+                .pointer("/scope/category")
+                .and_then(|value| value.as_str()),
+            Some("[redacted]")
+        );
+        assert_eq!(
+            exported_json
+                .pointer("/scope/account")
+                .and_then(|value| value.as_str()),
+            Some("[redacted]")
+        );
+        assert_eq!(
+            exported_json
+                .pointer("/scope/status")
+                .and_then(|value| value.as_str()),
+            Some("[redacted]")
+        );
+        assert_eq!(
+            returned_json
+                .pointer("/scope/category")
+                .and_then(|value| value.as_str()),
+            Some("[redacted]")
+        );
+        assert_eq!(
+            returned_json
+                .pointer("/scope/account")
+                .and_then(|value| value.as_str()),
+            Some("[redacted]")
+        );
+        assert_eq!(
+            returned_json
+                .pointer("/scope/status")
+                .and_then(|value| value.as_str()),
+            Some("[redacted]")
+        );
         let _ = fs::remove_file(source_path);
         let _ = fs::remove_file(export_path);
     }

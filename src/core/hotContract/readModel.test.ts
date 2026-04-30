@@ -278,4 +278,136 @@ describe("hot contract read model", () => {
     expect(compact).not.toContain("Invalid API Key");
     expect(compact).toContain("retry later");
   });
+
+  it("compacts provider raw response variants without preserving raw structure", () => {
+    const compact = compactHotContractText(
+      [
+        "provider raw response: {\"apiKey\":\"secret-provider-key\",\"result\":\"private body\"};",
+        "providerRawResponse={\"token\":\"secret-query-token\",\"items\":[{\"note\":\"private note\"}]};",
+        "providerRawResponse: {\"auth\":\"secret-auth-token\",\"status\":\"0\"};",
+        "providerRawResponseBody={\"details\":\"secret response body detail\"};",
+        "retry later",
+      ].join(" "),
+    );
+
+    expect(compact.match(/\[redacted_body\]/g)?.length).toBe(4);
+    expect(compact).toContain("retry later");
+    expect(compact.toLowerCase()).not.toContain("provider raw response");
+    expect(compact).not.toContain("providerRawResponse");
+    expect(compact).not.toContain("providerRawResponseBody");
+    expect(compact).not.toContain("\"apiKey\"");
+    expect(compact).not.toContain("\"token\"");
+    expect(compact).not.toContain("\"items\"");
+    expect(compact).not.toContain("\"auth\"");
+    expect(compact).not.toContain("\"details\"");
+    expect(compact).not.toContain("secret-provider-key");
+    expect(compact).not.toContain("secret-query-token");
+    expect(compact).not.toContain("secret-auth-token");
+    expect(compact).not.toContain("secret response body detail");
+    expect(compact).not.toContain("private note");
+  });
+
+  it("compacts quote-aware provider raw response body payloads", () => {
+    const compact = compactHotContractText(
+      'providerRawResponseBody={"message":"contains }; inside","after":"SECRET_AFTER"}; retry later',
+    );
+
+    expect(compact).toContain("[redacted_body]");
+    expect(compact).toContain("retry later");
+    expect(compact).not.toContain("providerRawResponseBody");
+    expect(compact).not.toContain("SECRET_AFTER");
+  });
+
+  it("compacts provider raw response text with internal periods", () => {
+    const compact = compactHotContractText(
+      "providerRawResponse=label=first. privateLabel=period-hidden-label; retry later",
+    );
+
+    expect(compact).toContain("[redacted_body]");
+    expect(compact).toContain("retry later");
+    expect(compact).not.toContain("providerRawResponse");
+    expect(compact).not.toContain("period-hidden-label");
+  });
+
+  it("compacts raw provider body text variants and query tokens", () => {
+    const compact = compactHotContractText(
+      [
+        "provider raw response body api_key=provider-secret queryToken=query-secret label=hidden-label;",
+        "raw provider body sourceQueryToken=source-secret details=hidden-details;",
+        "retry later",
+      ].join(" "),
+    );
+
+    expect(compact.match(/\[redacted_body\]/g)?.length).toBe(2);
+    expect(compact).toContain("retry later");
+    expect(compact.toLowerCase()).not.toContain("provider raw response body");
+    expect(compact.toLowerCase()).not.toContain("raw provider body");
+    expect(compact).not.toContain("provider-secret");
+    expect(compact).not.toContain("query-secret");
+    expect(compact).not.toContain("source-secret");
+    expect(compact).not.toContain("hidden-label");
+    expect(compact).not.toContain("hidden-details");
+  });
+
+  it("compacts source raw body aliases without preserving raw structure", () => {
+    const compact = compactHotContractText(
+      [
+        "sourceRawBody={\"apiKey\":\"source-body-key\",\"note\":\"source body private note\"};",
+        "rawSourceBody=[{\"token\":\"raw-source-token\",\"label\":\"raw source private label\"}];",
+        'sourceRawResponseBody={"message":"contains }; inside","after":"SOURCE_RESPONSE_AFTER"};',
+        "source raw body: {\"label\":\"spaced source body label\"};",
+        "raw source body: [{\"label\":\"spaced raw source body label\"}];",
+        "source raw response body label=source-hidden-label; safeSourceAlias=value",
+      ].join(" "),
+    );
+
+    expect(compact.match(/\[redacted_body\]/g)?.length).toBe(6);
+    expect(compact).toContain("safeSourceAlias=value");
+    expect(compact).not.toContain("sourceRawBody");
+    expect(compact).not.toContain("rawSourceBody");
+    expect(compact).not.toContain("sourceRawResponseBody");
+    expect(compact.toLowerCase()).not.toContain("source raw body");
+    expect(compact.toLowerCase()).not.toContain("raw source body");
+    expect(compact.toLowerCase()).not.toContain("source raw response body");
+    expect(compact).not.toContain("source-body-key");
+    expect(compact).not.toContain("source body private note");
+    expect(compact).not.toContain("raw-source-token");
+    expect(compact).not.toContain("raw source private label");
+    expect(compact).not.toContain("SOURCE_RESPONSE_AFTER");
+    expect(compact).not.toContain("spaced source body label");
+    expect(compact).not.toContain("spaced raw source body label");
+    expect(compact).not.toContain("source-hidden-label");
+  });
+
+  it("redacts bare provider host paths in compact text", () => {
+    const compact = compactHotContractText(
+      "provider failed at api.example.invalid/v1/account retry later",
+    );
+
+    expect(compact).toContain("[redacted_url]");
+    expect(compact).toContain("retry later");
+    expect(compact).not.toContain("api.example.invalid");
+  });
+
+  it("redacts websocket and userinfo endpoint credentials in compact text", () => {
+    const compact = compactHotContractText(
+      [
+        "provider failed at wss://user:pass@api.example.invalid/rpc",
+        "fallback user:pass@api.example.invalid/rpc?token=secret",
+        "retry later",
+      ].join(" "),
+    );
+
+    expect(compact).toContain("[redacted_url]");
+    expect(compact).toContain("retry later");
+    for (const secret of [
+      "user",
+      "pass",
+      "api.example.invalid",
+      "token=secret",
+      "/rpc",
+    ]) {
+      expect(compact).not.toContain(secret);
+    }
+  });
 });

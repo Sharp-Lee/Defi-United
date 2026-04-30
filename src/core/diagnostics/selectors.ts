@@ -118,7 +118,7 @@ export function diagnosticExportScopeSummary(query: DiagnosticEventQuery) {
 }
 
 export function diagnosticSensitiveExclusionText() {
-  return "Exports contain only sanitized diagnostic metadata: category, time, chainId, account/address summaries, nonce, tx hash, stage, status/level, error summary and sanitized metadata. They exclude mnemonics, private keys, seed material, passwords, signatures, raw signed transactions, query tokens, full credentials, vault data, app-config source, history source, full logs, local history match details, classification truth, analysis labels and unredacted RPC URL secrets.";
+  return "Exports contain only sanitized diagnostic metadata: category, time, chainId, account/address summaries, nonce, tx hash, stage, status/level, error summary and sanitized metadata. They exclude mnemonics, private keys, seed material, passwords, signatures, raw signed transactions, query tokens, full credentials, vault data, app-config source, history source, full logs, raw provider responses, hot contract sample payloads, local history match details, local history examples, classification truth, analysis labels and unredacted RPC URL secrets.";
 }
 
 export function toDiagnosticViewModel(event: DiagnosticEvent): DiagnosticEventViewModel {
@@ -295,6 +295,9 @@ function titleCase(value: string) {
 function sanitizeScopePreviewValue(value: string) {
   const singleLine = value.replace(/\s+/g, " ").trim();
   if (/[a-z][a-z0-9+.-]*:\/\/\S+/i.test(singleLine) || /[@?]/.test(singleLine)) {
+    return "[redacted filter]";
+  }
+  if (/\b[a-z0-9.-]+\.[a-z]{2,}(?:\/\S*)?\b/i.test(singleLine)) {
     return "[redacted filter]";
   }
   if (

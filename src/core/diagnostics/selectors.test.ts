@@ -89,7 +89,10 @@ describe("diagnostic selectors", () => {
     expect(exclusionText).toContain("mnemonics");
     expect(exclusionText).toContain("unredacted RPC URL secrets");
     expect(exclusionText).toContain("full logs");
+    expect(exclusionText).toContain("raw provider responses");
+    expect(exclusionText).toContain("hot contract sample payloads");
     expect(exclusionText).toContain("local history match details");
+    expect(exclusionText).toContain("local history examples");
     expect(exclusionText).toContain("classification truth");
     expect(exclusionText).toContain("analysis labels");
   });
@@ -125,6 +128,22 @@ describe("diagnostic selectors", () => {
     expect(summary).not.toContain("scope-secret");
     expect(summary).not.toContain("user:pass");
     expect(summary).not.toContain("example.invalid");
+  });
+
+  it("redacts bare provider host and path filters from the displayed export scope", () => {
+    const summary = diagnosticExportScopeSummary({
+      limit: 200,
+      account: "api.example.invalid/v1",
+      category: "example.invalid/rpc",
+      status: "rpc api.etherscan.com/api failed",
+    });
+
+    expect(summary).toContain("account/address matching \"[redacted filter]\"");
+    expect(summary).toContain("category [redacted filter]");
+    expect(summary).toContain("status/stage matching \"[redacted filter]\"");
+    expect(summary).not.toContain("api.example.invalid");
+    expect(summary).not.toContain("example.invalid/rpc");
+    expect(summary).not.toContain("api.etherscan.com");
   });
 
   it("redacts sensitive tx hash filter short words from the displayed export scope", () => {

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type {
   AbiRegistryState,
+  HistoryRecord,
   HotContractAnalysisFetchInput,
   HotContractAnalysisReadModel,
   HotContractSourceStatus,
@@ -25,6 +26,7 @@ export interface HotContractAnalysisViewProps {
   chainName: string;
   rpcUrl: string;
   chainReady: boolean;
+  history?: HistoryRecord[];
   abiRegistryState?: AbiRegistryState | null;
   onFetchHotContractAnalysis?: (
     input: HotContractAnalysisFetchInput,
@@ -124,12 +126,27 @@ function clearAnalysisState(
   setCopied(null);
 }
 
+function localExampleTxHashes(history: HistoryRecord[], chainId: number, contractAddress: string) {
+  const contract = contractAddress.toLowerCase();
+  const hashes = new Set<string>();
+  for (const record of history) {
+    if (record.submission.chain_id !== chainId) continue;
+    if ((record.submission.to ?? "").toLowerCase() !== contract) continue;
+    const txHash = record.submission.tx_hash;
+    if (TX_HASH_RE.test(txHash)) {
+      hashes.add(txHash.toLowerCase());
+    }
+  }
+  return hashes;
+}
+
 export function HotContractAnalysisView({
   abiRegistryState = null,
   chainId,
   chainName,
   rpcUrl,
   chainReady,
+  history = [],
   onFetchHotContractAnalysis,
 }: HotContractAnalysisViewProps) {
   const [contractAddress, setContractAddress] = useState("");
@@ -261,6 +278,16 @@ export function HotContractAnalysisView({
 
   const title = analysis ? hotContractStatusTitle(analysis) : null;
   const limitedLabel = analysis ? sourceLimitedLabel(analysis) : null;
+  const localExampleHint = useMemo(() => {
+    if (!analysis || chainIdNumber === null) {
+      return { count: 0, hashes: new Set<string>() };
+    }
+    const hashes = localExampleTxHashes(history, chainIdNumber, analysis.contract.address);
+    const count = analysis.samples.filter(
+      (sample) => sample.txHash && hashes.has(sample.txHash.toLowerCase()),
+    ).length;
+    return { count, hashes };
+  }, [analysis, chainIdNumber, history]);
 
   return (
     <section className="workspace-section hot-contract-grid">
@@ -429,6 +456,8 @@ export function HotContractAnalysisView({
               <div className="mono">{seedTxHashSummary}</div>
               <div>Read model status</div>
               <div>{analysis.status}</div>
+              <div>Local example hint</div>
+              <div>{localExampleHint.count} known locally</div>
             </dl>
           </section>
 
@@ -576,6 +605,7 @@ export function HotContractAnalysisView({
                     <th>Selector</th>
                     <th>Calldata summary</th>
                     <th>Topics</th>
+                    <th>Local hint</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -603,6 +633,11 @@ export function HotContractAnalysisView({
                         ) : null}
                       </td>
                       <td>{sample.logTopic0.length}</td>
+                      <td>
+                        {sample.txHash && localExampleHint.hashes.has(sample.txHash.toLowerCase())
+                          ? "known locally"
+                          : "not known locally"}
+                      </td>
                     </tr>
                   ))}
                 </tbody>

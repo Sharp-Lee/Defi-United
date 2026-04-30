@@ -38,7 +38,10 @@ describe("DiagnosticsView", () => {
     expect(await screen.findByText("No diagnostic events recorded yet.")).toBeInTheDocument();
     expect(screen.getByText(/exclude mnemonics, private keys/)).toBeInTheDocument();
     expect(screen.getByText(/full logs/)).toBeInTheDocument();
+    expect(screen.getByText(/raw provider responses/)).toBeInTheDocument();
+    expect(screen.getByText(/hot contract sample payloads/)).toBeInTheDocument();
     expect(screen.getByText(/local history match details/)).toBeInTheDocument();
+    expect(screen.getByText(/local history examples/)).toBeInTheDocument();
     expect(screen.getByText(/classification truth/)).toBeInTheDocument();
     expect(screen.getByText(/not chain confirmation facts/i)).toBeInTheDocument();
   });

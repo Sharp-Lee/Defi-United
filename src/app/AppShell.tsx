@@ -490,6 +490,7 @@ export function AppShell({
                 chainId={selectedChainId}
                 chainName={selectedChain?.name ?? "Unknown chain"}
                 chainReady={chainReady}
+                history={history}
                 onFetchHotContractAnalysis={onFetchHotContractAnalysis}
                 rpcUrl={rpcUrl}
               />

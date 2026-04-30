@@ -2,6 +2,7 @@ import { act, fireEvent, screen, waitFor, within } from "@testing-library/react"
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import type {
   AbiRegistryState,
+  HistoryRecord,
   HotContractAnalysisFetchInput,
   HotContractAnalysisReadModel,
 } from "../../lib/tauri";
@@ -216,11 +217,99 @@ function dataSource(
   };
 }
 
+function historyRecord(overrides: Partial<HistoryRecord> = {}): HistoryRecord {
+  return {
+    schema_version: 1,
+    intent: {
+      transaction_type: "contractCall",
+      token_contract: null,
+      recipient: null,
+      amount_raw: null,
+      decimals: null,
+      token_symbol: null,
+      token_name: null,
+      token_metadata_source: null,
+      selector: "0xa9059cbb",
+      method_name: "transfer",
+      native_value_wei: "0",
+      rpc_url: "https://user:secret@rpc.example.invalid/v3/secret-key",
+      account_index: 7,
+      chain_id: 1,
+      from: "0x3333333333333333333333333333333333333333",
+      to: address,
+      value_wei: "0",
+      nonce: 42,
+      gas_limit: "21000",
+      max_fee_per_gas: "1",
+      max_priority_fee_per_gas: "1",
+    },
+    intent_snapshot: { source: "private wallet inventory", captured_at: "2026-04-30T00:00:00Z" },
+    submission: {
+      transaction_type: "contractCall",
+      token_contract: null,
+      recipient: null,
+      amount_raw: null,
+      decimals: null,
+      token_symbol: null,
+      token_name: null,
+      token_metadata_source: null,
+      selector: "0xa9059cbb",
+      method_name: "transfer",
+      native_value_wei: "0",
+      frozen_key: "private local frozen key",
+      tx_hash: txHash,
+      kind: "abiWriteCall",
+      source: "local history secret source",
+      chain_id: 1,
+      account_index: 7,
+      from: "0x3333333333333333333333333333333333333333",
+      to: address,
+      value_wei: "0",
+      nonce: 42,
+      gas_limit: "21000",
+      max_fee_per_gas: "1",
+      max_priority_fee_per_gas: "1",
+      broadcasted_at: "2026-04-30T00:00:00Z",
+      replaces_tx_hash: null,
+    },
+    outcome: {
+      state: "Confirmed",
+      tx_hash: txHash,
+      receipt: null,
+      error: null,
+      reconciled_at: null,
+      reconcile: null,
+      dropped_review: null,
+    },
+    nonce_thread: {
+      account_index: 7,
+      chain_id: 1,
+      nonce: 42,
+      status: "Confirmed",
+      original_tx_hash: txHash,
+      replaces_tx_hash: null,
+      replaced_by_tx_hash: null,
+    },
+    abi_call_metadata: {
+      draft_id: "private draft id",
+      chain_id: 1,
+      from: "0x3333333333333333333333333333333333333333",
+      to: address,
+      selector: "0xa9059cbb",
+      method_name: "transfer",
+      function_signature: "transfer(address,uint256)",
+      argument_summaries: [{ path: "note", type: "string", display_value: "private note" }],
+    },
+    ...overrides,
+  } as HistoryRecord;
+}
+
 function renderHotContract(
   options: {
     abiRegistryState?: AbiRegistryState | null;
     chainReady?: boolean;
     chainId?: bigint;
+    history?: HistoryRecord[];
     onFetchHotContractAnalysis?: (
       input: HotContractAnalysisFetchInput,
     ) => Promise<HotContractAnalysisReadModel>;
@@ -235,6 +324,7 @@ function renderHotContract(
       chainId={options.chainId ?? 1n}
       chainName="Ethereum"
       chainReady={options.chainReady ?? true}
+      history={options.history}
       onFetchHotContractAnalysis={onFetchHotContractAnalysis}
       rpcUrl={rpcUrl}
     />,
@@ -738,6 +828,44 @@ describe("HotContractAnalysisView", () => {
     expect(copiedValues).not.toContain("secret-key");
     expect(copiedValues).not.toContain("calldata=");
     expect(copiedValues).not.toContain("logs=");
+  });
+
+  it("shows only bounded local history hints and never uploads local record details", async () => {
+    const onFetchHotContractAnalysis = vi.fn<
+      (input: HotContractAnalysisFetchInput) => Promise<HotContractAnalysisReadModel>
+    >(async () => model());
+    renderHotContract({
+      history: [
+        historyRecord(),
+        historyRecord({
+          submission: { ...historyRecord().submission, tx_hash: `0x${"c".repeat(64)}` },
+        }),
+      ],
+      onFetchHotContractAnalysis,
+    });
+
+    fireEvent.change(screen.getByLabelText("Contract address"), { target: { value: address } });
+    fireEvent.click(screen.getByRole("button", { name: "Analyze" }));
+
+    await waitFor(() => expect(onFetchHotContractAnalysis).toHaveBeenCalledTimes(1));
+    const request = JSON.stringify(onFetchHotContractAnalysis.mock.calls[0]?.[0]);
+    expect(request).not.toContain("private note");
+    expect(request).not.toContain("private wallet inventory");
+    expect(request).not.toContain("private local frozen key");
+    expect(request).not.toContain("local history secret source");
+    expect(request).not.toContain("account_index");
+    expect(request).not.toContain("abi_call_metadata");
+
+    expect(await screen.findByText("Local example hint")).toBeInTheDocument();
+    expect(screen.getByText("1 known locally")).toBeInTheDocument();
+    expect(screen.getByText("known locally")).toBeInTheDocument();
+
+    const screenText = document.body.textContent ?? "";
+    expect(screenText).not.toContain("private note");
+    expect(screenText).not.toContain("private wallet inventory");
+    expect(screenText).not.toContain("private local frozen key");
+    expect(screenText).not.toContain("local history secret source");
+    expect(screenText).not.toContain("Account 7");
   });
 
   it("copies sanitized bounded ABI source identities", async () => {
