@@ -93,6 +93,7 @@ src-tauri/src/commands/asset_approvals.rs  Asset/approval scan and revoke comman
 src-tauri/src/                   Rust vault, accounts, transactions, storage, commands
 src-tauri/tests/                 Rust integration/regression tests
 docs/specs/evm-wallet-workbench.md
+docs/superpowers/development-workflow.md  Project workflow and quality gates
 docs/superpowers/plans/2026-04-27-evm-wallet-workbench-p3-p4.md
 scripts/run-anvil-check.sh
 ```
