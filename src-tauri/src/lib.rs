@@ -67,6 +67,7 @@ pub fn run() {
             commands::transactions::submit_erc20_transfer_command,
             commands::transactions::submit_native_batch_command,
             commands::transactions::submit_native_transfer_command,
+            commands::tx_analysis::fetch_tx_analysis,
             commands::vault::create_vault,
             commands::vault::lock_vault,
             commands::vault::unlock_vault,

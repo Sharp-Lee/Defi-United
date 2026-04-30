@@ -8,4 +8,5 @@ pub mod raw_calldata;
 pub mod token_scanner;
 pub mod token_watchlist;
 pub mod transactions;
+pub mod tx_analysis;
 pub mod vault;

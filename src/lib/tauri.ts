@@ -256,6 +256,113 @@ export interface FetchExplorerAbiInput {
   providerConfigId?: string | null;
 }
 
+export interface TxAnalysisFetchInput {
+  rpcUrl: string;
+  chainId: number;
+  txHash: string;
+  selectedRpc: RawCalldataRpcIdentity | null;
+}
+
+export interface TxAnalysisSourceStatus {
+  status: string;
+  reason?: string | null;
+  errorSummary?: string | null;
+}
+
+export interface TxAnalysisRpcSummary {
+  endpoint: string;
+  expectedChainId: number;
+  actualChainId?: number | null;
+  chainStatus: string;
+}
+
+export interface TxAnalysisTransactionSummary {
+  hash: string;
+  from: string;
+  to?: string | null;
+  contractCreation: boolean;
+  nonce: string;
+  valueWei: string;
+  selector?: string | null;
+  selectorStatus: string;
+  calldataByteLength: number;
+  calldataHashVersion: string;
+  calldataHash: string;
+  blockNumber?: number | null;
+  blockHash?: string | null;
+  transactionIndex?: number | null;
+}
+
+export interface TxAnalysisLogSummary {
+  address: string;
+  logIndex?: number | null;
+  topic0?: string | null;
+  topicsCount: number;
+  dataByteLength: number;
+  dataHashVersion: string;
+  dataHash: string;
+  removed?: boolean | null;
+}
+
+export interface TxAnalysisReceiptSummary {
+  status?: number | null;
+  statusLabel: string;
+  blockNumber?: number | null;
+  blockHash?: string | null;
+  transactionIndex?: number | null;
+  gasUsed?: string | null;
+  effectiveGasPrice?: string | null;
+  contractAddress?: string | null;
+  logsStatus: string;
+  logsCount?: number | null;
+  logs: TxAnalysisLogSummary[];
+  omittedLogs?: number | null;
+}
+
+export interface TxAnalysisBlockSummary {
+  number?: number | null;
+  hash?: string | null;
+  timestamp?: string | null;
+  baseFeePerGas?: string | null;
+}
+
+export interface TxAnalysisAddressCodeSummary {
+  role: string;
+  address: string;
+  status: string;
+  blockTag: string;
+  byteLength?: number | null;
+  codeHashVersion?: string | null;
+  codeHash?: string | null;
+  errorSummary?: string | null;
+}
+
+export interface TxAnalysisSourceStatuses {
+  chainId: TxAnalysisSourceStatus;
+  transaction: TxAnalysisSourceStatus;
+  receipt: TxAnalysisSourceStatus;
+  logs: TxAnalysisSourceStatus;
+  block: TxAnalysisSourceStatus;
+  code: TxAnalysisSourceStatus;
+  explorer: TxAnalysisSourceStatus;
+  indexer: TxAnalysisSourceStatus;
+  localHistory: TxAnalysisSourceStatus;
+}
+
+export interface TxAnalysisFetchReadModel {
+  status: string;
+  reasons: string[];
+  hash: string;
+  chainId: number;
+  rpc: TxAnalysisRpcSummary;
+  transaction?: TxAnalysisTransactionSummary | null;
+  receipt?: TxAnalysisReceiptSummary | null;
+  block?: TxAnalysisBlockSummary | null;
+  addressCodes: TxAnalysisAddressCodeSummary[];
+  sources: TxAnalysisSourceStatuses;
+  errorSummary?: string | null;
+}
+
 export interface AbiProviderDiagnosticsRecord {
   providerKind?: AbiProviderKind | null;
   chainId?: number | null;
@@ -1349,6 +1456,10 @@ export function pasteAbiPayload(input: UserAbiPayloadInput) {
 
 export function fetchExplorerAbi(input: FetchExplorerAbiInput) {
   return invoke<AbiRegistryMutationResult>("fetch_explorer_abi", { input });
+}
+
+export function fetchTxAnalysis(input: TxAnalysisFetchInput) {
+  return invoke<TxAnalysisFetchReadModel>("fetch_tx_analysis", { input });
 }
 
 export function callReadOnlyAbiFunction(input: AbiReadCallInput) {
