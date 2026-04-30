@@ -169,6 +169,661 @@ async fn configured_source_fetch_populates_sample_coverage() {
 }
 
 #[tokio::test]
+async fn aggregates_selector_rows_with_advisory_classifications() {
+    let (_app_dir, _dir) = AppDirOverride::with_registry(
+        "hot-contract-selector-aggregation",
+        &[data_source(
+            "missing-source",
+            1,
+            "customIndexer",
+            true,
+            None,
+            false,
+            None,
+        )],
+    );
+    let (rpc_url, _requests, handle) = start_rpc_server(vec![
+        step("eth_chainId", json!("0x1")),
+        step("eth_getCode", json!("0x6001600203")),
+    ]);
+    let provider = FixtureHotContractSampleProvider::new(vec![
+        sample_with(
+            "0xa9059cbb",
+            "success",
+            "0",
+            "0x1111",
+            100,
+            "2026-04-30T00:00:00Z",
+        ),
+        sample_with(
+            "0xa9059cbb",
+            "reverted",
+            "5",
+            "0x2222",
+            110,
+            "2026-04-30T00:05:00Z",
+        ),
+        sample_with(
+            &approve_calldata("01"),
+            "success",
+            "0",
+            "0x3333",
+            120,
+            "2026-04-30T00:10:00Z",
+        ),
+        sample_with(
+            &approve_calldata("00"),
+            "success",
+            "0",
+            "0x4444",
+            130,
+            "2026-04-30T00:15:00Z",
+        ),
+        sample_with(
+            "0xe63d38ed",
+            "unknown",
+            "10",
+            "0x5555",
+            140,
+            "2026-04-30T00:20:00Z",
+        ),
+        contract_creation_sample("0x6666", 150),
+        sample_with(
+            "0x12345678",
+            "success",
+            "0",
+            "0x7777",
+            160,
+            "2026-04-30T00:30:00Z",
+        ),
+    ]);
+
+    let result =
+        fetch_hot_contract_analysis_with_sample_provider(base_input(&rpc_url), &provider).await;
+    handle.join().expect("rpc server joins");
+    let serialized = serde_json::to_string(&result).expect("serialize result");
+
+    let transfer = selector_row(&result, "0xa9059cbb");
+    assert_eq!(transfer.sampled_call_count, 2);
+    assert_eq!(transfer.sample_share_bps, 2857);
+    assert_eq!(transfer.unique_sender_count, Some(1));
+    assert_eq!(transfer.success_count, 1);
+    assert_eq!(transfer.revert_count, 1);
+    assert_eq!(transfer.unknown_status_count, 0);
+    assert_eq!(transfer.first_block, Some(100));
+    assert_eq!(transfer.last_block, Some(110));
+    assert_eq!(
+        transfer.native_value,
+        super::HotContractNativeValueAggregate {
+            sample_count: 2,
+            non_zero_count: 1,
+            zero_count: 1,
+            total_wei: Some("5".to_string()),
+        }
+    );
+    assert_eq!(transfer.example_tx_hashes.len(), 2);
+    assert_eq!(transfer.source, "sampledTransactions");
+    assert_eq!(transfer.confidence, "medium");
+    assert!(transfer
+        .advisory_labels
+        .contains(&"erc20Transfer".to_string()));
+
+    let approve = selector_row(&result, "0x095ea7b3");
+    assert!(approve
+        .advisory_labels
+        .contains(&"erc20Approval".to_string()));
+    assert!(approve
+        .advisory_labels
+        .contains(&"erc20RevokeCandidate".to_string()));
+    let disperse = selector_row(&result, "0xe63d38ed");
+    assert!(disperse
+        .advisory_labels
+        .contains(&"batchDisperse".to_string()));
+    let creation = selector_row(&result, "contractCreation");
+    assert!(creation
+        .advisory_labels
+        .contains(&"contractCreation".to_string()));
+    let unknown = selector_row(&result, "0x12345678");
+    assert!(unknown
+        .advisory_labels
+        .contains(&"rawCalldataUnknown".to_string()));
+
+    let kinds = classification_kinds(&result);
+    assert!(kinds.contains(&"erc20Transfer".to_string()));
+    assert!(kinds.contains(&"erc20Approval".to_string()));
+    assert!(kinds.contains(&"erc20RevokeCandidate".to_string()));
+    assert!(kinds.contains(&"batchDisperse".to_string()));
+    assert!(kinds.contains(&"contractCreation".to_string()));
+    assert!(kinds.contains(&"rawCalldataUnknown".to_string()));
+    assert!(!serialized.contains("11112222"));
+    assert_no_sensitive_payloads(&serialized);
+}
+
+#[tokio::test]
+async fn approve_revoke_candidate_requires_zero_amount_calldata_hint() {
+    let (_app_dir, _dir) = AppDirOverride::with_registry(
+        "hot-contract-approve-revoke-hint",
+        &[data_source(
+            "missing-source",
+            1,
+            "customIndexer",
+            true,
+            None,
+            false,
+            None,
+        )],
+    );
+    let (rpc_url, _requests, handle) = start_rpc_server(vec![
+        step("eth_chainId", json!("0x1")),
+        step("eth_getCode", json!("0x6001600203")),
+    ]);
+    let provider = FixtureHotContractSampleProvider::new(vec![
+        sample_with(
+            &approve_calldata("01"),
+            "success",
+            "0",
+            "0xaaaa",
+            100,
+            "2026-04-30T00:00:00Z",
+        ),
+        sample_with(
+            &approve_calldata("00"),
+            "success",
+            "0",
+            "0xbbbb",
+            101,
+            "2026-04-30T00:01:00Z",
+        ),
+    ]);
+
+    let result =
+        fetch_hot_contract_analysis_with_sample_provider(base_input(&rpc_url), &provider).await;
+    handle.join().expect("rpc server joins");
+    let serialized = serde_json::to_string(&result).expect("serialize result");
+
+    let approve = selector_row(&result, "0x095ea7b3");
+    assert!(approve
+        .advisory_labels
+        .contains(&"erc20Approval".to_string()));
+    assert!(approve
+        .advisory_labels
+        .contains(&"erc20RevokeCandidate".to_string()));
+    assert!(result.samples.iter().any(|sample| {
+        sample.selector.as_deref() == Some("0x095ea7b3")
+            && sample.approve_amount_is_zero == Some(false)
+    }));
+    assert!(result.samples.iter().any(|sample| {
+        sample.selector.as_deref() == Some("0x095ea7b3")
+            && sample.approve_amount_is_zero == Some(true)
+    }));
+    assert!(!serialized.contains(&"00".repeat(32)));
+}
+
+#[tokio::test]
+async fn nonzero_approve_gets_approval_label_without_revoke_candidate() {
+    let (_app_dir, _dir) = AppDirOverride::with_registry(
+        "hot-contract-approve-nonzero",
+        &[data_source(
+            "missing-source",
+            1,
+            "customIndexer",
+            true,
+            None,
+            false,
+            None,
+        )],
+    );
+    let (rpc_url, _requests, handle) = start_rpc_server(vec![
+        step("eth_chainId", json!("0x1")),
+        step("eth_getCode", json!("0x6001600203")),
+    ]);
+    let provider = FixtureHotContractSampleProvider::new(vec![sample_with(
+        &approve_calldata("01"),
+        "success",
+        "0",
+        "0xaaaa",
+        100,
+        "2026-04-30T00:00:00Z",
+    )]);
+
+    let result =
+        fetch_hot_contract_analysis_with_sample_provider(base_input(&rpc_url), &provider).await;
+    handle.join().expect("rpc server joins");
+
+    let approve = selector_row(&result, "0x095ea7b3");
+    assert_eq!(approve.advisory_labels, vec!["erc20Approval".to_string()]);
+    let kinds = classification_kinds(&result);
+    assert!(kinds.contains(&"erc20Approval".to_string()));
+    assert!(!kinds.contains(&"erc20RevokeCandidate".to_string()));
+}
+
+#[tokio::test]
+async fn aggregates_event_topic_summaries() {
+    let (_app_dir, _dir) = AppDirOverride::with_registry(
+        "hot-contract-topic-aggregation",
+        &[data_source(
+            "missing-source",
+            1,
+            "customIndexer",
+            true,
+            None,
+            false,
+            None,
+        )],
+    );
+    let (rpc_url, _requests, handle) = start_rpc_server(vec![
+        step("eth_chainId", json!("0x1")),
+        step("eth_getCode", json!("0x6001600203")),
+    ]);
+    let provider = FixtureHotContractSampleProvider::new(vec![
+        sample_with_topic("0xa9059cbb", ERC20_TRANSFER_TOPIC, "0xaaaa", 100),
+        sample_with_topic("0x095ea7b3", ERC20_APPROVAL_TOPIC, "0xbbbb", 105),
+        sample_with_topic("0x095ea7b3", ERC20_APPROVAL_TOPIC, "0xcccc", 106),
+        sample_with_topic("0x12345678", UNKNOWN_TOPIC, "0xdddd", 107),
+    ]);
+
+    let result =
+        fetch_hot_contract_analysis_with_sample_provider(base_input(&rpc_url), &provider).await;
+    handle.join().expect("rpc server joins");
+
+    let approval = topic_row(&result, ERC20_APPROVAL_TOPIC);
+    assert_eq!(approval.log_count, 2);
+    assert_eq!(approval.sample_share_bps, 5000);
+    assert_eq!(approval.first_block, Some(105));
+    assert_eq!(approval.last_block, Some(106));
+    assert_eq!(approval.source, "sampledLogs");
+    assert_eq!(approval.confidence, "medium");
+    assert!(approval
+        .advisory_labels
+        .contains(&"erc20ApprovalEvent".to_string()));
+    assert!(topic_row(&result, ERC20_TRANSFER_TOPIC)
+        .advisory_labels
+        .contains(&"erc20TransferEvent".to_string()));
+    assert!(topic_row(&result, UNKNOWN_TOPIC)
+        .advisory_labels
+        .contains(&"unknownEventTopic".to_string()));
+}
+
+#[tokio::test]
+async fn topic_share_uses_log_topic_denominator_not_sample_count() {
+    let (_app_dir, _dir) = AppDirOverride::with_registry(
+        "hot-contract-topic-share-denominator",
+        &[data_source(
+            "missing-source",
+            1,
+            "customIndexer",
+            true,
+            None,
+            false,
+            None,
+        )],
+    );
+    let (rpc_url, _requests, handle) = start_rpc_server(vec![
+        step("eth_chainId", json!("0x1")),
+        step("eth_getCode", json!("0x6001600203")),
+    ]);
+    let mut sample = sample("0xa9059cbb");
+    sample.log_topic0 = vec![
+        ERC20_TRANSFER_TOPIC.to_string(),
+        ERC20_TRANSFER_TOPIC.to_string(),
+        UNKNOWN_TOPIC.to_string(),
+    ];
+    let provider = FixtureHotContractSampleProvider::new(vec![sample]);
+
+    let result =
+        fetch_hot_contract_analysis_with_sample_provider(base_input(&rpc_url), &provider).await;
+    handle.join().expect("rpc server joins");
+
+    let transfer = topic_row(&result, ERC20_TRANSFER_TOPIC);
+    assert_eq!(transfer.log_count, 2);
+    assert_eq!(transfer.sample_share_bps, 6666);
+    assert!(result
+        .analysis
+        .topics
+        .iter()
+        .all(|topic| topic.sample_share_bps <= 10_000));
+}
+
+#[tokio::test]
+async fn abi_cache_artifacts_populate_advisory_decode_items() {
+    let abi = json!([
+        raw_function("approve", &[("spender", "address"), ("amount", "uint256")]),
+        raw_event(
+            "Approval",
+            &[
+                ("owner", "address", true),
+                ("spender", "address", true),
+                ("value", "uint256", false)
+            ]
+        )
+    ]);
+    let (_app_dir, dir) = AppDirOverride::with_registry_and_cache(
+        "hot-contract-abi-decode-items",
+        &[data_source(
+            "missing-source",
+            1,
+            "customIndexer",
+            true,
+            None,
+            false,
+            None,
+        )],
+        vec![cache_entry("fresh", &abi, |_| {})],
+    );
+    write_abi_artifact(&dir, &abi);
+    let (rpc_url, _requests, handle) = start_rpc_server(vec![
+        step("eth_chainId", json!("0x1")),
+        step("eth_getCode", json!("0x6001600203")),
+    ]);
+    let provider = FixtureHotContractSampleProvider::new(vec![sample_with_topic(
+        &approve_calldata("00"),
+        ERC20_APPROVAL_TOPIC,
+        "0xaaaa",
+        100,
+    )]);
+
+    let result =
+        fetch_hot_contract_analysis_with_sample_provider(base_input(&rpc_url), &provider).await;
+    handle.join().expect("rpc server joins");
+
+    assert!(result.decode.items.iter().any(|item| {
+        item.kind == "function"
+            && item.status == "candidate"
+            && item.selector.as_deref() == Some("0x095ea7b3")
+            && item.signature.as_deref() == Some("approve(address,uint256)")
+            && item.source == "abiCache"
+            && item.confidence == "advisory"
+            && item.abi_version_id.as_deref() == Some("fresh")
+            && item.abi_selected == Some(true)
+            && item
+                .reasons
+                .contains(&"abiFunctionSelectorMatch".to_string())
+    }));
+    assert!(result.decode.items.iter().any(|item| {
+        item.kind == "event"
+            && item.status == "candidate"
+            && item.topic.as_deref() == Some(ERC20_APPROVAL_TOPIC)
+            && item.signature.as_deref() == Some("Approval(address,address,uint256)")
+            && item.source == "abiCache"
+            && item.confidence == "advisory"
+            && item.abi_version_id.as_deref() == Some("fresh")
+            && item.abi_selected == Some(true)
+            && item.reasons.contains(&"abiEventTopicMatch".to_string())
+    }));
+    assert!(result
+        .decode
+        .items
+        .iter()
+        .all(|item| item.confidence == "advisory" && item.source != "truth"));
+    assert!(result
+        .decode
+        .classification_candidates
+        .iter()
+        .all(|candidate| candidate.confidence != "truth" && candidate.source != "truth"));
+}
+
+#[tokio::test]
+async fn abi_decoded_custom_selector_removes_unknown_no_decode_candidate() {
+    let abi = json!([raw_function("customDoThing", &[("amount", "uint256")])]);
+    let (_app_dir, dir) = AppDirOverride::with_registry_and_cache(
+        "hot-contract-custom-selector-decode",
+        &[data_source(
+            "missing-source",
+            1,
+            "customIndexer",
+            true,
+            None,
+            false,
+            None,
+        )],
+        vec![cache_entry("custom", &abi, |_| {})],
+    );
+    write_abi_artifact(&dir, &abi);
+    let (rpc_url, _requests, handle) = start_rpc_server(vec![
+        step("eth_chainId", json!("0x1")),
+        step("eth_getCode", json!("0x6001600203")),
+    ]);
+    let provider = FixtureHotContractSampleProvider::new(vec![sample(&format!(
+        "0xdafa4d41{}",
+        "00".repeat(32)
+    ))]);
+
+    let result =
+        fetch_hot_contract_analysis_with_sample_provider(base_input(&rpc_url), &provider).await;
+    handle.join().expect("rpc server joins");
+
+    assert!(result.decode.items.iter().any(|item| {
+        item.kind == "function"
+            && item.selector.as_deref() == Some("0xdafa4d41")
+            && item.signature.as_deref() == Some("customDoThing(uint256)")
+    }));
+    assert!(!result
+        .decode
+        .classification_candidates
+        .iter()
+        .any(|candidate| {
+            candidate.kind == "rawCalldataUnknown"
+                && candidate.selector.as_deref() == Some("0xdafa4d41")
+                && candidate
+                    .reasons
+                    .contains(&"noFunctionDecodeCandidate".to_string())
+        }));
+}
+
+#[tokio::test]
+async fn reports_abi_cache_uncertainties_without_treating_labels_as_truth() {
+    let abi = json!([
+        raw_function("transfer", &[("to", "address"), ("amount", "uint256")]),
+        raw_function("transfer", &[("memo", "bytes32")]),
+        raw_event(
+            "Transfer",
+            &[
+                ("from", "address", true),
+                ("to", "address", true),
+                ("value", "uint256", false)
+            ]
+        ),
+        raw_event(
+            "Transfer",
+            &[
+                ("src", "address", true),
+                ("dst", "address", true),
+                ("wad", "uint256", false)
+            ]
+        )
+    ]);
+    let (_app_dir, dir) = AppDirOverride::with_registry_and_cache(
+        "hot-contract-abi-uncertainty",
+        &[data_source(
+            "missing-source",
+            1,
+            "customIndexer",
+            true,
+            None,
+            false,
+            None,
+        )],
+        vec![
+            cache_entry("fresh", &abi, |entry| {
+                entry["validationStatus"] = json!("selectorConflict");
+                entry["selectorSummary"] = json!({
+                    "functionSelectorCount": 1,
+                    "eventTopicCount": 1,
+                    "duplicateSelectorCount": 1,
+                    "conflictCount": 1,
+                    "notes": "duplicate selectors: 1; selector conflicts: 1"
+                });
+            }),
+            cache_entry("stale", &abi, |entry| {
+                entry["cacheStatus"] = json!("cacheStale");
+            }),
+            cache_entry("unverified", &abi, |entry| {
+                entry["fetchSourceStatus"] = json!("notVerified");
+            }),
+            cache_entry("proxy", &abi, |entry| {
+                entry["proxyDetected"] = json!(true);
+                entry["providerProxyHint"] = json!("implementation may differ");
+            }),
+        ],
+    );
+    write_abi_artifact(&dir, &abi);
+    let (rpc_url, _requests, handle) = start_rpc_server(vec![
+        step("eth_chainId", json!("0x1")),
+        step("eth_getCode", json!("0x6001600203")),
+    ]);
+    let provider = FixtureHotContractSampleProvider::new(vec![
+        sample_with(
+            "0xa9059cbb",
+            "success",
+            "0",
+            "0xaaaa",
+            100,
+            "2026-04-30T00:00:00Z",
+        ),
+        sample_with_topic("0x12345678", ERC20_TRANSFER_TOPIC, "0xbbbb", 101),
+    ]);
+
+    let result =
+        fetch_hot_contract_analysis_with_sample_provider(base_input(&rpc_url), &provider).await;
+    handle.join().expect("rpc server joins");
+
+    let codes = uncertainty_codes(&result);
+    assert!(codes.contains(&"selectorCollision".to_string()));
+    assert!(codes.contains(&"overloadedSignatures".to_string()));
+    assert!(codes.contains(&"staleAbi".to_string()));
+    assert!(codes.contains(&"unverifiedAbi".to_string()));
+    assert!(codes.contains(&"proxyImplementationUncertainty".to_string()));
+    assert!(codes.contains(&"eventDecodeConflict".to_string()));
+    assert!(result
+        .decode
+        .classification_candidates
+        .iter()
+        .all(|candidate| candidate.confidence != "truth"));
+    assert!(result
+        .decode
+        .classification_candidates
+        .iter()
+        .all(|candidate| candidate.source != "truth"));
+}
+
+#[tokio::test]
+async fn reports_sample_quality_uncertainties_for_malformed_missing_partial_and_unknown_data() {
+    let (_app_dir, _dir) = AppDirOverride::with_registry(
+        "hot-contract-sample-quality-uncertainty",
+        &[data_source(
+            "missing-source",
+            1,
+            "customIndexer",
+            true,
+            None,
+            false,
+            None,
+        )],
+    );
+    let (rpc_url, _requests, handle) = start_rpc_server(vec![
+        step("eth_chainId", json!("0x1")),
+        step("eth_getCode", json!("0x6001600203")),
+    ]);
+    let provider = FixtureHotContractSampleProvider::new(vec![
+        malformed_calldata_sample(),
+        malformed_topic_sample(),
+        no_logs_sample("0xa9059cbb"),
+        sample_with(
+            "0x12345678",
+            "success",
+            "0",
+            "0xaaaa",
+            100,
+            "2026-04-30T00:00:00Z",
+        ),
+        sample_with(
+            "0xa9059cbb",
+            "success",
+            "0",
+            "0xbbbb",
+            101,
+            "2026-04-30T00:01:00Z",
+        ),
+    ]);
+
+    let result = fetch_hot_contract_analysis_with_sample_provider(
+        HotContractAnalysisFetchInput {
+            source: Some(HotContractSourceFetchInput {
+                provider_config_id: Some("missing-source".to_string()),
+                limit: Some(4),
+                window: Some("24h".to_string()),
+                cursor: None,
+            }),
+            ..base_input(&rpc_url)
+        },
+        &provider,
+    )
+    .await;
+    handle.join().expect("rpc server joins");
+
+    let codes = uncertainty_codes(&result);
+    assert!(codes.contains(&"malformedCalldata".to_string()));
+    assert!(codes.contains(&"malformedLog".to_string()));
+    assert!(codes.contains(&"missingLogs".to_string()));
+    assert!(codes.contains(&"providerPartialSample".to_string()));
+    assert!(codes.contains(&"unknownSelector".to_string()));
+}
+
+#[tokio::test]
+async fn serialized_hot_contract_read_model_excludes_bounded_payloads_and_secrets() {
+    let (_app_dir, _dir) = AppDirOverride::with_registry(
+        "hot-contract-secret-safety",
+        &[data_source(
+            "missing-source",
+            1,
+            "customIndexer",
+            true,
+            None,
+            false,
+            Some("provider raw response body api_key=leaked queryToken=hidden privateKey=secret mnemonic=seed rawSignedTx=0xf86c secretUrl=https://secret.invalid/path?token=abc"),
+        )],
+    );
+    let (rpc_url, _requests, handle) = start_rpc_server(vec![
+        step("eth_chainId", json!("0x1")),
+        step("eth_getCode", json!("0x6001600203")),
+    ]);
+    let provider = FixtureHotContractSampleProvider::new(vec![HotContractSourceSample {
+        calldata: Some("0xa9059cbb1111222233334444".to_string()),
+        log_topic0: vec![
+            ERC20_TRANSFER_TOPIC.to_string(),
+            "full logs apiKey=log-secret".to_string(),
+        ],
+        provider_label: Some("provider raw response body queryToken=hidden".to_string()),
+        ..sample("0xa9059cbb")
+    }]);
+
+    let result =
+        fetch_hot_contract_analysis_with_sample_provider(base_input(&rpc_url), &provider).await;
+    handle.join().expect("rpc server joins");
+    let serialized = serde_json::to_string(&result).expect("serialize result");
+
+    for forbidden in [
+        "1111222233334444",
+        "full logs",
+        "full revert data",
+        "provider raw response body",
+        "api_key=leaked",
+        "queryToken=hidden",
+        "privateKey=secret",
+        "mnemonic=seed",
+        "rawSignedTx=0xf86c",
+        "secretUrl=",
+        "log-secret",
+        "super-secret-token",
+    ] {
+        assert!(
+            !serialized.contains(forbidden),
+            "serialized read model leaked {forbidden}: {serialized}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn configured_source_fetch_exposes_normalized_samples_without_calldata() {
     let (_app_dir, _dir) = AppDirOverride::with_registry(
         "hot-contract-source-read-model-samples",
@@ -430,6 +1085,7 @@ fn fixture_sample_normalization_sanitizes_serialized_fields() {
             status: Some(" success ".to_string()),
             selector: None,
             calldata: Some(" 0xABCDEF012233 ".to_string()),
+            approve_amount_is_zero: None,
             calldata_length: None,
             calldata_hash: None,
             log_topic0: vec![
@@ -596,6 +1252,54 @@ fn base_input(rpc_url: &str) -> HotContractAnalysisFetchInput {
     }
 }
 
+const ERC20_TRANSFER_TOPIC: &str =
+    "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
+const ERC20_APPROVAL_TOPIC: &str =
+    "0x8c5be1e5ebec7d5bd14f71427d1e84f3dd0314c0f7b2291e5b200ac8c7c3b925";
+const UNKNOWN_TOPIC: &str = "0x9999999999999999999999999999999999999999999999999999999999999999";
+
+fn selector_row<'a>(
+    result: &'a super::HotContractAnalysisReadModel,
+    selector: &str,
+) -> &'a super::HotContractSelectorAggregate {
+    result
+        .analysis
+        .selectors
+        .iter()
+        .find(|row| row.selector == selector)
+        .expect("selector aggregate row")
+}
+
+fn topic_row<'a>(
+    result: &'a super::HotContractAnalysisReadModel,
+    topic: &str,
+) -> &'a super::HotContractTopicAggregate {
+    result
+        .analysis
+        .topics
+        .iter()
+        .find(|row| row.topic == topic)
+        .expect("topic aggregate row")
+}
+
+fn classification_kinds(result: &super::HotContractAnalysisReadModel) -> Vec<String> {
+    result
+        .decode
+        .classification_candidates
+        .iter()
+        .map(|candidate| candidate.kind.clone())
+        .collect()
+}
+
+fn uncertainty_codes(result: &super::HotContractAnalysisReadModel) -> Vec<String> {
+    result
+        .decode
+        .uncertainty_statuses
+        .iter()
+        .map(|status| status.code.clone())
+        .collect()
+}
+
 fn selected_rpc(rpc_url: &str) -> HotContractSelectedRpcInput {
     HotContractSelectedRpcInput {
         chain_id: Some(1),
@@ -605,6 +1309,78 @@ fn selected_rpc(rpc_url: &str) -> HotContractSelectedRpcInput {
         endpoint_summary: Some(super::summarize_rpc_endpoint(rpc_url)),
         endpoint_fingerprint: Some(super::rpc_endpoint_fingerprint(rpc_url)),
     }
+}
+
+fn sample_with(
+    selector: &str,
+    status: &str,
+    value: &str,
+    hash_seed: &str,
+    block_number: u64,
+    block_time: &str,
+) -> HotContractSourceSample {
+    let mut sample = sample(selector);
+    sample.tx_hash = Some(tx_hash_from_seed(hash_seed));
+    sample.status = Some(status.to_string());
+    sample.value = Some(value.to_string());
+    sample.block_number = Some(block_number);
+    sample.block_time = Some(block_time.to_string());
+    sample
+}
+
+fn sample_with_topic(
+    selector: &str,
+    topic: &str,
+    hash_seed: &str,
+    block_number: u64,
+) -> HotContractSourceSample {
+    let mut sample = sample_with(
+        selector,
+        "success",
+        "0",
+        hash_seed,
+        block_number,
+        "2026-04-30T00:00:00Z",
+    );
+    sample.log_topic0 = vec![topic.to_string()];
+    sample
+}
+
+fn contract_creation_sample(hash_seed: &str, block_number: u64) -> HotContractSourceSample {
+    let mut sample = sample_with(
+        "0x60016002",
+        "success",
+        "0",
+        hash_seed,
+        block_number,
+        "2026-04-30T00:25:00Z",
+    );
+    sample.to = None;
+    sample
+}
+
+fn malformed_calldata_sample() -> HotContractSourceSample {
+    let mut sample = sample("0xabc");
+    sample.calldata = Some("0xabc".to_string());
+    sample.selector = None;
+    sample
+}
+
+fn malformed_topic_sample() -> HotContractSourceSample {
+    let mut sample = sample("0x095ea7b3");
+    sample.log_topic0 = vec!["0xabc".to_string()];
+    sample
+}
+
+fn no_logs_sample(selector: &str) -> HotContractSourceSample {
+    let mut sample = sample(selector);
+    sample.log_topic0 = Vec::new();
+    sample
+}
+
+fn tx_hash_from_seed(seed: &str) -> String {
+    let clean = seed.trim_start_matches("0x");
+    format!("0x{:0<64}", clean)
 }
 
 fn sample(calldata: &str) -> HotContractSourceSample {
@@ -619,12 +1395,110 @@ fn sample(calldata: &str) -> HotContractSourceSample {
         status: Some("success".to_string()),
         selector: None,
         calldata: Some(calldata.to_string()),
+        approve_amount_is_zero: None,
         calldata_length: None,
         calldata_hash: None,
         log_topic0: vec![format!("0x{}", "33".repeat(32))],
         provider_label: Some("fixture".to_string()),
         block_number: Some(123),
     }
+}
+
+fn approve_calldata(amount_suffix: &str) -> String {
+    format!(
+        "0x095ea7b3{}{:0>64}",
+        "00".repeat(12) + "3333333333333333333333333333333333333333",
+        amount_suffix
+    )
+}
+
+fn raw_function(name: &str, inputs: &[(&str, &str)]) -> Value {
+    json!({
+        "type": "function",
+        "name": name,
+        "inputs": inputs.iter().map(|(name, kind)| json!({
+            "name": name,
+            "type": kind,
+        })).collect::<Vec<_>>(),
+        "outputs": [],
+        "stateMutability": "nonpayable",
+    })
+}
+
+fn raw_event(name: &str, inputs: &[(&str, &str, bool)]) -> Value {
+    json!({
+        "type": "event",
+        "name": name,
+        "anonymous": false,
+        "inputs": inputs.iter().map(|(name, kind, indexed)| json!({
+            "name": name,
+            "type": kind,
+            "indexed": indexed,
+        })).collect::<Vec<_>>(),
+    })
+}
+
+fn cache_entry(version_id: &str, abi: &Value, overrides: impl FnOnce(&mut Value)) -> Value {
+    let artifact = serde_json::to_string(abi).expect("serialize abi");
+    let abi_hash = test_hash_text(&artifact);
+    let mut entry = json!({
+        "chainId": 1,
+        "contractAddress": CONTRACT,
+        "sourceKind": "explorerFetched",
+        "providerConfigId": "missing-source",
+        "userSourceId": Value::Null,
+        "versionId": version_id,
+        "attemptId": format!("attempt-{version_id}"),
+        "sourceFingerprint": format!("fingerprint-{version_id}"),
+        "abiHash": abi_hash,
+        "selected": true,
+        "fetchSourceStatus": "ok",
+        "validationStatus": "ok",
+        "cacheStatus": "cacheFresh",
+        "selectionStatus": "selected",
+        "functionCount": 2,
+        "eventCount": 1,
+        "errorCount": 0,
+        "selectorSummary": Value::Null,
+        "fetchedAt": "2026-04-30T00:00:00Z",
+        "importedAt": Value::Null,
+        "lastValidatedAt": "2026-04-30T00:00:00Z",
+        "staleAfter": Value::Null,
+        "lastErrorSummary": Value::Null,
+        "providerProxyHint": Value::Null,
+        "proxyDetected": false,
+        "createdAt": "2026-04-30T00:00:00Z",
+        "updatedAt": "2026-04-30T00:00:00Z"
+    });
+    overrides(&mut entry);
+    entry
+}
+
+fn write_abi_artifact(dir: &std::path::Path, abi: &Value) {
+    let artifact = serde_json::to_string(abi).expect("serialize abi");
+    let abi_hash = test_hash_text(&artifact);
+    let artifact_dir = dir.join("abi-artifacts");
+    fs::create_dir_all(&artifact_dir).expect("create artifact dir");
+    fs::write(
+        artifact_dir.join(format!("{}.json", abi_hash.trim_start_matches("0x"))),
+        artifact,
+    )
+    .expect("write artifact");
+}
+
+fn test_hash_text(value: &str) -> String {
+    use ethers::utils::keccak256;
+    format!("0x{}", test_hex_lower(&keccak256(value.as_bytes())))
+}
+
+fn test_hex_lower(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        output.push(HEX[(byte >> 4) as usize] as char);
+        output.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    output
 }
 
 fn source_status_for(provider_config_id: &str) -> super::HotContractSourceStatus {
@@ -681,6 +1555,14 @@ struct AppDirOverride {
 
 impl AppDirOverride {
     fn with_registry(test_name: &str, data_sources: &[Value]) -> (Self, PathBuf) {
+        Self::with_registry_and_cache(test_name, data_sources, Vec::new())
+    }
+
+    fn with_registry_and_cache(
+        test_name: &str,
+        data_sources: &[Value],
+        cache_entries: Vec<Value>,
+    ) -> (Self, PathBuf) {
         let guard = crate::storage::test_app_dir_env_lock()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -701,7 +1583,7 @@ impl AppDirOverride {
             json!({
                 "schemaVersion": 1,
                 "dataSources": data_sources,
-                "cacheEntries": []
+                "cacheEntries": cache_entries
             })
             .to_string(),
         )

@@ -10,6 +10,7 @@ use super::types::{
 const DEFAULT_SOURCE_LIMIT: u32 = 25;
 const MAX_SOURCE_LIMIT: u32 = 500;
 const MAX_SAMPLE_CALLDATA_BYTES: usize = 4096;
+const ERC20_APPROVE_SELECTOR: &str = "0x095ea7b3";
 const SUPPORTED_SAMPLING_PROVIDER_KINDS: &[&str] = &[
     "explorerConfigured",
     "customIndexer",
@@ -217,6 +218,7 @@ fn normalize_fixture_source_sample(mut sample: HotContractSourceSample) -> HotCo
                 .filter(|hex| hex.len() >= 8)
                 .map(|hex| format!("0x{}", hex[..8].to_ascii_lowercase()))
         });
+        sample.approve_amount_is_zero = approve_amount_is_zero_hint(calldata);
         if bounded_hex_payload_len(&calldata, "calldata", MAX_SAMPLE_CALLDATA_BYTES)
             .unwrap_or(false)
         {
@@ -245,19 +247,47 @@ fn normalize_fixture_source_sample(mut sample: HotContractSourceSample) -> HotCo
     sample
 }
 
+fn approve_amount_is_zero_hint(calldata: &str) -> Option<bool> {
+    let hex = calldata.trim().strip_prefix("0x")?;
+    if hex.len() != 8 + 64 + 64 || !hex.as_bytes().iter().all(u8::is_ascii_hexdigit) {
+        return None;
+    }
+    if !format!("0x{}", &hex[..8]).eq_ignore_ascii_case(ERC20_APPROVE_SELECTOR) {
+        return None;
+    }
+    Some(hex[72..136].as_bytes().iter().all(|byte| *byte == b'0'))
+}
+
 fn normalize_sample_text(value: String) -> String {
-    sanitized_summary(value.trim())
+    sanitize_sample_summary(value.trim())
+}
+
+fn sanitize_sample_summary(value: &str) -> String {
+    let sanitized = sanitized_summary(value.trim());
+    let lower = sanitized.to_ascii_lowercase();
+    if lower.contains("provider raw response body")
+        || lower.contains("full logs")
+        || lower.contains("full revert data")
+        || lower.contains("secreturl")
+        || lower.contains("querytoken")
+        || lower.contains("privatekey")
+        || lower.contains("rawsignedtx")
+    {
+        "[redacted]".to_string()
+    } else {
+        sanitized
+    }
 }
 
 fn normalize_hex_summary(value: String, expected_hex_len: usize) -> String {
     let trimmed = value.trim();
     let Some(hex) = trimmed.strip_prefix("0x") else {
-        return sanitized_summary(trimmed);
+        return sanitize_sample_summary(trimmed);
     };
     if hex.len() == expected_hex_len && hex.as_bytes().iter().all(u8::is_ascii_hexdigit) {
         return format!("0x{}", hex.to_ascii_lowercase());
     }
-    sanitized_summary(trimmed)
+    sanitize_sample_summary(trimmed)
 }
 
 fn decode_hex_bytes_lossy(value: &str) -> Vec<u8> {

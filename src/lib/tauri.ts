@@ -571,6 +571,7 @@ export interface HotContractSourceSample {
   value?: string | null;
   status?: string | null;
   selector?: string | null;
+  approveAmountIsZero?: boolean | null;
   calldataLength?: number | null;
   calldataHash?: string | null;
   logTopic0: string[];
@@ -578,13 +579,105 @@ export interface HotContractSourceSample {
   blockNumber?: number | null;
 }
 
+export interface HotContractNativeValueAggregate {
+  sampleCount: number;
+  nonZeroCount: number;
+  zeroCount: number;
+  totalWei?: string | null;
+}
+
+export interface HotContractSelectorAggregate {
+  selector: string;
+  sampledCallCount: number;
+  sampleShareBps: number;
+  uniqueSenderCount?: number | null;
+  successCount: number;
+  revertCount: number;
+  unknownStatusCount: number;
+  firstBlock?: number | null;
+  lastBlock?: number | null;
+  firstBlockTime?: string | null;
+  lastBlockTime?: string | null;
+  nativeValue: HotContractNativeValueAggregate;
+  exampleTxHashes: string[];
+  source: string;
+  confidence: string;
+  advisoryLabels: string[];
+}
+
+export interface HotContractTopicAggregate {
+  topic: string;
+  logCount: number;
+  sampleShareBps: number;
+  firstBlock?: number | null;
+  lastBlock?: number | null;
+  firstBlockTime?: string | null;
+  lastBlockTime?: string | null;
+  exampleTxHashes: string[];
+  source: string;
+  confidence: string;
+  advisoryLabels: string[];
+}
+
 export interface HotContractAggregateAnalysis {
-  selectors: Array<{ selector: string; count: number }>;
-  topics: Array<{ topic: string; count: number }>;
+  selectors: HotContractSelectorAggregate[];
+  topics: HotContractTopicAggregate[];
+}
+
+export interface HotContractAbiSourceSummary {
+  contractAddress: string;
+  sourceKind: string;
+  providerConfigId?: string | null;
+  userSourceId?: string | null;
+  versionId: string;
+  selected: boolean;
+  fetchSourceStatus: string;
+  validationStatus: string;
+  cacheStatus: string;
+  selectionStatus: string;
+  artifactStatus: string;
+  proxyDetected: boolean;
+  providerProxyHint?: string | null;
+  errorSummary?: string | null;
+}
+
+export interface HotContractClassificationCandidate {
+  kind: string;
+  label: string;
+  confidence: string;
+  source: string;
+  selector?: string | null;
+  topic?: string | null;
+  signature?: string | null;
+  reasons: string[];
+}
+
+export interface HotContractUncertaintyStatus {
+  code: string;
+  severity: string;
+  source: string;
+  summary?: string | null;
+}
+
+export interface HotContractDecodeItem {
+  kind: string;
+  status: string;
+  selector?: string | null;
+  topic?: string | null;
+  signature?: string | null;
+  source: string;
+  confidence: string;
+  abiVersionId?: string | null;
+  abiSelected?: boolean | null;
+  reasons: string[];
 }
 
 export interface HotContractDecodeAnalysis {
-  items: Array<{ status: string }>;
+  status: string;
+  items: HotContractDecodeItem[];
+  abiSources: HotContractAbiSourceSummary[];
+  classificationCandidates: HotContractClassificationCandidate[];
+  uncertaintyStatuses: HotContractUncertaintyStatus[];
 }
 
 export interface HotContractAnalysisReadModel {

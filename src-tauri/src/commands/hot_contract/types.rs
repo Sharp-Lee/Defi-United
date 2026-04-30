@@ -209,26 +209,112 @@ pub struct HotContractAggregateAnalysis {
 #[serde(rename_all = "camelCase")]
 pub struct HotContractSelectorAggregate {
     pub selector: String,
-    pub count: u64,
+    pub sampled_call_count: u64,
+    pub sample_share_bps: u64,
+    pub unique_sender_count: Option<u64>,
+    pub success_count: u64,
+    pub revert_count: u64,
+    pub unknown_status_count: u64,
+    pub first_block: Option<u64>,
+    pub last_block: Option<u64>,
+    pub first_block_time: Option<String>,
+    pub last_block_time: Option<String>,
+    pub native_value: HotContractNativeValueAggregate,
+    pub example_tx_hashes: Vec<String>,
+    pub source: String,
+    pub confidence: String,
+    pub advisory_labels: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct HotContractNativeValueAggregate {
+    pub sample_count: u64,
+    pub non_zero_count: u64,
+    pub zero_count: u64,
+    pub total_wei: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct HotContractTopicAggregate {
     pub topic: String,
-    pub count: u64,
+    pub log_count: u64,
+    pub sample_share_bps: u64,
+    pub first_block: Option<u64>,
+    pub last_block: Option<u64>,
+    pub first_block_time: Option<String>,
+    pub last_block_time: Option<String>,
+    pub example_tx_hashes: Vec<String>,
+    pub source: String,
+    pub confidence: String,
+    pub advisory_labels: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct HotContractDecodeAnalysis {
+    pub status: String,
     pub items: Vec<HotContractDecodeItem>,
+    pub abi_sources: Vec<HotContractAbiSourceSummary>,
+    pub classification_candidates: Vec<HotContractClassificationCandidate>,
+    pub uncertainty_statuses: Vec<HotContractUncertaintyStatus>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct HotContractDecodeItem {
+    pub kind: String,
     pub status: String,
+    pub selector: Option<String>,
+    pub topic: Option<String>,
+    pub signature: Option<String>,
+    pub source: String,
+    pub confidence: String,
+    pub abi_version_id: Option<String>,
+    pub abi_selected: Option<bool>,
+    pub reasons: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct HotContractAbiSourceSummary {
+    pub contract_address: String,
+    pub source_kind: String,
+    pub provider_config_id: Option<String>,
+    pub user_source_id: Option<String>,
+    pub version_id: String,
+    pub selected: bool,
+    pub fetch_source_status: String,
+    pub validation_status: String,
+    pub cache_status: String,
+    pub selection_status: String,
+    pub artifact_status: String,
+    pub proxy_detected: bool,
+    pub provider_proxy_hint: Option<String>,
+    pub error_summary: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct HotContractClassificationCandidate {
+    pub kind: String,
+    pub label: String,
+    pub confidence: String,
+    pub source: String,
+    pub selector: Option<String>,
+    pub topic: Option<String>,
+    pub signature: Option<String>,
+    pub reasons: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct HotContractUncertaintyStatus {
+    pub code: String,
+    pub severity: String,
+    pub source: String,
+    pub summary: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -265,6 +351,8 @@ pub struct HotContractSourceSample {
     pub selector: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub calldata: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub approve_amount_is_zero: Option<bool>,
     pub calldata_length: Option<u64>,
     pub calldata_hash: Option<String>,
     pub log_topic0: Vec<String>,

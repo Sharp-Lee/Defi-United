@@ -18,7 +18,9 @@ use tokio::time::{timeout, Duration};
 
 use crate::diagnostics::sanitize_diagnostic_message;
 
+use self::aggregate::aggregate_samples;
 use self::code::{fetch_contract_code, validate_selected_rpc};
+use self::decode::decode_samples;
 use self::source::{
     fetch_normalized_source_samples, resolve_source_status, sample_coverage_from_fixture,
     EmptyHotContractSampleProvider, HotContractSampleProvider,
@@ -234,6 +236,14 @@ fn populate_sample_coverage(
             model.sample_coverage =
                 sample_coverage_from_fixture(&request, &model.sources.source, &samples);
             model.samples = samples.samples;
+            model.analysis = aggregate_samples(&model.samples);
+            model.decode = decode_samples(
+                normalized.chain_id,
+                &normalized.contract_address,
+                &model.samples,
+                samples.omitted_count,
+                &model.analysis,
+            );
         }
         Err(error) => {
             model.sources.source =
