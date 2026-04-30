@@ -442,6 +442,114 @@ describe("TxAnalysisView", () => {
     expect(screen.getByText("Logs missing or unavailable")).toBeInTheDocument();
   });
 
+  it("surfaces contract creation uncertainty and RPC unavailable diagnostics", async () => {
+    const onFetchTxAnalysis = vi
+      .fn()
+      .mockResolvedValueOnce(
+        model({
+          transaction: {
+            ...model().transaction!,
+            to: null,
+            contractCreation: true,
+            selector: null,
+            selectorStatus: "short",
+            calldataByteLength: 4,
+            calldataHash: "0xinitcodehash",
+          },
+          receipt: {
+            ...model().receipt!,
+            contractAddress: "0x3333333333333333333333333333333333333333",
+            logs: [],
+            logsCount: 0,
+            logsStatus: "missing",
+          },
+          addressCodes: [
+            {
+              role: "createdContract",
+              address: "0x3333333333333333333333333333333333333333",
+              status: "contract",
+              blockTag: "latest",
+              byteLength: 2048,
+              codeHashVersion: "keccak256-v1",
+              codeHash: "0xcreatedcodehash",
+              errorSummary: null,
+            },
+          ],
+          analysis: {
+            abiSources: [],
+            functionCandidates: [],
+            selector: {
+              selector: null,
+              selectorStatus: "short",
+              selectorMatchCount: 0,
+              uniqueSignatureCount: 0,
+              sourceCount: 0,
+              conflict: false,
+            },
+            uncertaintyStatuses: [
+              {
+                code: "contractCreationUnknownInitCode",
+                severity: "warning",
+                source: "rpcTransaction",
+                summary: "contract creation init code is not semantically decoded",
+              },
+              {
+                code: "missingLogs",
+                severity: "warning",
+                source: "rpcReceipt",
+                summary: "receipt logs are unavailable",
+              },
+            ],
+            classificationCandidates: [
+              {
+                kind: "contractCreation",
+                label: "Contract creation",
+                confidence: "high",
+                source: "rpcTransaction",
+                selector: null,
+                signature: null,
+                argumentSummary: [],
+                reasons: ["transactionToIsNull"],
+              },
+            ],
+          },
+        }),
+      )
+      .mockResolvedValueOnce(
+        model({
+          status: "error",
+          reasons: ["rpcUnavailable"],
+          transaction: null,
+          receipt: null,
+          sources: {
+            transaction: sourceStatus("unavailable", "rpcUnavailable"),
+            receipt: sourceStatus("skipped"),
+            logs: sourceStatus("skipped"),
+            block: sourceStatus("skipped"),
+            code: sourceStatus("skipped"),
+          },
+          errorSummary: "RPC unavailable after bounded retries.",
+        }),
+      );
+    renderTxAnalysis({ onFetchTxAnalysis });
+    fireEvent.change(screen.getByLabelText("Transaction hash"), { target: { value: txHash } });
+
+    fireEvent.click(screen.getByRole("button", { name: "Analyze" }));
+    expect(await screen.findByText("contract creation")).toBeInTheDocument();
+    expect(screen.getByText("Contract creation unknown init code")).toBeInTheDocument();
+    expect(screen.getByText("Missing logs")).toBeInTheDocument();
+    expect(screen.getAllByText("Contract creation").length).toBeGreaterThan(0);
+    expect(screen.getByText("createdContract")).toBeInTheDocument();
+    expect(screen.getByText("0xcreatedcodehash")).toBeInTheDocument();
+    expect(screen.getByText("0xinitcodehash")).toBeInTheDocument();
+    expect(screen.getByText(/4\s+bytes/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Analyze" }));
+    expect(await screen.findByText("RPC unavailable after bounded retries.")).toBeInTheDocument();
+    expect(screen.getByText("Transaction: unavailable (rpcUnavailable)")).toBeInTheDocument();
+    expect(screen.queryByText("0xinitcodehash")).not.toBeInTheDocument();
+  });
+
   it("ignores stale in-flight analysis results after the input changes", async () => {
     const first = deferred<TxAnalysisFetchReadModel>();
     const second = deferred<TxAnalysisFetchReadModel>();
@@ -533,6 +641,12 @@ describe("TxAnalysisView", () => {
                 source: "abi",
                 summary: "Multiple ABI candidates share this selector.",
               },
+              {
+                code: "eventDecodeConflict",
+                severity: "warning",
+                source: "abi",
+                summary: "Multiple event candidates share this topic.",
+              },
             ],
           },
         }),
@@ -546,9 +660,95 @@ describe("TxAnalysisView", () => {
     expect(screen.getAllByText("candidate").length).toBeGreaterThan(0);
     expect(screen.getByText("Unknown selector")).toBeInTheDocument();
     expect(screen.getAllByText("Selector conflict").length).toBeGreaterThan(0);
+    expect(screen.getByText("Event decode conflict")).toBeInTheDocument();
     expect(screen.getByText("ERC-20 transfer candidate")).toBeInTheDocument();
     expect(screen.getByText("source-fingerprint")).toBeInTheDocument();
     expect(screen.getByText("abi-hash")).toBeInTheDocument();
+  });
+
+  it("labels proxy, stale ABI, unverified ABI, and advisory enrichment as uncertain", async () => {
+    renderTxAnalysis({
+      history: [
+        {
+          ...historyRecord(txHash, 1),
+          submission: {
+            ...historyRecord(txHash, 1).submission,
+            transaction_type: "erc20Transfer",
+            kind: "erc20Transfer",
+            selector: "0x095ea7b3",
+            method_name: "approve",
+            token_contract: to,
+            recipient: "0x4444444444444444444444444444444444444444",
+            amount_raw: "0",
+          },
+        } as HistoryRecord,
+      ],
+      onFetchTxAnalysis: vi.fn(async () =>
+        model({
+          sources: {
+            explorer: sourceStatus("ok", "advisory label only"),
+            indexer: sourceStatus("ok", "advisory enrichment only"),
+          },
+          analysis: {
+            abiSources: [
+              {
+                ...model().analysis.abiSources[0],
+                sourceKind: "explorer",
+                fetchSourceStatus: "notVerified",
+                cacheStatus: "cacheStale",
+                proxyDetected: true,
+                providerProxyHint: "implementation may differ from proxy target",
+              },
+            ],
+            uncertaintyStatuses: [
+              {
+                code: "proxyImplementationUncertainty",
+                severity: "warning",
+                source: "abiCache",
+                summary: "implementation may differ from proxy target",
+              },
+              {
+                code: "staleAbi",
+                severity: "warning",
+                source: "abiCache",
+                summary: "ABI source version v1 cache status cacheStale",
+              },
+              {
+                code: "unverifiedAbi",
+                severity: "warning",
+                source: "abiCache",
+                summary: "ABI source version v1",
+              },
+            ],
+            classificationCandidates: [
+              {
+                kind: "erc20Revoke",
+                label: "ERC-20 revoke candidate",
+                confidence: "candidate",
+                source: "knownSelector",
+                selector: "0x095ea7b3",
+                signature: "approve(address,uint256)",
+                argumentSummary: [decodedValue("0x4444444444444444444444444444444444444444")],
+                reasons: ["approveAmountZero"],
+              },
+            ],
+          },
+        }),
+      ),
+    });
+
+    fireEvent.change(screen.getByLabelText("Transaction hash"), { target: { value: txHash } });
+    fireEvent.click(screen.getByRole("button", { name: "Analyze" }));
+
+    expect(await screen.findByText("Proxy implementation uncertainty")).toBeInTheDocument();
+    expect(screen.getByText("Stale ABI")).toBeInTheDocument();
+    expect(screen.getByText("Unverified ABI")).toBeInTheDocument();
+    expect(screen.getByText("Explorer: ok (advisory label only)")).toBeInTheDocument();
+    expect(screen.getByText("Indexer: ok (advisory enrichment only)")).toBeInTheDocument();
+    expect(screen.getByText("ERC-20 revoke candidate")).toBeInTheDocument();
+    const localHistorySection = within(screen.getByLabelText("Local history comparison"));
+    expect(localHistorySection.getByText("ERC-20 transfer")).toBeInTheDocument();
+    expect(localHistorySection.getByText("approve")).toBeInTheDocument();
   });
 
   it("caps long decoded candidate values before rendering them", async () => {

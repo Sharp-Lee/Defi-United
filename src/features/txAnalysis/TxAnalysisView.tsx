@@ -70,6 +70,24 @@ function uncertaintyLabel(code: string) {
       return "Unknown selector";
     case "selectorConflict":
       return "Selector conflict";
+    case "proxyImplementationUncertainty":
+      return "Proxy implementation uncertainty";
+    case "staleAbi":
+      return "Stale ABI";
+    case "unverifiedAbi":
+      return "Unverified ABI";
+    case "missingLogs":
+      return "Missing logs";
+    case "revertDataUnavailable":
+      return "Revert data unavailable";
+    case "contractCreationUnknownInitCode":
+      return "Contract creation unknown init code";
+    case "malformedCalldata":
+      return "Malformed calldata";
+    case "selectorCollision":
+      return "Selector collision";
+    case "eventDecodeConflict":
+      return "Event decode conflict";
     default:
       return code;
   }
