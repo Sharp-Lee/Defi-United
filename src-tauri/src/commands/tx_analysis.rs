@@ -1,5 +1,8 @@
+use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
 use std::str::FromStr;
 
+use ethers::abi::{decode, Abi, Event, Function, ParamType, RawLog, Token};
 use ethers::providers::{Http, Middleware, Provider};
 use ethers::types::{Address, H256, U256};
 use ethers::utils::{keccak256, to_checksum};
@@ -7,12 +10,24 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::time::{timeout, Duration};
 
+use crate::commands::abi_registry::{
+    load_abi_registry_state_readonly, AbiCacheEntryRecord, AbiSelectorSummaryRecord,
+};
 use crate::diagnostics::sanitize_diagnostic_message;
+use crate::storage::abi_artifact_path_readonly;
+use crate::transactions::{
+    DISPERSE_ETHER_METHOD, DISPERSE_ETHER_SELECTOR_HEX, DISPERSE_TOKEN_METHOD,
+    DISPERSE_TOKEN_SELECTOR_HEX,
+};
 
 const CALLDATA_HASH_VERSION: &str = "keccak256-v1";
 const CODE_HASH_VERSION: &str = "keccak256-v1";
 const LOG_DATA_HASH_VERSION: &str = "keccak256-v1";
+const REVERT_DATA_HASH_VERSION: &str = "keccak256-v1";
 const LOG_SUMMARY_LIMIT: usize = 16;
+const MAX_REVERT_DATA_BYTES: usize = 4096;
+const MAX_DECODE_STRING_CHARS: usize = 128;
+const MAX_DECODE_ITEMS: usize = 8;
 #[cfg(not(test))]
 const TX_ANALYSIS_RPC_TIMEOUT_SECONDS: u64 = 10;
 
@@ -33,6 +48,17 @@ const SOURCE_UNAVAILABLE: &str = "unavailable";
 const SOURCE_CHAIN_MISMATCH: &str = "chainMismatch";
 const SOURCE_ABSENT: &str = "absent";
 
+const ERC20_TRANSFER_SELECTOR: &str = "0xa9059cbb";
+const ERC20_APPROVE_SELECTOR: &str = "0x095ea7b3";
+const ERC20_TRANSFER_SIGNATURE: &str = "transfer(address,uint256)";
+const ERC20_APPROVE_SIGNATURE: &str = "approve(address,uint256)";
+const ERC20_TRANSFER_EVENT_SIGNATURE: &str = "Transfer(address,address,uint256)";
+const ERC20_APPROVAL_EVENT_SIGNATURE: &str = "Approval(address,address,uint256)";
+const ERROR_STRING_SELECTOR: &str = "0x08c379a0";
+const PANIC_UINT_SELECTOR: &str = "0x4e487b71";
+const ERROR_STRING_SIGNATURE: &str = "Error(string)";
+const PANIC_UINT_SIGNATURE: &str = "Panic(uint256)";
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TxAnalysisFetchInput {
@@ -44,6 +70,16 @@ pub struct TxAnalysisFetchInput {
     pub tx_hash: String,
     #[serde(default, alias = "selected_rpc")]
     pub selected_rpc: Option<TxAnalysisSelectedRpcInput>,
+    #[serde(default, alias = "bounded_revert_data")]
+    pub bounded_revert_data: Option<TxAnalysisBoundedRevertDataInput>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TxAnalysisBoundedRevertDataInput {
+    pub data: String,
+    #[serde(default)]
+    pub source: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -76,6 +112,7 @@ pub struct TxAnalysisFetchReadModel {
     pub block: Option<TxAnalysisBlockSummary>,
     pub address_codes: Vec<TxAnalysisAddressCodeSummary>,
     pub sources: TxAnalysisSourceStatuses,
+    pub analysis: TxAnalysisDecodeReadModel,
     pub error_summary: Option<String>,
 }
 
@@ -181,11 +218,174 @@ pub struct TxAnalysisSourceStatus {
     pub error_summary: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TxAnalysisDecodeReadModel {
+    pub status: String,
+    pub reasons: Vec<String>,
+    pub selector: TxAnalysisSelectorDecodeSummary,
+    pub abi_sources: Vec<TxAnalysisAbiSourceSummary>,
+    pub function_candidates: Vec<TxAnalysisFunctionDecodeCandidate>,
+    pub event_candidates: Vec<TxAnalysisEventDecodeCandidate>,
+    pub error_candidates: Vec<TxAnalysisErrorDecodeCandidate>,
+    pub classification_candidates: Vec<TxAnalysisClassificationCandidate>,
+    pub uncertainty_statuses: Vec<TxAnalysisUncertaintyStatus>,
+    pub revert_data_status: String,
+    pub revert_data: Option<TxAnalysisRevertDataSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TxAnalysisSelectorDecodeSummary {
+    pub selector: Option<String>,
+    pub selector_status: String,
+    pub selector_match_count: u64,
+    pub unique_signature_count: u64,
+    pub source_count: u64,
+    pub conflict: bool,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TxAnalysisAbiSourceSummary {
+    pub contract_address: String,
+    pub source_kind: String,
+    pub provider_config_id: Option<String>,
+    pub user_source_id: Option<String>,
+    pub version_id: String,
+    pub attempt_id: String,
+    pub source_fingerprint: String,
+    pub abi_hash: String,
+    pub selected: bool,
+    pub fetch_source_status: String,
+    pub validation_status: String,
+    pub cache_status: String,
+    pub selection_status: String,
+    pub selector_summary: Option<AbiSelectorSummaryRecord>,
+    pub artifact_status: String,
+    pub proxy_detected: bool,
+    pub provider_proxy_hint: Option<String>,
+    pub error_summary: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TxAnalysisFunctionDecodeCandidate {
+    pub selector: String,
+    pub function_signature: String,
+    pub source: Option<TxAnalysisAbiSourceSummary>,
+    pub source_label: String,
+    pub decode_status: String,
+    pub confidence: String,
+    pub argument_summary: Vec<TxAnalysisDecodedValueSummary>,
+    pub statuses: Vec<String>,
+    pub error_summary: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TxAnalysisEventDecodeCandidate {
+    pub address: String,
+    pub log_index: Option<u64>,
+    pub topic0: Option<String>,
+    pub topics_count: u64,
+    pub data_byte_length: u64,
+    pub data_hash_version: String,
+    pub data_hash: String,
+    pub event_signature: String,
+    pub source: Option<TxAnalysisAbiSourceSummary>,
+    pub source_label: String,
+    pub decode_status: String,
+    pub confidence: String,
+    pub argument_summary: Vec<TxAnalysisDecodedValueSummary>,
+    pub statuses: Vec<String>,
+    pub error_summary: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TxAnalysisErrorDecodeCandidate {
+    pub selector: String,
+    pub error_signature: String,
+    pub source: Option<TxAnalysisAbiSourceSummary>,
+    pub source_label: String,
+    pub decode_status: String,
+    pub confidence: String,
+    pub argument_summary: Vec<TxAnalysisDecodedValueSummary>,
+    pub statuses: Vec<String>,
+    pub error_summary: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TxAnalysisClassificationCandidate {
+    pub kind: String,
+    pub label: String,
+    pub confidence: String,
+    pub source: String,
+    pub selector: Option<String>,
+    pub signature: Option<String>,
+    pub argument_summary: Vec<TxAnalysisDecodedValueSummary>,
+    pub reasons: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TxAnalysisUncertaintyStatus {
+    pub code: String,
+    pub severity: String,
+    pub source: String,
+    pub summary: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TxAnalysisRevertDataSummary {
+    pub source: String,
+    pub status: String,
+    pub selector: Option<String>,
+    pub byte_length: Option<u64>,
+    pub data_hash_version: Option<String>,
+    pub data_hash: Option<String>,
+    pub error_summary: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TxAnalysisDecodedFieldSummary {
+    pub name: Option<String>,
+    pub value: TxAnalysisDecodedValueSummary,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TxAnalysisDecodedValueSummary {
+    pub name: Option<String>,
+    pub kind: String,
+    #[serde(rename = "type")]
+    pub type_label: String,
+    pub value: Option<String>,
+    pub byte_length: Option<usize>,
+    pub hash: Option<String>,
+    pub items: Option<Vec<TxAnalysisDecodedValueSummary>>,
+    pub fields: Option<Vec<TxAnalysisDecodedFieldSummary>>,
+    pub truncated: bool,
+}
+
 #[derive(Debug, Clone)]
 struct NormalizedFetchInput {
     rpc_url: String,
     chain_id: u64,
     tx_hash: String,
+    bounded_revert_data: Option<NormalizedRevertData>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NormalizedRevertData {
+    source: String,
+    status: String,
+    bytes: Option<Vec<u8>>,
+    error_summary: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -194,6 +394,7 @@ struct ParsedTransaction {
     to_address: Option<String>,
     block_number: Option<u64>,
     block_hash: Option<String>,
+    calldata: Vec<u8>,
 }
 
 #[derive(Debug, Clone)]
@@ -202,6 +403,14 @@ struct ParsedReceipt {
     block_number: Option<u64>,
     block_hash: Option<String>,
     logs_missing: bool,
+    logs: Vec<ParsedLog>,
+}
+
+#[derive(Debug, Clone)]
+struct ParsedLog {
+    summary: TxAnalysisLogSummary,
+    topics: Vec<H256>,
+    data: Vec<u8>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -214,6 +423,18 @@ struct ExpectedBlockContext {
 enum TxAnalysisRpcError {
     Timeout,
     Provider(String),
+}
+
+#[derive(Debug, Clone, Default)]
+struct AbiDecodeContext {
+    sources_by_address: BTreeMap<String, Vec<AbiDecodeSource>>,
+    load_error: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct AbiDecodeSource {
+    summary: TxAnalysisAbiSourceSummary,
+    raw_abi: Option<Value>,
 }
 
 #[tauri::command]
@@ -363,6 +584,7 @@ pub async fn fetch_tx_analysis_impl(input: TxAnalysisFetchInput) -> TxAnalysisFe
     let mut receipt_contract_address = None;
     let mut receipt_block_number = None;
     let mut receipt_block_hash = None;
+    let mut parsed_receipt_for_analysis = None;
     if let Some(value) = receipt_value {
         match parse_receipt_summary(&value, &model.hash) {
             Ok(parsed_receipt) => {
@@ -382,7 +604,8 @@ pub async fn fetch_tx_analysis_impl(input: TxAnalysisFetchInput) -> TxAnalysisFe
                 } else {
                     model.sources.logs = TxAnalysisSourceStatus::ok();
                 }
-                model.receipt = Some(parsed_receipt.summary);
+                model.receipt = Some(parsed_receipt.summary.clone());
+                parsed_receipt_for_analysis = Some(parsed_receipt);
             }
             Err(error) => {
                 let message = sanitized_summary(format!("receipt response invalid: {error}"));
@@ -440,6 +663,20 @@ pub async fn fetch_tx_analysis_impl(input: TxAnalysisFetchInput) -> TxAnalysisFe
         fetch_code_summaries(&provider, &code_targets, block_number, &mut model).await;
     }
 
+    let analysis_addresses = analysis_addresses(
+        &parsed_transaction,
+        receipt_contract_address.as_deref(),
+        parsed_receipt_for_analysis.as_ref(),
+    );
+    let abi_context = load_abi_decode_context(model.chain_id, &analysis_addresses);
+    model.analysis = build_decode_read_model(
+        &model,
+        &parsed_transaction,
+        parsed_receipt_for_analysis.as_ref(),
+        &abi_context,
+        normalized.bounded_revert_data.as_ref(),
+    );
+
     model
 }
 
@@ -483,6 +720,7 @@ impl TxAnalysisFetchReadModel {
                     None,
                 ),
             },
+            analysis: TxAnalysisDecodeReadModel::new(None, "notRequested"),
             error_summary: None,
         }
     }
@@ -499,6 +737,61 @@ impl TxAnalysisFetchReadModel {
         if self.status == STATUS_OK {
             self.status = STATUS_PARTIAL.to_string();
         }
+    }
+}
+
+impl TxAnalysisDecodeReadModel {
+    fn new(selector: Option<String>, selector_status: &str) -> Self {
+        Self {
+            status: "notAvailable".to_string(),
+            reasons: Vec::new(),
+            selector: TxAnalysisSelectorDecodeSummary {
+                selector,
+                selector_status: selector_status.to_string(),
+                selector_match_count: 0,
+                unique_signature_count: 0,
+                source_count: 0,
+                conflict: false,
+            },
+            abi_sources: Vec::new(),
+            function_candidates: Vec::new(),
+            event_candidates: Vec::new(),
+            error_candidates: Vec::new(),
+            classification_candidates: Vec::new(),
+            uncertainty_statuses: Vec::new(),
+            revert_data_status: "notRequested".to_string(),
+            revert_data: None,
+        }
+    }
+
+    fn push_reason(&mut self, reason: impl Into<String>) {
+        let reason = reason.into();
+        if !self.reasons.iter().any(|item| item == &reason) {
+            self.reasons.push(reason);
+        }
+    }
+
+    fn push_uncertainty(
+        &mut self,
+        code: &str,
+        severity: &str,
+        source: &str,
+        summary: Option<String>,
+    ) {
+        if self
+            .uncertainty_statuses
+            .iter()
+            .any(|item| item.code == code && item.source == source)
+        {
+            return;
+        }
+        self.uncertainty_statuses.push(TxAnalysisUncertaintyStatus {
+            code: code.to_string(),
+            severity: severity.to_string(),
+            source: source.to_string(),
+            summary,
+        });
+        self.push_reason(code);
     }
 }
 
@@ -786,7 +1079,56 @@ fn normalize_fetch_input(
         rpc_url: input.rpc_url,
         chain_id,
         tx_hash,
+        bounded_revert_data: input.bounded_revert_data.map(normalize_bounded_revert_data),
     })
+}
+
+fn normalize_bounded_revert_data(input: TxAnalysisBoundedRevertDataInput) -> NormalizedRevertData {
+    let source = input
+        .source
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(sanitized_summary)
+        .unwrap_or_else(|| "localBoundedInput".to_string());
+    match bounded_hex_payload_len(&input.data, "boundedRevertData", MAX_REVERT_DATA_BYTES) {
+        Ok(false) => NormalizedRevertData {
+            source,
+            status: "payloadTooLarge".to_string(),
+            bytes: None,
+            error_summary: Some(format!(
+                "boundedRevertData exceeds {MAX_REVERT_DATA_BYTES} byte limit"
+            )),
+        },
+        Err(error) => NormalizedRevertData {
+            source,
+            status: "malformed".to_string(),
+            bytes: None,
+            error_summary: Some(sanitized_summary(error)),
+        },
+        Ok(true) => match decode_hex_bytes(&input.data, "boundedRevertData") {
+            Ok(bytes) if bytes.len() > MAX_REVERT_DATA_BYTES => NormalizedRevertData {
+                source,
+                status: "payloadTooLarge".to_string(),
+                bytes: None,
+                error_summary: Some(format!(
+                    "boundedRevertData exceeds {MAX_REVERT_DATA_BYTES} byte limit"
+                )),
+            },
+            Ok(bytes) => NormalizedRevertData {
+                source,
+                status: "present".to_string(),
+                bytes: Some(bytes),
+                error_summary: None,
+            },
+            Err(error) => NormalizedRevertData {
+                source,
+                status: "malformed".to_string(),
+                bytes: None,
+                error_summary: Some(sanitized_summary(error)),
+            },
+        },
+    }
 }
 
 fn validate_selected_rpc(
@@ -898,6 +1240,7 @@ fn parse_transaction_summary(
         to_address: to,
         block_number,
         block_hash,
+        calldata,
     })
 }
 
@@ -913,27 +1256,27 @@ fn parse_receipt_summary(value: &Value, expected_hash: &str) -> Result<ParsedRec
     let gas_used = optional_quantity_string(value, "gasUsed")?;
     let effective_gas_price = optional_quantity_string(value, "effectiveGasPrice")?;
     let contract_address = optional_address(value, "contractAddress")?;
-    let (logs_status, logs_count, log_summaries, omitted_logs, logs_missing) =
-        match value.get("logs") {
-            Some(Value::Array(logs)) => {
-                let logs_count = logs.len() as u64;
-                let log_summaries = logs
-                    .iter()
-                    .take(LOG_SUMMARY_LIMIT)
-                    .map(parse_log_summary)
-                    .collect::<Result<Vec<_>, _>>()?;
-                (
-                    SOURCE_OK.to_string(),
-                    Some(logs_count),
-                    log_summaries,
-                    logs_count
-                        .checked_sub(LOG_SUMMARY_LIMIT as u64)
-                        .filter(|omitted| *omitted > 0),
-                    false,
-                )
-            }
-            _ => ("missing".to_string(), None, Vec::new(), None, true),
-        };
+    let (logs_status, logs_count, parsed_logs, omitted_logs, logs_missing) = match value.get("logs")
+    {
+        Some(Value::Array(logs)) => {
+            let logs_count = logs.len() as u64;
+            let parsed_logs = logs
+                .iter()
+                .take(LOG_SUMMARY_LIMIT)
+                .map(parse_log)
+                .collect::<Result<Vec<_>, _>>()?;
+            (
+                SOURCE_OK.to_string(),
+                Some(logs_count),
+                parsed_logs,
+                logs_count
+                    .checked_sub(LOG_SUMMARY_LIMIT as u64)
+                    .filter(|omitted| *omitted > 0),
+                false,
+            )
+        }
+        _ => ("missing".to_string(), None, Vec::new(), None, true),
+    };
 
     Ok(ParsedReceipt {
         summary: TxAnalysisReceiptSummary {
@@ -947,41 +1290,58 @@ fn parse_receipt_summary(value: &Value, expected_hash: &str) -> Result<ParsedRec
             contract_address,
             logs_status,
             logs_count,
-            logs: log_summaries,
+            logs: parsed_logs.iter().map(|log| log.summary.clone()).collect(),
             omitted_logs,
         },
         block_number,
         block_hash,
         logs_missing,
+        logs: parsed_logs,
     })
 }
 
-fn parse_log_summary(value: &Value) -> Result<TxAnalysisLogSummary, String> {
+fn parse_log(value: &Value) -> Result<ParsedLog, String> {
     let address = required_address(value, "address")?;
     let log_index = optional_quantity_u64(value, "logIndex")?;
-    let topics = value
+    let topic_values = value
         .get("topics")
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
-    let topic0 = topics
+    let topic0 = topic_values
         .first()
         .and_then(Value::as_str)
         .map(normalize_hash)
         .transpose()?;
+    let topics = topic_values
+        .iter()
+        .map(|value| {
+            value
+                .as_str()
+                .ok_or_else(|| "log topic must be a hash string".to_string())
+                .and_then(|topic| {
+                    H256::from_str(topic.trim())
+                        .map_err(|_| "log topic must be a 32-byte hex hash".to_string())
+                })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     let data = value.get("data").and_then(Value::as_str).unwrap_or("0x");
     let data_bytes = decode_hex_bytes(data, "log data")?;
     let removed = value.get("removed").and_then(Value::as_bool);
 
-    Ok(TxAnalysisLogSummary {
-        address,
-        log_index,
-        topic0,
-        topics_count: topics.len() as u64,
-        data_byte_length: data_bytes.len() as u64,
-        data_hash_version: LOG_DATA_HASH_VERSION.to_string(),
-        data_hash: prefixed_hash(&data_bytes),
-        removed,
+    Ok(ParsedLog {
+        summary: TxAnalysisLogSummary {
+            address,
+            log_index,
+            topic0,
+            topics_count: topics.len() as u64,
+            data_byte_length: data_bytes.len() as u64,
+            data_hash_version: LOG_DATA_HASH_VERSION.to_string(),
+            data_hash: prefixed_hash(&data_bytes),
+            removed,
+        },
+        topics,
+        data: data_bytes,
     })
 }
 
@@ -1004,6 +1364,1726 @@ fn code_targets(
     receipt_contract_address
         .map(|address| vec![("createdContract".to_string(), address.to_string())])
         .unwrap_or_default()
+}
+
+fn analysis_addresses(
+    transaction: &ParsedTransaction,
+    receipt_contract_address: Option<&str>,
+    receipt: Option<&ParsedReceipt>,
+) -> BTreeSet<String> {
+    let mut addresses = BTreeSet::new();
+    if let Some(to) = &transaction.to_address {
+        addresses.insert(normalize_address_key(to));
+    } else if let Some(address) = receipt_contract_address {
+        addresses.insert(normalize_address_key(address));
+    }
+    if let Some(receipt) = receipt {
+        for log in &receipt.logs {
+            addresses.insert(normalize_address_key(&log.summary.address));
+        }
+    }
+    addresses
+}
+
+fn load_abi_decode_context(chain_id: u64, addresses: &BTreeSet<String>) -> AbiDecodeContext {
+    if addresses.is_empty() {
+        return AbiDecodeContext::default();
+    }
+
+    let state = match load_abi_registry_state_readonly() {
+        Ok(state) => state,
+        Err(error) => {
+            return AbiDecodeContext {
+                sources_by_address: BTreeMap::new(),
+                load_error: Some(sanitized_summary(error)),
+            };
+        }
+    };
+
+    let mut context = AbiDecodeContext::default();
+    for entry in state.cache_entries {
+        let address_key = normalize_address_key(&entry.contract_address);
+        if entry.chain_id != chain_id || !addresses.contains(&address_key) {
+            continue;
+        }
+        context
+            .sources_by_address
+            .entry(address_key)
+            .or_default()
+            .push(load_abi_decode_source(entry));
+    }
+    for sources in context.sources_by_address.values_mut() {
+        sources.sort_by(|left, right| {
+            abi_source_sort_key(&left.summary).cmp(&abi_source_sort_key(&right.summary))
+        });
+    }
+    context
+}
+
+fn load_abi_decode_source(entry: AbiCacheEntryRecord) -> AbiDecodeSource {
+    let mut artifact_status = "ok".to_string();
+    let mut error_summary = None;
+    let mut raw_abi = None;
+
+    match read_abi_artifact_text(&entry) {
+        Ok(artifact) => {
+            let actual_hash = hash_text(&artifact);
+            if actual_hash != entry.abi_hash {
+                artifact_status = "artifactHashDrift".to_string();
+                error_summary = Some("ABI artifact hash does not match cache entry".to_string());
+            } else {
+                match serde_json::from_str::<Value>(&artifact) {
+                    Ok(value @ Value::Array(_)) => raw_abi = Some(value),
+                    Ok(_) | Err(_) => {
+                        artifact_status = "malformedAbiArtifact".to_string();
+                        error_summary = Some("ABI artifact could not be parsed".to_string());
+                    }
+                }
+            }
+        }
+        Err(error) => {
+            artifact_status = "artifactUnavailable".to_string();
+            error_summary = Some(error);
+        }
+    }
+
+    AbiDecodeSource {
+        summary: abi_source_summary(&entry, artifact_status, error_summary),
+        raw_abi,
+    }
+}
+
+fn read_abi_artifact_text(entry: &AbiCacheEntryRecord) -> Result<String, String> {
+    let path = abi_artifact_path_readonly(&entry.abi_hash)
+        .map_err(|_| "ABI artifact storage is unavailable".to_string())?;
+    fs::read_to_string(path).map_err(|error| artifact_read_error_summary(&error).to_string())
+}
+
+fn artifact_read_error_summary(error: &std::io::Error) -> &'static str {
+    match error.kind() {
+        std::io::ErrorKind::NotFound => "ABI artifact not found",
+        std::io::ErrorKind::PermissionDenied => "ABI artifact is not readable",
+        _ => "ABI artifact could not be read",
+    }
+}
+
+fn abi_source_summary(
+    entry: &AbiCacheEntryRecord,
+    artifact_status: String,
+    error_summary: Option<String>,
+) -> TxAnalysisAbiSourceSummary {
+    TxAnalysisAbiSourceSummary {
+        contract_address: entry.contract_address.clone(),
+        source_kind: entry.source_kind.clone(),
+        provider_config_id: entry.provider_config_id.clone(),
+        user_source_id: entry.user_source_id.clone(),
+        version_id: entry.version_id.clone(),
+        attempt_id: entry.attempt_id.clone(),
+        source_fingerprint: entry.source_fingerprint.clone(),
+        abi_hash: entry.abi_hash.clone(),
+        selected: entry.selected,
+        fetch_source_status: entry.fetch_source_status.clone(),
+        validation_status: entry.validation_status.clone(),
+        cache_status: entry.cache_status.clone(),
+        selection_status: entry.selection_status.clone(),
+        selector_summary: entry.selector_summary.clone(),
+        artifact_status,
+        proxy_detected: entry.proxy_detected,
+        provider_proxy_hint: entry.provider_proxy_hint.clone(),
+        error_summary: error_summary
+            .or_else(|| entry.last_error_summary.as_deref().map(sanitized_summary)),
+    }
+}
+
+fn abi_source_sort_key(
+    source: &TxAnalysisAbiSourceSummary,
+) -> (String, String, String, String, String) {
+    (
+        source.contract_address.to_ascii_lowercase(),
+        source.source_kind.clone(),
+        source.provider_config_id.clone().unwrap_or_default(),
+        source.user_source_id.clone().unwrap_or_default(),
+        source.version_id.clone(),
+    )
+}
+
+fn build_decode_read_model(
+    model: &TxAnalysisFetchReadModel,
+    transaction: &ParsedTransaction,
+    receipt: Option<&ParsedReceipt>,
+    abi_context: &AbiDecodeContext,
+    bounded_revert_data: Option<&NormalizedRevertData>,
+) -> TxAnalysisDecodeReadModel {
+    let mut analysis = TxAnalysisDecodeReadModel::new(
+        transaction.summary.selector.clone(),
+        &transaction.summary.selector_status,
+    );
+    analysis.status = "unknown".to_string();
+    if let Some(error) = &abi_context.load_error {
+        analysis.push_uncertainty(
+            "abiRegistryUnavailable",
+            "warning",
+            "abiCache",
+            Some(error.clone()),
+        );
+    }
+
+    analysis.abi_sources = abi_context
+        .sources_by_address
+        .values()
+        .flat_map(|sources| sources.iter().map(|source| source.summary.clone()))
+        .collect();
+    analysis
+        .abi_sources
+        .sort_by(|left, right| abi_source_sort_key(left).cmp(&abi_source_sort_key(right)));
+    analysis
+        .abi_sources
+        .dedup_by(|left, right| abi_source_sort_key(left) == abi_source_sort_key(right));
+
+    let source_summaries = analysis.abi_sources.clone();
+    add_source_uncertainties(&mut analysis, &source_summaries);
+
+    let target_sources = transaction
+        .to_address
+        .as_deref()
+        .map(normalize_address_key)
+        .and_then(|address| abi_context.sources_by_address.get(&address))
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+
+    add_error_candidates(&mut analysis, bounded_revert_data, target_sources);
+
+    if model.sources.logs.status == SOURCE_UNAVAILABLE {
+        analysis.push_uncertainty("missingLogs", "warning", "rpcReceipt", None);
+    }
+    if receipt.and_then(|receipt| receipt.summary.status) == Some(0)
+        && bounded_revert_data.is_none()
+    {
+        analysis.revert_data_status = "unavailable".to_string();
+        analysis.push_uncertainty(
+            "revertDataUnavailable",
+            "warning",
+            "rpcReceipt",
+            Some("receipt is reverted but no bounded revert data source is available".to_string()),
+        );
+    }
+
+    if transaction.summary.contract_creation {
+        analysis
+            .classification_candidates
+            .push(classification_candidate(
+                "contractCreation",
+                "Contract creation",
+                "high",
+                "rpcTransaction",
+                transaction.summary.selector.clone(),
+                None,
+                Vec::new(),
+                vec!["transactionToIsNull"],
+            ));
+        analysis.push_uncertainty(
+            "contractCreationUnknownInitCode",
+            "warning",
+            "rpcTransaction",
+            Some("contract creation init code is not semantically decoded".to_string()),
+        );
+        add_event_candidates(&mut analysis, receipt, abi_context);
+        finalize_decode_status(&mut analysis);
+        return analysis;
+    }
+
+    if transaction.summary.selector_status == "short" {
+        analysis.push_uncertainty(
+            "malformedCalldata",
+            "warning",
+            "rpcTransaction",
+            Some("calldata is shorter than a 4-byte selector".to_string()),
+        );
+        analysis
+            .classification_candidates
+            .push(classification_candidate(
+                "rawCalldataUnknown",
+                "Unknown raw calldata",
+                "low",
+                "rpcTransaction",
+                None,
+                None,
+                Vec::new(),
+                vec!["selectorTooShort"],
+            ));
+        add_event_candidates(&mut analysis, receipt, abi_context);
+        finalize_decode_status(&mut analysis);
+        return analysis;
+    }
+
+    if transaction.summary.selector.is_none() {
+        if transaction.to_address.is_some() {
+            analysis
+                .classification_candidates
+                .push(classification_candidate(
+                    "nativeTransfer",
+                    "Native transfer",
+                    "high",
+                    "rpcTransaction",
+                    None,
+                    None,
+                    vec![scalar_summary(
+                        Some("valueWei".to_string()),
+                        "uint",
+                        "uint256".to_string(),
+                        Some(transaction.summary.value_wei.clone()),
+                        false,
+                    )],
+                    vec!["emptyCalldata"],
+                ));
+        }
+        add_event_candidates(&mut analysis, receipt, abi_context);
+        finalize_decode_status(&mut analysis);
+        return analysis;
+    }
+
+    let selector = transaction.summary.selector.clone().unwrap_or_default();
+    analysis.selector.source_count = target_sources.len() as u64;
+    analysis
+        .function_candidates
+        .extend(builtin_function_candidates(
+            &selector,
+            &transaction.calldata,
+        ));
+    analysis.function_candidates.extend(abi_function_candidates(
+        &selector,
+        &transaction.calldata,
+        target_sources,
+    ));
+
+    apply_function_selector_conflicts(&mut analysis);
+    if analysis.function_candidates.iter().any(|candidate| {
+        candidate
+            .statuses
+            .iter()
+            .any(|status| status == "malformedCalldata")
+    }) {
+        analysis.push_uncertainty(
+            "malformedCalldata",
+            "warning",
+            "rpcTransaction",
+            Some("calldata could not be decoded by at least one selector candidate".to_string()),
+        );
+    }
+
+    add_function_classifications(&mut analysis, &transaction.summary);
+    add_event_candidates(&mut analysis, receipt, abi_context);
+
+    if !analysis
+        .function_candidates
+        .iter()
+        .any(|candidate| candidate.decode_status == "decoded")
+    {
+        if analysis.function_candidates.is_empty() {
+            analysis.push_uncertainty("unknownSelector", "warning", "abiCache", None);
+        }
+        analysis
+            .classification_candidates
+            .push(classification_candidate(
+                "rawCalldataUnknown",
+                "Unknown raw calldata",
+                "low",
+                "rpcTransaction",
+                Some(selector),
+                None,
+                Vec::new(),
+                vec!["noFunctionDecodeCandidate"],
+            ));
+    }
+
+    finalize_decode_status(&mut analysis);
+    analysis
+}
+
+fn add_source_uncertainties(
+    analysis: &mut TxAnalysisDecodeReadModel,
+    sources: &[TxAnalysisAbiSourceSummary],
+) {
+    for source in sources {
+        if source.fetch_source_status == "notVerified" {
+            analysis.push_uncertainty(
+                "unverifiedAbi",
+                "warning",
+                "abiCache",
+                Some(format!("ABI source version {}", source.version_id)),
+            );
+        } else if source.fetch_source_status != "ok" {
+            analysis.push_uncertainty(
+                &source.fetch_source_status,
+                "warning",
+                "abiCache",
+                Some(format!("ABI source version {}", source.version_id)),
+            );
+        }
+        if source.cache_status != "cacheFresh" {
+            analysis.push_uncertainty(
+                "staleAbi",
+                "warning",
+                "abiCache",
+                Some(format!(
+                    "ABI source version {} cache status {}",
+                    source.version_id, source.cache_status
+                )),
+            );
+        }
+        if source.validation_status == "selectorConflict" {
+            analysis.push_uncertainty(
+                "selectorCollision",
+                "warning",
+                "abiCache",
+                Some(format!("ABI source version {}", source.version_id)),
+            );
+            if source_has_event_topic_conflict(source) {
+                analysis.push_uncertainty(
+                    "eventDecodeConflict",
+                    "warning",
+                    "abiCache",
+                    Some(format!("ABI source version {}", source.version_id)),
+                );
+            }
+        } else if source.validation_status != "ok" {
+            analysis.push_uncertainty(
+                &source.validation_status,
+                "warning",
+                "abiCache",
+                Some(format!("ABI source version {}", source.version_id)),
+            );
+        }
+        if matches!(
+            source.selection_status.as_str(),
+            "sourceConflict" | "needsUserChoice"
+        ) {
+            analysis.push_uncertainty(
+                &source.selection_status,
+                "warning",
+                "abiCache",
+                Some(format!("ABI source version {}", source.version_id)),
+            );
+        }
+        if source.proxy_detected {
+            analysis.push_uncertainty(
+                "proxyImplementationUncertainty",
+                "warning",
+                "abiCache",
+                source.provider_proxy_hint.clone(),
+            );
+        }
+        if source.artifact_status != "ok" {
+            analysis.push_uncertainty(
+                &source.artifact_status,
+                "warning",
+                "abiCache",
+                source.error_summary.clone(),
+            );
+        }
+    }
+}
+
+fn source_has_event_topic_conflict(source: &TxAnalysisAbiSourceSummary) -> bool {
+    let Some(summary) = &source.selector_summary else {
+        return false;
+    };
+    let has_conflict = summary.conflict_count.unwrap_or(0) > 0
+        || summary.duplicate_selector_count.unwrap_or(0) > 0;
+    if !has_conflict || summary.event_topic_count.unwrap_or(0) == 0 {
+        return false;
+    }
+    let notes = summary.notes.as_deref().unwrap_or("").to_ascii_lowercase();
+    notes.contains("event")
+        || notes.contains("topic")
+        || (summary.function_selector_count.unwrap_or(0) == 0
+            && summary.error_selector_count.unwrap_or(0) == 0)
+}
+
+fn add_error_candidates(
+    analysis: &mut TxAnalysisDecodeReadModel,
+    revert_data: Option<&NormalizedRevertData>,
+    sources: &[AbiDecodeSource],
+) {
+    let Some(revert_data) = revert_data else {
+        return;
+    };
+
+    match &revert_data.bytes {
+        Some(bytes) => {
+            let selector = calldata_selector(bytes);
+            let semantic_status = if bytes.len() < 4 {
+                "malformed"
+            } else {
+                revert_data.status.as_str()
+            };
+            analysis.revert_data_status = semantic_status.to_string();
+            analysis.revert_data = Some(TxAnalysisRevertDataSummary {
+                source: revert_data.source.clone(),
+                status: semantic_status.to_string(),
+                selector: selector.clone(),
+                byte_length: Some(bytes.len() as u64),
+                data_hash_version: Some(REVERT_DATA_HASH_VERSION.to_string()),
+                data_hash: Some(prefixed_hash(bytes)),
+                error_summary: if bytes.len() < 4 {
+                    Some("bounded revert data is shorter than a 4-byte selector".to_string())
+                } else {
+                    revert_data.error_summary.clone()
+                },
+            });
+            if bytes.len() < 4 {
+                analysis.push_uncertainty(
+                    "malformedRevertData",
+                    "warning",
+                    "boundedRevertData",
+                    Some("bounded revert data is shorter than a 4-byte selector".to_string()),
+                );
+                return;
+            }
+
+            let selector = selector.unwrap_or_default();
+            analysis
+                .error_candidates
+                .extend(builtin_error_candidates(&selector, bytes));
+            analysis
+                .error_candidates
+                .extend(abi_error_candidates(&selector, bytes, sources));
+            apply_error_selector_conflicts(analysis);
+
+            if analysis.error_candidates.iter().any(|candidate| {
+                candidate
+                    .statuses
+                    .iter()
+                    .any(|status| status == "malformedRevertData")
+            }) {
+                analysis.push_uncertainty(
+                    "malformedRevertData",
+                    "warning",
+                    "boundedRevertData",
+                    Some(
+                        "bounded revert data could not be decoded by at least one candidate"
+                            .to_string(),
+                    ),
+                );
+            }
+            if analysis.error_candidates.is_empty() {
+                analysis.push_uncertainty(
+                    "unknownErrorSelector",
+                    "warning",
+                    "boundedRevertData",
+                    None,
+                );
+            }
+        }
+        None => {
+            analysis.revert_data_status = revert_data.status.clone();
+            analysis.revert_data = Some(TxAnalysisRevertDataSummary {
+                source: revert_data.source.clone(),
+                status: revert_data.status.clone(),
+                selector: None,
+                byte_length: None,
+                data_hash_version: None,
+                data_hash: None,
+                error_summary: revert_data.error_summary.clone(),
+            });
+            let code = if revert_data.status == "payloadTooLarge" {
+                "revertDataPayloadTooLarge"
+            } else {
+                "malformedRevertData"
+            };
+            analysis.push_uncertainty(
+                code,
+                "warning",
+                "boundedRevertData",
+                revert_data.error_summary.clone(),
+            );
+        }
+    }
+}
+
+fn source_can_drive_decode(source: &TxAnalysisAbiSourceSummary) -> bool {
+    source.selected
+        && source.fetch_source_status == "ok"
+        && source.validation_status == "ok"
+        && source.cache_status == "cacheFresh"
+        && source.selection_status == "selected"
+        && source.artifact_status == "ok"
+}
+
+fn abi_function_candidates(
+    selector: &str,
+    calldata: &[u8],
+    sources: &[AbiDecodeSource],
+) -> Vec<TxAnalysisFunctionDecodeCandidate> {
+    let mut candidates = Vec::new();
+    for source in sources {
+        if !source_can_drive_decode(&source.summary) {
+            continue;
+        }
+        let Some(raw_abi) = &source.raw_abi else {
+            continue;
+        };
+        let matches = raw_function_matches(raw_abi, selector);
+        for item in matches {
+            let signature =
+                raw_item_signature(&item, "function").unwrap_or_else(|_| "unknown()".to_string());
+            let mut statuses = abi_source_statuses(&source.summary);
+            let (decode_status, argument_summary, error_summary) = match parse_function_item(item)
+                .and_then(|function| {
+                    decode_function_arguments(&function, calldata)
+                        .map_err(|error| format!("ABI function decode failed: {error}"))
+                }) {
+                Ok(summary) => ("decoded".to_string(), summary, None),
+                Err(error) => {
+                    statuses.push("malformedCalldata".to_string());
+                    (
+                        "decodeError".to_string(),
+                        Vec::new(),
+                        Some(sanitized_summary(error)),
+                    )
+                }
+            };
+            candidates.push(TxAnalysisFunctionDecodeCandidate {
+                selector: selector.to_string(),
+                function_signature: signature,
+                source: Some(source.summary.clone()),
+                source_label: "abiCache".to_string(),
+                decode_status,
+                confidence: confidence_for_statuses(&statuses),
+                argument_summary,
+                statuses: dedupe_strings(statuses),
+                error_summary,
+            });
+        }
+    }
+    candidates
+}
+
+fn builtin_error_candidates(selector: &str, bytes: &[u8]) -> Vec<TxAnalysisErrorDecodeCandidate> {
+    let Some((signature, params)) = builtin_error_params(selector) else {
+        return Vec::new();
+    };
+    let (decode_status, argument_summary, error_summary, statuses) =
+        match decode_named_params(&params, bytes) {
+            Ok(summary) => ("decoded".to_string(), summary, None, Vec::new()),
+            Err(error) => (
+                "decodeError".to_string(),
+                Vec::new(),
+                Some(sanitized_summary(error)),
+                vec!["malformedRevertData".to_string()],
+            ),
+        };
+    vec![TxAnalysisErrorDecodeCandidate {
+        selector: selector.to_string(),
+        error_signature: signature.to_string(),
+        source: None,
+        source_label: "knownError".to_string(),
+        decode_status,
+        confidence: if statuses.is_empty() { "medium" } else { "low" }.to_string(),
+        argument_summary,
+        statuses,
+        error_summary,
+    }]
+}
+
+fn abi_error_candidates(
+    selector: &str,
+    bytes: &[u8],
+    sources: &[AbiDecodeSource],
+) -> Vec<TxAnalysisErrorDecodeCandidate> {
+    let mut candidates = Vec::new();
+    for source in sources {
+        if !source_can_drive_decode(&source.summary) {
+            continue;
+        }
+        let Some(raw_abi) = &source.raw_abi else {
+            continue;
+        };
+        for item in raw_error_matches(raw_abi, selector) {
+            let signature =
+                raw_item_signature(&item, "error").unwrap_or_else(|_| "unknown()".to_string());
+            let mut statuses = abi_source_statuses(&source.summary);
+            let (decode_status, argument_summary, error_summary) =
+                match error_params_from_raw_item(&item).and_then(|params| {
+                    decode_error_arguments(&params, bytes)
+                        .map_err(|error| format!("ABI error decode failed: {error}"))
+                }) {
+                    Ok(summary) => ("decoded".to_string(), summary, None),
+                    Err(error) => {
+                        statuses.push("malformedRevertData".to_string());
+                        (
+                            "decodeError".to_string(),
+                            Vec::new(),
+                            Some(sanitized_summary(error)),
+                        )
+                    }
+                };
+            candidates.push(TxAnalysisErrorDecodeCandidate {
+                selector: selector.to_string(),
+                error_signature: signature,
+                source: Some(source.summary.clone()),
+                source_label: "abiCache".to_string(),
+                decode_status,
+                confidence: confidence_for_statuses(&statuses),
+                argument_summary,
+                statuses: dedupe_strings(statuses),
+                error_summary,
+            });
+        }
+    }
+    candidates
+}
+
+fn builtin_function_candidates(
+    selector: &str,
+    calldata: &[u8],
+) -> Vec<TxAnalysisFunctionDecodeCandidate> {
+    let Some((signature, params)) = builtin_function_params(selector) else {
+        return Vec::new();
+    };
+    let (decode_status, argument_summary, error_summary, statuses) =
+        match decode_named_params(&params, calldata) {
+            Ok(summary) => ("decoded".to_string(), summary, None, Vec::new()),
+            Err(error) => (
+                "decodeError".to_string(),
+                Vec::new(),
+                Some(sanitized_summary(error)),
+                vec!["malformedCalldata".to_string()],
+            ),
+        };
+    vec![TxAnalysisFunctionDecodeCandidate {
+        selector: selector.to_string(),
+        function_signature: signature.to_string(),
+        source: None,
+        source_label: "knownSelector".to_string(),
+        decode_status,
+        confidence: if statuses.is_empty() { "medium" } else { "low" }.to_string(),
+        argument_summary,
+        statuses,
+        error_summary,
+    }]
+}
+
+fn builtin_function_params(
+    selector: &str,
+) -> Option<(&'static str, Vec<(&'static str, ParamType)>)> {
+    match selector {
+        ERC20_TRANSFER_SELECTOR => Some((
+            ERC20_TRANSFER_SIGNATURE,
+            vec![("to", ParamType::Address), ("amount", ParamType::Uint(256))],
+        )),
+        ERC20_APPROVE_SELECTOR => Some((
+            ERC20_APPROVE_SIGNATURE,
+            vec![
+                ("spender", ParamType::Address),
+                ("amount", ParamType::Uint(256)),
+            ],
+        )),
+        DISPERSE_ETHER_SELECTOR_HEX => Some((
+            DISPERSE_ETHER_METHOD,
+            vec![
+                ("recipients", ParamType::Array(Box::new(ParamType::Address))),
+                ("values", ParamType::Array(Box::new(ParamType::Uint(256)))),
+            ],
+        )),
+        DISPERSE_TOKEN_SELECTOR_HEX => Some((
+            DISPERSE_TOKEN_METHOD,
+            vec![
+                ("token", ParamType::Address),
+                ("recipients", ParamType::Array(Box::new(ParamType::Address))),
+                ("values", ParamType::Array(Box::new(ParamType::Uint(256)))),
+            ],
+        )),
+        _ => None,
+    }
+}
+
+fn builtin_error_params(selector: &str) -> Option<(&'static str, Vec<(&'static str, ParamType)>)> {
+    match selector {
+        ERROR_STRING_SELECTOR => {
+            Some((ERROR_STRING_SIGNATURE, vec![("message", ParamType::String)]))
+        }
+        PANIC_UINT_SELECTOR => Some((PANIC_UINT_SIGNATURE, vec![("code", ParamType::Uint(256))])),
+        _ => None,
+    }
+}
+
+fn decode_named_params(
+    params: &[(&str, ParamType)],
+    calldata: &[u8],
+) -> Result<Vec<TxAnalysisDecodedValueSummary>, String> {
+    if calldata.len() < 4 {
+        return Err("calldata is shorter than a 4-byte selector".to_string());
+    }
+    if (calldata.len() - 4) % 32 != 0 {
+        return Err("ABI calldata body must be 32-byte aligned".to_string());
+    }
+    let kinds = params
+        .iter()
+        .map(|(_, kind)| kind.clone())
+        .collect::<Vec<_>>();
+    let tokens = decode_strict(&kinds, &calldata[4..], "ABI calldata body")?;
+    Ok(params
+        .iter()
+        .zip(tokens.iter())
+        .map(|((name, kind), token)| summarize_token(token, kind, Some(name)))
+        .collect())
+}
+
+fn decode_function_arguments(
+    function: &Function,
+    calldata: &[u8],
+) -> Result<Vec<TxAnalysisDecodedValueSummary>, String> {
+    if calldata.len() < 4 {
+        return Err("calldata is shorter than a 4-byte selector".to_string());
+    }
+    if (calldata.len() - 4) % 32 != 0 {
+        return Err("ABI calldata body must be 32-byte aligned".to_string());
+    }
+    let kinds = function
+        .inputs
+        .iter()
+        .map(|param| param.kind.clone())
+        .collect::<Vec<_>>();
+    let tokens = decode_strict(&kinds, &calldata[4..], "ABI calldata body")?;
+    Ok(function
+        .inputs
+        .iter()
+        .zip(tokens.iter())
+        .map(|(param, token)| summarize_token(token, &param.kind, Some(&param.name)))
+        .collect())
+}
+
+fn decode_error_arguments(
+    params: &[(String, ParamType)],
+    bytes: &[u8],
+) -> Result<Vec<TxAnalysisDecodedValueSummary>, String> {
+    if bytes.len() < 4 {
+        return Err("bounded revert data is shorter than a 4-byte selector".to_string());
+    }
+    if (bytes.len() - 4) % 32 != 0 {
+        return Err("ABI revert data body must be 32-byte aligned".to_string());
+    }
+    let kinds = params
+        .iter()
+        .map(|(_, kind)| kind.clone())
+        .collect::<Vec<_>>();
+    let tokens = decode_strict(&kinds, &bytes[4..], "ABI revert data body")?;
+    Ok(params
+        .iter()
+        .zip(tokens.iter())
+        .map(|((name, kind), token)| summarize_token(token, kind, Some(name)))
+        .collect())
+}
+
+fn decode_strict(kinds: &[ParamType], body: &[u8], label: &str) -> Result<Vec<Token>, String> {
+    let tokens = decode(kinds, body).map_err(|error| error.to_string())?;
+    let encoded = ethers::abi::encode(&tokens);
+    if encoded != body {
+        return Err(format!(
+            "{label} contains trailing or non-canonical ABI data"
+        ));
+    }
+    Ok(tokens)
+}
+
+fn apply_function_selector_conflicts(analysis: &mut TxAnalysisDecodeReadModel) {
+    let unique_signatures = analysis
+        .function_candidates
+        .iter()
+        .map(|candidate| candidate.function_signature.clone())
+        .collect::<BTreeSet<_>>();
+    analysis.selector.selector_match_count = analysis.function_candidates.len() as u64;
+    analysis.selector.unique_signature_count = unique_signatures.len() as u64;
+    analysis.selector.conflict =
+        unique_signatures.len() > 1 || function_source_has_selector_conflict(analysis);
+    if !analysis.selector.conflict {
+        return;
+    }
+    for candidate in &mut analysis.function_candidates {
+        if !candidate
+            .statuses
+            .iter()
+            .any(|status| status == "selectorCollision")
+        {
+            candidate.statuses.push("selectorCollision".to_string());
+        }
+        candidate.confidence = "low".to_string();
+    }
+    analysis.push_uncertainty(
+        "selectorCollision",
+        "warning",
+        "abiCache",
+        Some(
+            "multiple function candidates or selector-conflict source metadata matched".to_string(),
+        ),
+    );
+}
+
+fn apply_error_selector_conflicts(analysis: &mut TxAnalysisDecodeReadModel) {
+    let unique_signatures = analysis
+        .error_candidates
+        .iter()
+        .map(|candidate| candidate.error_signature.clone())
+        .collect::<BTreeSet<_>>();
+    if unique_signatures.len() <= 1
+        && !analysis.error_candidates.iter().any(|candidate| {
+            candidate
+                .statuses
+                .iter()
+                .any(|status| status == "selectorConflict")
+        })
+    {
+        return;
+    }
+    for candidate in &mut analysis.error_candidates {
+        if !candidate
+            .statuses
+            .iter()
+            .any(|status| status == "selectorCollision")
+        {
+            candidate.statuses.push("selectorCollision".to_string());
+        }
+        candidate.confidence = "low".to_string();
+    }
+    analysis.push_uncertainty(
+        "selectorCollision",
+        "warning",
+        "boundedRevertData",
+        Some("multiple error candidates or selector-conflict source metadata matched".to_string()),
+    );
+}
+
+fn add_function_classifications(
+    analysis: &mut TxAnalysisDecodeReadModel,
+    transaction: &TxAnalysisTransactionSummary,
+) {
+    for candidate in &analysis.function_candidates {
+        if candidate.decode_status != "decoded" {
+            continue;
+        }
+        match candidate.function_signature.as_str() {
+            ERC20_TRANSFER_SIGNATURE if candidate.source.is_none() => {
+                analysis
+                    .classification_candidates
+                    .push(classification_candidate(
+                        "erc20Transfer",
+                        "ERC-20 transfer",
+                        candidate.confidence.as_str(),
+                        "knownSelector",
+                        transaction.selector.clone(),
+                        Some(candidate.function_signature.clone()),
+                        candidate.argument_summary.clone(),
+                        vec!["knownErc20TransferSelector"],
+                    ));
+            }
+            ERC20_APPROVE_SIGNATURE if candidate.source.is_none() => {
+                analysis
+                    .classification_candidates
+                    .push(classification_candidate(
+                        "erc20Approval",
+                        "ERC-20 approval",
+                        candidate.confidence.as_str(),
+                        "knownSelector",
+                        transaction.selector.clone(),
+                        Some(candidate.function_signature.clone()),
+                        candidate.argument_summary.clone(),
+                        vec!["knownErc20ApproveSelector"],
+                    ));
+                if decoded_arg_value(&candidate.argument_summary, "amount").as_deref() == Some("0")
+                {
+                    analysis
+                        .classification_candidates
+                        .push(classification_candidate(
+                            "erc20Revoke",
+                            "ERC-20 revoke candidate",
+                            "medium",
+                            "knownSelector",
+                            transaction.selector.clone(),
+                            Some(candidate.function_signature.clone()),
+                            candidate.argument_summary.clone(),
+                            vec!["approveAmountZero"],
+                        ));
+                }
+            }
+            DISPERSE_ETHER_METHOD | DISPERSE_TOKEN_METHOD if candidate.source.is_none() => {
+                analysis
+                    .classification_candidates
+                    .push(classification_candidate(
+                        "batchDisperse",
+                        "Batch disperse",
+                        candidate.confidence.as_str(),
+                        "knownSelector",
+                        transaction.selector.clone(),
+                        Some(candidate.function_signature.clone()),
+                        candidate.argument_summary.clone(),
+                        vec!["knownDisperseSelector"],
+                    ));
+            }
+            _ if candidate.source.is_some() => {
+                analysis
+                    .classification_candidates
+                    .push(classification_candidate(
+                        "managedAbiCall",
+                        "Managed ABI call",
+                        candidate.confidence.as_str(),
+                        "abiCache",
+                        transaction.selector.clone(),
+                        Some(candidate.function_signature.clone()),
+                        candidate.argument_summary.clone(),
+                        vec!["abiFunctionDecoded"],
+                    ));
+            }
+            _ => {}
+        }
+    }
+}
+
+fn add_event_candidates(
+    analysis: &mut TxAnalysisDecodeReadModel,
+    receipt: Option<&ParsedReceipt>,
+    abi_context: &AbiDecodeContext,
+) {
+    let Some(receipt) = receipt else {
+        return;
+    };
+    let mut candidates = Vec::new();
+    for log in &receipt.logs {
+        candidates.extend(builtin_event_candidates(log));
+        let sources = abi_context
+            .sources_by_address
+            .get(&normalize_address_key(&log.summary.address))
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+        candidates.extend(abi_event_candidates(log, sources));
+    }
+    analysis.event_candidates = candidates;
+    add_event_conflict_uncertainties(analysis);
+}
+
+fn builtin_event_candidates(log: &ParsedLog) -> Vec<TxAnalysisEventDecodeCandidate> {
+    let Some(topic0) = log.summary.topic0.as_deref() else {
+        return Vec::new();
+    };
+    let transfer_topic = topic_for_signature(ERC20_TRANSFER_EVENT_SIGNATURE);
+    let approval_topic = topic_for_signature(ERC20_APPROVAL_EVENT_SIGNATURE);
+    let signature = if topic0.eq_ignore_ascii_case(&transfer_topic) {
+        ERC20_TRANSFER_EVENT_SIGNATURE
+    } else if topic0.eq_ignore_ascii_case(&approval_topic) {
+        ERC20_APPROVAL_EVENT_SIGNATURE
+    } else {
+        return Vec::new();
+    };
+
+    let (decode_status, argument_summary, error_summary, statuses) =
+        match decode_erc20_event_log(signature, log) {
+            Ok(summary) => ("decoded".to_string(), summary, None, Vec::new()),
+            Err(error) => (
+                "decodeError".to_string(),
+                Vec::new(),
+                Some(sanitized_summary(error)),
+                vec!["malformedLog".to_string()],
+            ),
+        };
+
+    vec![event_candidate_from_log(
+        log,
+        signature.to_string(),
+        None,
+        "knownEvent".to_string(),
+        decode_status,
+        if statuses.is_empty() { "medium" } else { "low" }.to_string(),
+        argument_summary,
+        statuses,
+        error_summary,
+    )]
+}
+
+fn decode_erc20_event_log(
+    signature: &str,
+    log: &ParsedLog,
+) -> Result<Vec<TxAnalysisDecodedValueSummary>, String> {
+    if log.topics.len() < 3 {
+        return Err("ERC-20 event log must include indexed address topics".to_string());
+    }
+    if log.data.len() != 32 {
+        return Err("ERC-20 event value data must be one uint256 word".to_string());
+    }
+    let value = decode(&[ParamType::Uint(256)], &log.data)
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .next()
+        .ok_or_else(|| "ERC-20 event value missing".to_string())?;
+    let (first_name, second_name) = if signature == ERC20_TRANSFER_EVENT_SIGNATURE {
+        ("from", "to")
+    } else {
+        ("owner", "spender")
+    };
+    Ok(vec![
+        summarize_token(
+            &Token::Address(address_from_topic(&log.topics[1])),
+            &ParamType::Address,
+            Some(first_name),
+        ),
+        summarize_token(
+            &Token::Address(address_from_topic(&log.topics[2])),
+            &ParamType::Address,
+            Some(second_name),
+        ),
+        summarize_token(&value, &ParamType::Uint(256), Some("value")),
+    ])
+}
+
+fn abi_event_candidates(
+    log: &ParsedLog,
+    sources: &[AbiDecodeSource],
+) -> Vec<TxAnalysisEventDecodeCandidate> {
+    let Some(topic0) = log.summary.topic0.as_deref() else {
+        return Vec::new();
+    };
+    let mut candidates = Vec::new();
+    for source in sources {
+        if !source_can_drive_decode(&source.summary) {
+            continue;
+        }
+        let Some(raw_abi) = &source.raw_abi else {
+            continue;
+        };
+        for item in raw_event_matches(raw_abi, topic0) {
+            let signature =
+                raw_item_signature(&item, "event").unwrap_or_else(|_| "unknown()".to_string());
+            let mut statuses = abi_source_statuses(&source.summary);
+            let (decode_status, argument_summary, error_summary) =
+                match parse_event_item(item).and_then(|event| decode_event_log(&event, log)) {
+                    Ok(summary) => ("decoded".to_string(), summary, None),
+                    Err(error) => {
+                        statuses.push("eventDecodeError".to_string());
+                        (
+                            "decodeError".to_string(),
+                            Vec::new(),
+                            Some(sanitized_summary(error)),
+                        )
+                    }
+                };
+            let confidence = confidence_for_statuses(&statuses);
+            candidates.push(event_candidate_from_log(
+                log,
+                signature,
+                Some(source.summary.clone()),
+                "abiCache".to_string(),
+                decode_status,
+                confidence,
+                argument_summary,
+                dedupe_strings(statuses),
+                error_summary,
+            ));
+        }
+    }
+    candidates
+}
+
+fn decode_event_log(
+    event: &Event,
+    log: &ParsedLog,
+) -> Result<Vec<TxAnalysisDecodedValueSummary>, String> {
+    let parsed = event
+        .parse_log(RawLog {
+            topics: log.topics.clone(),
+            data: log.data.clone(),
+        })
+        .map_err(|error| error.to_string())?;
+    Ok(event
+        .inputs
+        .iter()
+        .zip(parsed.params.iter())
+        .map(|(input, param)| summarize_token(&param.value, &input.kind, Some(&param.name)))
+        .collect())
+}
+
+fn event_candidate_from_log(
+    log: &ParsedLog,
+    event_signature: String,
+    source: Option<TxAnalysisAbiSourceSummary>,
+    source_label: String,
+    decode_status: String,
+    confidence: String,
+    argument_summary: Vec<TxAnalysisDecodedValueSummary>,
+    statuses: Vec<String>,
+    error_summary: Option<String>,
+) -> TxAnalysisEventDecodeCandidate {
+    TxAnalysisEventDecodeCandidate {
+        address: log.summary.address.clone(),
+        log_index: log.summary.log_index,
+        topic0: log.summary.topic0.clone(),
+        topics_count: log.summary.topics_count,
+        data_byte_length: log.summary.data_byte_length,
+        data_hash_version: log.summary.data_hash_version.clone(),
+        data_hash: log.summary.data_hash.clone(),
+        event_signature,
+        source,
+        source_label,
+        decode_status,
+        confidence,
+        argument_summary,
+        statuses,
+        error_summary,
+    }
+}
+
+fn add_event_conflict_uncertainties(analysis: &mut TxAnalysisDecodeReadModel) {
+    let mut by_log: BTreeMap<
+        (String, Option<u64>, Option<String>),
+        Vec<&TxAnalysisEventDecodeCandidate>,
+    > = BTreeMap::new();
+    for candidate in &analysis.event_candidates {
+        by_log
+            .entry((
+                normalize_address_key(&candidate.address),
+                candidate.log_index,
+                candidate.topic0.clone(),
+            ))
+            .or_default()
+            .push(candidate);
+    }
+    let has_conflict = by_log.values().any(|candidates| {
+        let unique_signatures = candidates
+            .iter()
+            .map(|candidate| candidate.event_signature.as_str())
+            .collect::<BTreeSet<_>>();
+        let source_conflict = candidates.iter().any(|candidate| {
+            candidate
+                .statuses
+                .iter()
+                .any(|status| status == "selectorConflict" || status == "eventDecodeConflict")
+        });
+        unique_signatures.len() > 1 || source_conflict
+    });
+    if has_conflict {
+        analysis.push_uncertainty(
+            "eventDecodeConflict",
+            "warning",
+            "abiCache",
+            Some("one receipt log has multiple event decode candidates".to_string()),
+        );
+    }
+}
+
+fn function_source_has_selector_conflict(analysis: &TxAnalysisDecodeReadModel) -> bool {
+    analysis.function_candidates.iter().any(|candidate| {
+        candidate
+            .statuses
+            .iter()
+            .any(|status| status == "selectorConflict")
+    })
+}
+
+fn finalize_decode_status(analysis: &mut TxAnalysisDecodeReadModel) {
+    if analysis.uncertainty_statuses.iter().any(|status| {
+        matches!(
+            status.code.as_str(),
+            "selectorCollision" | "eventDecodeConflict"
+        )
+    }) {
+        analysis.status = "conflict".to_string();
+    } else if analysis
+        .function_candidates
+        .iter()
+        .any(|candidate| candidate.decode_status == "decoded")
+        || analysis
+            .event_candidates
+            .iter()
+            .any(|candidate| candidate.decode_status == "decoded")
+        || analysis
+            .classification_candidates
+            .iter()
+            .any(|candidate| candidate.confidence == "high" || candidate.confidence == "medium")
+    {
+        analysis.status = if analysis.uncertainty_statuses.is_empty() {
+            "matched".to_string()
+        } else {
+            "partial".to_string()
+        };
+    } else {
+        analysis.status = "unknown".to_string();
+    }
+}
+
+fn classification_candidate(
+    kind: &str,
+    label: &str,
+    confidence: &str,
+    source: &str,
+    selector: Option<String>,
+    signature: Option<String>,
+    argument_summary: Vec<TxAnalysisDecodedValueSummary>,
+    reasons: Vec<&str>,
+) -> TxAnalysisClassificationCandidate {
+    TxAnalysisClassificationCandidate {
+        kind: kind.to_string(),
+        label: label.to_string(),
+        confidence: confidence.to_string(),
+        source: source.to_string(),
+        selector,
+        signature,
+        argument_summary,
+        reasons: reasons.into_iter().map(str::to_string).collect(),
+    }
+}
+
+fn decoded_arg_value(args: &[TxAnalysisDecodedValueSummary], name: &str) -> Option<String> {
+    args.iter()
+        .find(|arg| arg.name.as_deref() == Some(name))
+        .and_then(|arg| arg.value.clone())
+}
+
+fn raw_function_matches(raw_abi: &Value, selector: &str) -> Vec<Value> {
+    raw_items_matching_selector(raw_abi, "function", selector)
+}
+
+fn raw_event_matches(raw_abi: &Value, topic0: &str) -> Vec<Value> {
+    raw_items_matching_selector(raw_abi, "event", topic0)
+}
+
+fn raw_error_matches(raw_abi: &Value, selector: &str) -> Vec<Value> {
+    raw_items_matching_selector(raw_abi, "error", selector)
+}
+
+fn raw_items_matching_selector(raw_abi: &Value, kind: &str, selector: &str) -> Vec<Value> {
+    let Value::Array(items) = raw_abi else {
+        return Vec::new();
+    };
+    items
+        .iter()
+        .filter_map(|item| {
+            let object = item.as_object()?;
+            let item_type = object
+                .get("type")
+                .and_then(Value::as_str)
+                .unwrap_or("function");
+            if item_type != kind {
+                return None;
+            }
+            let signature = raw_item_signature(item, kind).ok()?;
+            let item_selector = if kind == "event" {
+                topic_for_signature(&signature)
+            } else {
+                selector_for_signature(&signature)
+            };
+            item_selector
+                .eq_ignore_ascii_case(selector)
+                .then(|| item.clone())
+        })
+        .collect()
+}
+
+fn raw_item_signature(item: &Value, expected_type: &str) -> Result<String, String> {
+    let object = item
+        .as_object()
+        .ok_or_else(|| "ABI item must be an object".to_string())?;
+    let item_type = object
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or("function");
+    if item_type != expected_type {
+        return Err("ABI item type mismatch".to_string());
+    }
+    let name = object
+        .get("name")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "ABI item is missing a name".to_string())?;
+    let inputs = raw_param_list(object.get("inputs"))?;
+    Ok(format!("{name}({})", inputs.join(",")))
+}
+
+fn parse_function_item(item: Value) -> Result<Function, String> {
+    let abi = serde_json::from_value::<Abi>(Value::Array(vec![item]))
+        .map_err(|_| "ABI function item could not be parsed".to_string())?;
+    let mut functions = abi.functions();
+    let function = functions
+        .next()
+        .cloned()
+        .ok_or_else(|| "ABI function item missing parsed function".to_string())?;
+    if functions.next().is_some() {
+        return Err("ABI function item parsed ambiguously".to_string());
+    }
+    Ok(function)
+}
+
+fn parse_event_item(item: Value) -> Result<Event, String> {
+    let abi = serde_json::from_value::<Abi>(Value::Array(vec![item]))
+        .map_err(|_| "ABI event item could not be parsed".to_string())?;
+    let mut events = abi.events();
+    let event = events
+        .next()
+        .cloned()
+        .ok_or_else(|| "ABI event item missing parsed event".to_string())?;
+    if events.next().is_some() {
+        return Err("ABI event item parsed ambiguously".to_string());
+    }
+    Ok(event)
+}
+
+fn error_params_from_raw_item(item: &Value) -> Result<Vec<(String, ParamType)>, String> {
+    let object = item
+        .as_object()
+        .ok_or_else(|| "ABI error item must be an object".to_string())?;
+    if object.get("type").and_then(Value::as_str) != Some("error") {
+        return Err("ABI item type mismatch".to_string());
+    }
+    let Some(inputs) = object.get("inputs") else {
+        return Ok(Vec::new());
+    };
+    let Value::Array(items) = inputs else {
+        return Err("ABI error inputs must be an array".to_string());
+    };
+    items
+        .iter()
+        .map(|item| {
+            let object = item
+                .as_object()
+                .ok_or_else(|| "ABI error param must be an object".to_string())?;
+            let name = object
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let type_label = raw_param_type(item)?;
+            let kind = ethers::abi::ethabi::param_type::Reader::read(&type_label)
+                .map_err(|_| format!("ABI error param type {type_label} is unsupported"))?;
+            Ok((name, kind))
+        })
+        .collect()
+}
+
+fn raw_param_list(value: Option<&Value>) -> Result<Vec<String>, String> {
+    let Some(value) = value else {
+        return Ok(Vec::new());
+    };
+    let Value::Array(items) = value else {
+        return Err("ABI params must be an array".to_string());
+    };
+    items.iter().map(raw_param_type).collect()
+}
+
+fn raw_param_type(value: &Value) -> Result<String, String> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| "ABI param must be an object".to_string())?;
+    let raw_type = object
+        .get("type")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "ABI param is missing type".to_string())?;
+
+    if let Some(tuple_suffix) = raw_type.strip_prefix("tuple") {
+        let components = object
+            .get("components")
+            .ok_or_else(|| "tuple ABI param is missing components".to_string())?;
+        let Value::Array(items) = components else {
+            return Err("tuple ABI components must be an array".to_string());
+        };
+        let component_types = items
+            .iter()
+            .map(raw_param_type)
+            .collect::<Result<Vec<_>, _>>()?;
+        return Ok(format!("({}){tuple_suffix}", component_types.join(",")));
+    }
+
+    let suffix_start = raw_type.find('[').unwrap_or(raw_type.len());
+    let base_type = &raw_type[..suffix_start];
+    let array_suffix = &raw_type[suffix_start..];
+    let canonical_base = match base_type {
+        "uint" => "uint256",
+        "int" => "int256",
+        "fixed" => "fixed128x18",
+        "ufixed" => "ufixed128x18",
+        _ => base_type,
+    };
+    Ok(format!("{canonical_base}{array_suffix}"))
+}
+
+fn abi_source_statuses(source: &TxAnalysisAbiSourceSummary) -> Vec<String> {
+    let mut statuses = Vec::new();
+    if !source.selected {
+        statuses.push("notSelected".to_string());
+    }
+    if source.fetch_source_status != "ok" {
+        statuses.push(source.fetch_source_status.clone());
+    }
+    if source.validation_status != "ok" {
+        statuses.push(source.validation_status.clone());
+    }
+    if source.cache_status != "cacheFresh" {
+        statuses.push(source.cache_status.clone());
+    }
+    if source.selection_status != "selected" {
+        statuses.push(source.selection_status.clone());
+    }
+    if source.artifact_status != "ok" {
+        statuses.push(source.artifact_status.clone());
+    }
+    if source.proxy_detected {
+        statuses.push("proxyImplementationUncertainty".to_string());
+    }
+    dedupe_strings(statuses)
+}
+
+fn confidence_for_statuses(statuses: &[String]) -> String {
+    if statuses.iter().any(|status| {
+        matches!(
+            status.as_str(),
+            "selectorConflict"
+                | "sourceConflict"
+                | "needsUserChoice"
+                | "cacheStale"
+                | "notVerified"
+                | "artifactUnavailable"
+                | "artifactHashDrift"
+                | "malformedAbiArtifact"
+                | "decodeError"
+                | "malformedCalldata"
+                | "malformedRevertData"
+                | "selectorCollision"
+                | "eventDecodeError"
+                | "eventDecodeConflict"
+        )
+    }) {
+        "low"
+    } else if statuses.is_empty() {
+        "high"
+    } else {
+        "medium"
+    }
+    .to_string()
+}
+
+fn summarize_token(
+    token: &Token,
+    kind: &ParamType,
+    name: Option<&str>,
+) -> TxAnalysisDecodedValueSummary {
+    let type_label = canonical_param_type(kind);
+    match (token, kind) {
+        (Token::Address(address), ParamType::Address) => scalar_summary(
+            clean_name(name),
+            "address",
+            type_label,
+            Some(to_checksum(address, None)),
+            false,
+        ),
+        (Token::Bool(value), ParamType::Bool) => scalar_summary(
+            clean_name(name),
+            "bool",
+            type_label,
+            Some(value.to_string()),
+            false,
+        ),
+        (Token::String(value), ParamType::String) => {
+            let (value, truncated) = truncate_chars(value, MAX_DECODE_STRING_CHARS);
+            scalar_summary(
+                clean_name(name),
+                "string",
+                type_label,
+                Some(value),
+                truncated,
+            )
+        }
+        (Token::Uint(value), ParamType::Uint(_)) => scalar_summary(
+            clean_name(name),
+            "uint",
+            type_label,
+            Some(value.to_string()),
+            false,
+        ),
+        (Token::Int(value), ParamType::Int(bits)) => scalar_summary(
+            clean_name(name),
+            "int",
+            type_label,
+            Some(format_signed_int(*value, *bits)),
+            false,
+        ),
+        (Token::Bytes(bytes), ParamType::Bytes)
+        | (Token::FixedBytes(bytes), ParamType::FixedBytes(_)) => {
+            bytes_summary(clean_name(name), "bytes", type_label, bytes)
+        }
+        (Token::Array(items), ParamType::Array(inner)) => {
+            array_summary(clean_name(name), "array", type_label, items, inner)
+        }
+        (Token::FixedArray(items), ParamType::FixedArray(inner, _)) => {
+            array_summary(clean_name(name), "array", type_label, items, inner)
+        }
+        (Token::Tuple(items), ParamType::Tuple(kinds)) => {
+            let fields = items
+                .iter()
+                .zip(kinds.iter())
+                .take(MAX_DECODE_ITEMS)
+                .enumerate()
+                .map(|(index, (item, kind))| TxAnalysisDecodedFieldSummary {
+                    name: Some(index.to_string()),
+                    value: summarize_token(item, kind, None),
+                })
+                .collect::<Vec<_>>();
+            TxAnalysisDecodedValueSummary {
+                name: clean_name(name),
+                kind: "tuple".to_string(),
+                type_label,
+                value: None,
+                byte_length: None,
+                hash: None,
+                items: None,
+                fields: Some(fields),
+                truncated: items.len() > MAX_DECODE_ITEMS,
+            }
+        }
+        _ => scalar_summary(
+            clean_name(name),
+            "unknown",
+            type_label,
+            Some("[unprintable]".to_string()),
+            false,
+        ),
+    }
+}
+
+fn scalar_summary(
+    name: Option<String>,
+    kind: &str,
+    type_label: String,
+    value: Option<String>,
+    truncated: bool,
+) -> TxAnalysisDecodedValueSummary {
+    TxAnalysisDecodedValueSummary {
+        name,
+        kind: kind.to_string(),
+        type_label,
+        value,
+        byte_length: None,
+        hash: None,
+        items: None,
+        fields: None,
+        truncated,
+    }
+}
+
+fn bytes_summary(
+    name: Option<String>,
+    kind: &str,
+    type_label: String,
+    bytes: &[u8],
+) -> TxAnalysisDecodedValueSummary {
+    TxAnalysisDecodedValueSummary {
+        name,
+        kind: kind.to_string(),
+        type_label,
+        value: None,
+        byte_length: Some(bytes.len()),
+        hash: Some(prefixed_hash(bytes)),
+        items: None,
+        fields: None,
+        truncated: false,
+    }
+}
+
+fn array_summary(
+    name: Option<String>,
+    kind: &str,
+    type_label: String,
+    items: &[Token],
+    inner: &ParamType,
+) -> TxAnalysisDecodedValueSummary {
+    TxAnalysisDecodedValueSummary {
+        name,
+        kind: kind.to_string(),
+        type_label,
+        value: None,
+        byte_length: None,
+        hash: None,
+        items: Some(
+            items
+                .iter()
+                .take(MAX_DECODE_ITEMS)
+                .map(|item| summarize_token(item, inner, None))
+                .collect(),
+        ),
+        fields: None,
+        truncated: items.len() > MAX_DECODE_ITEMS,
+    }
+}
+
+fn canonical_param_type(kind: &ParamType) -> String {
+    match kind {
+        ParamType::Address => "address".to_string(),
+        ParamType::Bytes => "bytes".to_string(),
+        ParamType::Int(bits) => format!("int{bits}"),
+        ParamType::Uint(bits) => format!("uint{bits}"),
+        ParamType::Bool => "bool".to_string(),
+        ParamType::String => "string".to_string(),
+        ParamType::Array(inner) => format!("{}[]", canonical_param_type(inner)),
+        ParamType::FixedBytes(size) => format!("bytes{size}"),
+        ParamType::FixedArray(inner, size) => format!("{}[{size}]", canonical_param_type(inner)),
+        ParamType::Tuple(items) => format!(
+            "({})",
+            items
+                .iter()
+                .map(canonical_param_type)
+                .collect::<Vec<_>>()
+                .join(",")
+        ),
+    }
+}
+
+fn clean_name(name: Option<&str>) -> Option<String> {
+    name.map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn format_signed_int(raw: U256, bits: usize) -> String {
+    if bits == 0 || bits > 256 {
+        return raw.to_string();
+    }
+    let sign_bit = U256::one() << (bits - 1);
+    if raw & sign_bit == U256::zero() {
+        return raw.to_string();
+    }
+    let magnitude = (!raw) + U256::one();
+    format!("-{magnitude}")
+}
+
+fn truncate_chars(value: &str, max_chars: usize) -> (String, bool) {
+    let mut iter = value.chars();
+    let truncated = value.chars().count() > max_chars;
+    let output = iter.by_ref().take(max_chars).collect::<String>();
+    (output, truncated)
+}
+
+fn address_from_topic(topic: &H256) -> Address {
+    Address::from_slice(&topic.as_bytes()[12..])
+}
+
+fn topic_for_signature(signature: &str) -> String {
+    format!("0x{}", hex_lower(&keccak256(signature.as_bytes())))
+}
+
+fn selector_for_signature(signature: &str) -> String {
+    format!("0x{}", hex_lower(&keccak256(signature.as_bytes())[..4]))
+}
+
+fn hash_text(value: &str) -> String {
+    format!("0x{}", hex_lower(&keccak256(value.as_bytes())))
+}
+
+fn normalize_address_key(value: &str) -> String {
+    value.to_ascii_lowercase()
+}
+
+fn dedupe_strings(values: Vec<String>) -> Vec<String> {
+    let mut output = Vec::new();
+    for value in values {
+        if !output.iter().any(|item| item == &value) {
+            output.push(value);
+        }
+    }
+    output
 }
 
 fn receipt_status_label(status: Option<u64>) -> &'static str {
@@ -1169,6 +3249,17 @@ fn decode_hex_bytes(value: &str, field: &str) -> Result<Vec<u8>, String> {
         bytes.push((high << 4) | low);
     }
     Ok(bytes)
+}
+
+fn bounded_hex_payload_len(value: &str, field: &str, max_bytes: usize) -> Result<bool, String> {
+    let trimmed = value.trim();
+    let Some(hex) = trimmed.strip_prefix("0x") else {
+        return Err(format!("{field} must start with 0x"));
+    };
+    if hex.len() % 2 != 0 {
+        return Err(format!("{field} must have an even hex length"));
+    }
+    Ok(hex.len() / 2 <= max_bytes)
 }
 
 fn decode_hex_nibble(value: u8) -> Option<u8> {
@@ -1347,11 +3438,15 @@ fn compact_hash_key_with_prefix(prefix: &str, value: &str) -> String {
 mod tests {
     use super::*;
 
+    use std::ffi::OsString;
     use std::io::{Read, Write};
     use std::net::TcpListener;
-    use std::sync::{Arc, Mutex};
+    use std::path::{Path, PathBuf};
+    use std::sync::{Arc, Mutex, MutexGuard};
     use std::thread;
-    use std::time::Duration;
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    use ethers::abi::encode;
 
     const HASH: &str = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const OTHER_HASH: &str = "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
@@ -1361,6 +3456,7 @@ mod tests {
     const CREATED: &str = "0x3333333333333333333333333333333333333333";
     const TOPIC0: &str = "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
     const SECRET_RPC_PATH: &str = "/v1?apiKey=super-secret-token";
+    const TEST_APP_DIR_ENV: &str = "EVM_WALLET_WORKBENCH_APP_DIR";
 
     #[derive(Debug, Clone)]
     enum RpcReply {
@@ -1511,6 +3607,7 @@ mod tests {
             chain_id: 1,
             tx_hash: HASH.to_string(),
             selected_rpc: Some(selected_rpc(rpc_url)),
+            bounded_revert_data: None,
         }
     }
 
@@ -1697,6 +3794,938 @@ mod tests {
         assert!(!serialized.contains("account label"));
     }
 
+    fn calldata_with_tokens(selector: &str, tokens: &[Token]) -> Vec<u8> {
+        let mut calldata =
+            decode_hex_bytes(selector, "selector").expect("selector bytes for test calldata");
+        calldata.extend_from_slice(&encode(tokens));
+        calldata
+    }
+
+    fn test_address(value: &str) -> Address {
+        Address::from_str(value).expect("test address")
+    }
+
+    fn parsed_tx_for_analysis(
+        calldata: Vec<u8>,
+        to: Option<&str>,
+        value_wei: &str,
+    ) -> ParsedTransaction {
+        let selector = calldata_selector(&calldata);
+        let selector_status = calldata_selector_status(&calldata);
+        ParsedTransaction {
+            summary: TxAnalysisTransactionSummary {
+                hash: HASH.to_string(),
+                from: normalize_address(FROM).expect("from address"),
+                to: to.map(|address| normalize_address(address).expect("to address")),
+                contract_creation: to.is_none(),
+                nonce: "1".to_string(),
+                value_wei: value_wei.to_string(),
+                selector,
+                selector_status,
+                calldata_byte_length: calldata.len() as u64,
+                calldata_hash_version: CALLDATA_HASH_VERSION.to_string(),
+                calldata_hash: prefixed_hash(&calldata),
+                block_number: Some(1),
+                block_hash: Some(BLOCK_HASH.to_string()),
+                transaction_index: Some(0),
+            },
+            to_address: to.map(|address| normalize_address(address).expect("to address")),
+            block_number: Some(1),
+            block_hash: Some(BLOCK_HASH.to_string()),
+            calldata,
+        }
+    }
+
+    fn parsed_receipt_for_analysis(status: u64, logs: Vec<ParsedLog>) -> ParsedReceipt {
+        ParsedReceipt {
+            summary: TxAnalysisReceiptSummary {
+                status: Some(status),
+                status_label: receipt_status_label(Some(status)).to_string(),
+                block_number: Some(1),
+                block_hash: Some(BLOCK_HASH.to_string()),
+                transaction_index: Some(0),
+                gas_used: Some("21000".to_string()),
+                effective_gas_price: Some("1".to_string()),
+                contract_address: None,
+                logs_status: SOURCE_OK.to_string(),
+                logs_count: Some(logs.len() as u64),
+                logs: logs.iter().map(|log| log.summary.clone()).collect(),
+                omitted_logs: None,
+            },
+            block_number: Some(1),
+            block_hash: Some(BLOCK_HASH.to_string()),
+            logs_missing: false,
+            logs,
+        }
+    }
+
+    fn parsed_log_for_analysis(address: &str, topics: Vec<H256>, data: Vec<u8>) -> ParsedLog {
+        ParsedLog {
+            summary: TxAnalysisLogSummary {
+                address: normalize_address(address).expect("log address"),
+                log_index: Some(0),
+                topic0: topics.first().map(|topic| format!("{topic:#x}")),
+                topics_count: topics.len() as u64,
+                data_byte_length: data.len() as u64,
+                data_hash_version: LOG_DATA_HASH_VERSION.to_string(),
+                data_hash: prefixed_hash(&data),
+                removed: Some(false),
+            },
+            topics,
+            data,
+        }
+    }
+
+    fn address_topic(address: &str) -> H256 {
+        let address = test_address(address);
+        let mut bytes = [0u8; 32];
+        bytes[12..].copy_from_slice(address.as_bytes());
+        H256::from(bytes)
+    }
+
+    fn context_with_sources(sources: Vec<AbiDecodeSource>) -> AbiDecodeContext {
+        let mut context = AbiDecodeContext::default();
+        for source in sources {
+            context
+                .sources_by_address
+                .entry(normalize_address_key(&source.summary.contract_address))
+                .or_default()
+                .push(source);
+        }
+        context
+    }
+
+    fn cache_entry_for_analysis(address: &str) -> AbiCacheEntryRecord {
+        AbiCacheEntryRecord {
+            chain_id: 1,
+            contract_address: normalize_address(address).expect("entry address"),
+            source_kind: "userImported".to_string(),
+            provider_config_id: None,
+            user_source_id: Some("user-source".to_string()),
+            version_id: "version-1".to_string(),
+            attempt_id: "attempt-1".to_string(),
+            source_fingerprint:
+                "0x1111111111111111111111111111111111111111111111111111111111111111".to_string(),
+            abi_hash: "0x2222222222222222222222222222222222222222222222222222222222222222"
+                .to_string(),
+            selected: true,
+            fetch_source_status: "ok".to_string(),
+            validation_status: "ok".to_string(),
+            cache_status: "cacheFresh".to_string(),
+            selection_status: "selected".to_string(),
+            function_count: Some(1),
+            event_count: Some(1),
+            error_count: Some(1),
+            selector_summary: None,
+            fetched_at: None,
+            imported_at: Some("1710000000".to_string()),
+            last_validated_at: Some("1710000000".to_string()),
+            stale_after: None,
+            last_error_summary: None,
+            provider_proxy_hint: None,
+            proxy_detected: false,
+            created_at: "1710000000".to_string(),
+            updated_at: "1710000000".to_string(),
+        }
+    }
+
+    fn source_for_analysis(
+        address: &str,
+        raw_abi: Value,
+        overrides: impl FnOnce(&mut TxAnalysisAbiSourceSummary),
+    ) -> AbiDecodeSource {
+        let mut summary = TxAnalysisAbiSourceSummary {
+            contract_address: normalize_address(address).expect("source address"),
+            source_kind: "userImported".to_string(),
+            provider_config_id: None,
+            user_source_id: Some("user-source".to_string()),
+            version_id: "version-1".to_string(),
+            attempt_id: "attempt-1".to_string(),
+            source_fingerprint:
+                "0x1111111111111111111111111111111111111111111111111111111111111111".to_string(),
+            abi_hash: "0x2222222222222222222222222222222222222222222222222222222222222222"
+                .to_string(),
+            selected: true,
+            fetch_source_status: "ok".to_string(),
+            validation_status: "ok".to_string(),
+            cache_status: "cacheFresh".to_string(),
+            selection_status: "selected".to_string(),
+            selector_summary: None,
+            artifact_status: "ok".to_string(),
+            proxy_detected: false,
+            provider_proxy_hint: None,
+            error_summary: None,
+        };
+        overrides(&mut summary);
+        AbiDecodeSource {
+            summary,
+            raw_abi: Some(raw_abi),
+        }
+    }
+
+    fn analysis_for(
+        tx: &ParsedTransaction,
+        receipt: Option<&ParsedReceipt>,
+        context: AbiDecodeContext,
+    ) -> TxAnalysisDecodeReadModel {
+        let mut model = TxAnalysisFetchReadModel::new(
+            1,
+            HASH.to_string(),
+            "https://rpc.example.invalid".to_string(),
+        );
+        model.sources.logs = if receipt.is_some() {
+            TxAnalysisSourceStatus::ok()
+        } else {
+            TxAnalysisSourceStatus::not_requested()
+        };
+        build_decode_read_model(&model, tx, receipt, &context, None)
+    }
+
+    fn analysis_for_with_revert(
+        tx: &ParsedTransaction,
+        receipt: Option<&ParsedReceipt>,
+        context: AbiDecodeContext,
+        revert_data: &NormalizedRevertData,
+    ) -> TxAnalysisDecodeReadModel {
+        let mut model = TxAnalysisFetchReadModel::new(
+            1,
+            HASH.to_string(),
+            "https://rpc.example.invalid".to_string(),
+        );
+        model.sources.logs = if receipt.is_some() {
+            TxAnalysisSourceStatus::ok()
+        } else {
+            TxAnalysisSourceStatus::not_requested()
+        };
+        build_decode_read_model(&model, tx, receipt, &context, Some(revert_data))
+    }
+
+    struct AppDirOverride {
+        previous: Option<OsString>,
+        _guard: MutexGuard<'static, ()>,
+    }
+
+    impl AppDirOverride {
+        fn missing(test_name: &str) -> (Self, PathBuf) {
+            let guard = crate::storage::test_app_dir_env_lock()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let suffix = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("test clock")
+                .as_nanos();
+            let dir = std::env::temp_dir().join(format!(
+                "evm-wallet-workbench-{test_name}-{}-{suffix}",
+                std::process::id()
+            ));
+            let _ = fs::remove_dir_all(&dir);
+            let previous = std::env::var_os(TEST_APP_DIR_ENV);
+            std::env::set_var(TEST_APP_DIR_ENV, &dir);
+            (
+                Self {
+                    previous,
+                    _guard: guard,
+                },
+                dir,
+            )
+        }
+    }
+
+    impl Drop for AppDirOverride {
+        fn drop(&mut self) {
+            if let Some(previous) = self.previous.take() {
+                std::env::set_var(TEST_APP_DIR_ENV, previous);
+            } else {
+                std::env::remove_var(TEST_APP_DIR_ENV);
+            }
+        }
+    }
+
+    fn assert_missing_dir(path: &Path) {
+        assert!(
+            !path.exists(),
+            "read-only tx analysis path created {}",
+            path.display()
+        );
+    }
+
+    fn raw_param(name: &str, raw_type: &str) -> Value {
+        json!({ "name": name, "type": raw_type })
+    }
+
+    fn raw_function(name: &str, inputs: Vec<Value>) -> Value {
+        json!({
+            "type": "function",
+            "name": name,
+            "inputs": inputs,
+            "outputs": [],
+            "stateMutability": "nonpayable"
+        })
+    }
+
+    fn raw_event(name: &str, inputs: Vec<Value>) -> Value {
+        json!({
+            "type": "event",
+            "name": name,
+            "inputs": inputs,
+            "anonymous": false
+        })
+    }
+
+    fn raw_error(name: &str, inputs: Vec<Value>) -> Value {
+        json!({
+            "type": "error",
+            "name": name,
+            "inputs": inputs,
+        })
+    }
+
+    fn raw_indexed_param(name: &str, raw_type: &str) -> Value {
+        json!({ "name": name, "type": raw_type, "indexed": true })
+    }
+
+    fn normalized_revert_data(bytes: Vec<u8>) -> NormalizedRevertData {
+        NormalizedRevertData {
+            source: "testBoundedInput".to_string(),
+            status: "present".to_string(),
+            bytes: Some(bytes),
+            error_summary: None,
+        }
+    }
+
+    fn classification_kinds(analysis: &TxAnalysisDecodeReadModel) -> Vec<String> {
+        analysis
+            .classification_candidates
+            .iter()
+            .map(|candidate| candidate.kind.clone())
+            .collect()
+    }
+
+    fn uncertainty_codes(analysis: &TxAnalysisDecodeReadModel) -> Vec<String> {
+        analysis
+            .uncertainty_statuses
+            .iter()
+            .map(|status| status.code.clone())
+            .collect()
+    }
+
+    #[test]
+    fn decode_classifies_erc20_transfer_approval_and_revoke_candidates() {
+        let recipient = test_address(CREATED);
+        let transfer = parsed_tx_for_analysis(
+            calldata_with_tokens(
+                ERC20_TRANSFER_SELECTOR,
+                &[Token::Address(recipient), Token::Uint(U256::from(123u64))],
+            ),
+            Some(TO),
+            "0",
+        );
+        let transfer_analysis = analysis_for(&transfer, None, AbiDecodeContext::default());
+        assert!(classification_kinds(&transfer_analysis).contains(&"erc20Transfer".to_string()));
+        assert_eq!(
+            transfer_analysis.function_candidates[0].function_signature,
+            ERC20_TRANSFER_SIGNATURE
+        );
+        assert_eq!(
+            decoded_arg_value(
+                &transfer_analysis.function_candidates[0].argument_summary,
+                "amount"
+            )
+            .as_deref(),
+            Some("123")
+        );
+
+        let approval = parsed_tx_for_analysis(
+            calldata_with_tokens(
+                ERC20_APPROVE_SELECTOR,
+                &[Token::Address(recipient), Token::Uint(U256::from(5u64))],
+            ),
+            Some(TO),
+            "0",
+        );
+        let approval_analysis = analysis_for(&approval, None, AbiDecodeContext::default());
+        let approval_kinds = classification_kinds(&approval_analysis);
+        assert!(approval_kinds.contains(&"erc20Approval".to_string()));
+        assert!(!approval_kinds.contains(&"erc20Revoke".to_string()));
+
+        let revoke = parsed_tx_for_analysis(
+            calldata_with_tokens(
+                ERC20_APPROVE_SELECTOR,
+                &[Token::Address(recipient), Token::Uint(U256::zero())],
+            ),
+            Some(TO),
+            "0",
+        );
+        let revoke_analysis = analysis_for(&revoke, None, AbiDecodeContext::default());
+        let revoke_kinds = classification_kinds(&revoke_analysis);
+        assert!(revoke_kinds.contains(&"erc20Approval".to_string()));
+        assert!(revoke_kinds.contains(&"erc20Revoke".to_string()));
+        assert!(!joined_json(&revoke_analysis)
+            .contains("0000000000000000000000003333333333333333333333333333333333333333"));
+    }
+
+    #[test]
+    fn decode_classifies_batch_disperse_and_unknown_raw_calldata() {
+        let recipients = Token::Array(vec![Token::Address(test_address(CREATED))]);
+        let values = Token::Array(vec![Token::Uint(U256::from(7u64))]);
+        let disperse = parsed_tx_for_analysis(
+            calldata_with_tokens(DISPERSE_ETHER_SELECTOR_HEX, &[recipients, values]),
+            Some(TO),
+            "7",
+        );
+        let disperse_analysis = analysis_for(&disperse, None, AbiDecodeContext::default());
+        assert!(classification_kinds(&disperse_analysis).contains(&"batchDisperse".to_string()));
+        assert_eq!(
+            disperse_analysis.function_candidates[0].function_signature,
+            DISPERSE_ETHER_METHOD
+        );
+
+        let unknown = parsed_tx_for_analysis(
+            calldata_with_tokens("0x12345678", &[Token::Uint(U256::from(1u64))]),
+            Some(TO),
+            "0",
+        );
+        let unknown_analysis = analysis_for(&unknown, None, AbiDecodeContext::default());
+        assert!(classification_kinds(&unknown_analysis).contains(&"rawCalldataUnknown".to_string()));
+        assert!(uncertainty_codes(&unknown_analysis).contains(&"unknownSelector".to_string()));
+    }
+
+    #[test]
+    fn decode_managed_abi_preserves_overloaded_function_signature() {
+        let signature = "lookup(address)";
+        let tx = parsed_tx_for_analysis(
+            calldata_with_tokens(
+                &selector_for_signature(signature),
+                &[Token::Address(test_address(CREATED))],
+            ),
+            Some(TO),
+            "0",
+        );
+        let source = source_for_analysis(
+            TO,
+            json!([
+                raw_function("lookup", vec![raw_param("account", "address")]),
+                raw_function("lookup", vec![raw_param("id", "uint256")]),
+            ]),
+            |_| {},
+        );
+        let analysis = analysis_for(&tx, None, context_with_sources(vec![source]));
+        assert_eq!(analysis.selector.selector_match_count, 1);
+        assert_eq!(analysis.selector.unique_signature_count, 1);
+        assert!(analysis
+            .function_candidates
+            .iter()
+            .any(|candidate| candidate.function_signature == signature
+                && candidate.decode_status == "decoded"));
+        assert!(classification_kinds(&analysis).contains(&"managedAbiCall".to_string()));
+    }
+
+    #[test]
+    fn decode_surfaces_non_usable_abi_sources_without_candidates() {
+        let tx = parsed_tx_for_analysis(
+            calldata_with_tokens("0x42966c68", &[Token::Uint(U256::from(42u64))]),
+            Some(TO),
+            "0",
+        );
+        let raw_abi = json!([
+            raw_function("burn", vec![raw_param("amount", "uint256")]),
+            raw_function(
+                "collate_propagate_storage",
+                vec![raw_param("seed", "bytes16")]
+            ),
+        ]);
+        let not_verified = source_for_analysis(TO, raw_abi.clone(), |source| {
+            source.version_id = "not-verified-version".to_string();
+            source.fetch_source_status = "notVerified".to_string();
+        });
+        let selector_conflict = source_for_analysis(TO, raw_abi, |source| {
+            source.version_id = "selector-conflict-version".to_string();
+            source.validation_status = "selectorConflict".to_string();
+        });
+        let stale_source = source_for_analysis(
+            TO,
+            json!([raw_function("burn", vec![raw_param("amount", "uint256")])]),
+            |source| {
+                source.version_id = "stale-version".to_string();
+                source.cache_status = "cacheStale".to_string();
+            },
+        );
+        let analysis = analysis_for(
+            &tx,
+            None,
+            context_with_sources(vec![not_verified, selector_conflict, stale_source]),
+        );
+        let uncertainties = uncertainty_codes(&analysis);
+        assert_eq!(analysis.selector.selector_match_count, 0);
+        assert!(!analysis.selector.conflict);
+        assert!(analysis.function_candidates.is_empty());
+        assert!(!classification_kinds(&analysis).contains(&"managedAbiCall".to_string()));
+        assert!(uncertainties.contains(&"selectorCollision".to_string()));
+        assert!(uncertainties.contains(&"staleAbi".to_string()));
+        assert!(uncertainties.contains(&"unverifiedAbi".to_string()));
+        assert_eq!(analysis.status, "conflict");
+    }
+
+    #[test]
+    fn non_usable_abi_sources_do_not_drive_function_event_or_error_decode() {
+        let function_signature = "setOwner(address)";
+        let event_signature = "OwnerChanged(address)";
+        let error_signature = "Unauthorized(address)";
+        let tx = parsed_tx_for_analysis(
+            calldata_with_tokens(
+                &selector_for_signature(function_signature),
+                &[Token::Address(test_address(CREATED))],
+            ),
+            Some(TO),
+            "0",
+        );
+        let log = parsed_log_for_analysis(
+            TO,
+            vec![H256::from_str(&topic_for_signature(event_signature)).expect("event topic")],
+            encode(&[Token::Address(test_address(CREATED))]),
+        );
+        let receipt = parsed_receipt_for_analysis(0, vec![log]);
+        let revert_data = normalized_revert_data(calldata_with_tokens(
+            &selector_for_signature(error_signature),
+            &[Token::Address(test_address(FROM))],
+        ));
+        let raw_abi = json!([
+            raw_function("setOwner", vec![raw_param("owner", "address")]),
+            raw_event("OwnerChanged", vec![raw_param("owner", "address")]),
+            raw_error("Unauthorized", vec![raw_param("caller", "address")]),
+        ]);
+        let not_verified = source_for_analysis(TO, raw_abi.clone(), |source| {
+            source.version_id = "not-verified-version".to_string();
+            source.fetch_source_status = "notVerified".to_string();
+        });
+        let selector_conflict = source_for_analysis(TO, raw_abi, |source| {
+            source.version_id = "selector-conflict-version".to_string();
+            source.validation_status = "selectorConflict".to_string();
+        });
+        let analysis = analysis_for_with_revert(
+            &tx,
+            Some(&receipt),
+            context_with_sources(vec![not_verified, selector_conflict]),
+            &revert_data,
+        );
+        assert!(analysis.function_candidates.is_empty());
+        assert!(analysis.event_candidates.is_empty());
+        assert!(analysis.error_candidates.is_empty());
+        assert!(!classification_kinds(&analysis).contains(&"managedAbiCall".to_string()));
+        let uncertainties = uncertainty_codes(&analysis);
+        assert!(uncertainties.contains(&"selectorCollision".to_string()));
+        assert!(uncertainties.contains(&"unverifiedAbi".to_string()));
+    }
+
+    #[test]
+    fn unusable_artifact_source_does_not_drive_decode() {
+        let function_signature = "setOwner(address)";
+        let tx = parsed_tx_for_analysis(
+            calldata_with_tokens(
+                &selector_for_signature(function_signature),
+                &[Token::Address(test_address(CREATED))],
+            ),
+            Some(TO),
+            "0",
+        );
+        let source = source_for_analysis(
+            TO,
+            json!([raw_function(
+                "setOwner",
+                vec![raw_param("owner", "address")]
+            )]),
+            |source| {
+                source.version_id = "bad-artifact-version".to_string();
+                source.artifact_status = "malformedAbiArtifact".to_string();
+                source.error_summary = Some("ABI artifact could not be parsed".to_string());
+            },
+        );
+        let analysis = analysis_for(&tx, None, context_with_sources(vec![source]));
+        assert!(analysis.function_candidates.is_empty());
+        assert!(!classification_kinds(&analysis).contains(&"managedAbiCall".to_string()));
+        assert!(uncertainty_codes(&analysis).contains(&"malformedAbiArtifact".to_string()));
+    }
+
+    #[test]
+    fn decode_surfaces_contract_creation_and_malformed_calldata() {
+        let creation = parsed_tx_for_analysis(vec![0x60, 0x80, 0x60, 0x40], None, "0");
+        let creation_analysis = analysis_for(&creation, None, AbiDecodeContext::default());
+        assert!(classification_kinds(&creation_analysis).contains(&"contractCreation".to_string()));
+        assert!(uncertainty_codes(&creation_analysis)
+            .contains(&"contractCreationUnknownInitCode".to_string()));
+
+        let malformed = parsed_tx_for_analysis(
+            decode_hex_bytes(ERC20_TRANSFER_SELECTOR, "selector").expect("selector"),
+            Some(TO),
+            "0",
+        );
+        let malformed_analysis = analysis_for(&malformed, None, AbiDecodeContext::default());
+        assert!(uncertainty_codes(&malformed_analysis).contains(&"malformedCalldata".to_string()));
+        assert!(
+            classification_kinds(&malformed_analysis).contains(&"rawCalldataUnknown".to_string())
+        );
+    }
+
+    #[test]
+    fn decode_rejects_trailing_calldata_for_builtin_and_managed_candidates() {
+        let mut transfer_calldata = calldata_with_tokens(
+            ERC20_TRANSFER_SELECTOR,
+            &[
+                Token::Address(test_address(CREATED)),
+                Token::Uint(U256::from(123u64)),
+            ],
+        );
+        transfer_calldata.extend(encode(&[Token::Uint(U256::from(999u64))]));
+        let transfer = parsed_tx_for_analysis(transfer_calldata, Some(TO), "0");
+        let transfer_analysis = analysis_for(&transfer, None, AbiDecodeContext::default());
+        assert!(!classification_kinds(&transfer_analysis).contains(&"erc20Transfer".to_string()));
+        assert!(uncertainty_codes(&transfer_analysis).contains(&"malformedCalldata".to_string()));
+        assert!(transfer_analysis
+            .function_candidates
+            .iter()
+            .any(|candidate| {
+                candidate.function_signature == ERC20_TRANSFER_SIGNATURE
+                    && candidate.decode_status == "decodeError"
+            }));
+
+        let signature = "setOwner(address)";
+        let mut managed_calldata = calldata_with_tokens(
+            &selector_for_signature(signature),
+            &[Token::Address(test_address(CREATED))],
+        );
+        managed_calldata.extend(encode(&[Token::Uint(U256::from(1u64))]));
+        let managed = parsed_tx_for_analysis(managed_calldata, Some(TO), "0");
+        let source = source_for_analysis(
+            TO,
+            json!([raw_function(
+                "setOwner",
+                vec![raw_param("owner", "address")]
+            )]),
+            |_| {},
+        );
+        let managed_analysis = analysis_for(&managed, None, context_with_sources(vec![source]));
+        assert!(!classification_kinds(&managed_analysis).contains(&"managedAbiCall".to_string()));
+        assert!(managed_analysis
+            .function_candidates
+            .iter()
+            .any(|candidate| {
+                candidate.function_signature == signature
+                    && candidate.decode_status == "decodeError"
+            }));
+    }
+
+    #[test]
+    fn decode_event_candidates_are_bounded_for_usable_abi_sources() {
+        let topic0 = H256::from_str(&topic_for_signature(ERC20_TRANSFER_EVENT_SIGNATURE))
+            .expect("transfer topic");
+        let log = parsed_log_for_analysis(
+            TO,
+            vec![topic0, address_topic(FROM), address_topic(CREATED)],
+            encode(&[Token::Uint(U256::from(9u64))]),
+        );
+        let receipt = parsed_receipt_for_analysis(1, vec![log]);
+        let tx = parsed_tx_for_analysis(Vec::new(), Some(TO), "0");
+        let source = source_for_analysis(
+            TO,
+            json!([raw_event(
+                "Transfer",
+                vec![
+                    raw_indexed_param("from", "address"),
+                    raw_indexed_param("to", "address"),
+                    raw_param("value", "uint256"),
+                ],
+            )]),
+            |_| {},
+        );
+        let analysis = analysis_for(&tx, Some(&receipt), context_with_sources(vec![source]));
+        assert!(analysis.event_candidates.iter().any(|candidate| {
+            candidate.event_signature == ERC20_TRANSFER_EVENT_SIGNATURE
+                && candidate.source.is_some()
+                && candidate.decode_status == "decoded"
+        }));
+        let serialized = joined_json(&analysis);
+        assert!(!serialized
+            .contains("0000000000000000000000001111111111111111111111111111111111111111"));
+        assert!(!serialized
+            .contains("0000000000000000000000003333333333333333333333333333333333333333"));
+    }
+
+    #[test]
+    fn gated_event_topic_conflict_source_surfaces_event_uncertainty_without_candidates() {
+        let event_signature = "VaultUpdated(address)";
+        let topic0 = H256::from_str(&topic_for_signature(event_signature)).expect("event topic");
+        let log = parsed_log_for_analysis(
+            TO,
+            vec![topic0],
+            encode(&[Token::Address(test_address(CREATED))]),
+        );
+        let receipt = parsed_receipt_for_analysis(1, vec![log]);
+        let tx = parsed_tx_for_analysis(Vec::new(), Some(TO), "0");
+        let source = source_for_analysis(
+            TO,
+            json!([raw_event(
+                "VaultUpdated",
+                vec![raw_param("owner", "address")]
+            )]),
+            |source| {
+                source.validation_status = "selectorConflict".to_string();
+                source.selector_summary = Some(AbiSelectorSummaryRecord {
+                    function_selector_count: Some(0),
+                    event_topic_count: Some(1),
+                    error_selector_count: Some(0),
+                    duplicate_selector_count: Some(0),
+                    conflict_count: Some(1),
+                    notes: Some("event topic conflict".to_string()),
+                });
+            },
+        );
+        let analysis = analysis_for(&tx, Some(&receipt), context_with_sources(vec![source]));
+        assert!(analysis.event_candidates.is_empty());
+        assert!(uncertainty_codes(&analysis).contains(&"eventDecodeConflict".to_string()));
+    }
+
+    #[test]
+    fn function_selector_conflict_source_does_not_invent_event_conflict() {
+        let tx = parsed_tx_for_analysis(Vec::new(), Some(TO), "0");
+        let source = source_for_analysis(
+            TO,
+            json!([
+                raw_function("burn", vec![raw_param("amount", "uint256")]),
+                raw_event("VaultUpdated", vec![raw_param("owner", "address")]),
+            ]),
+            |source| {
+                source.validation_status = "selectorConflict".to_string();
+                source.selector_summary = Some(AbiSelectorSummaryRecord {
+                    function_selector_count: Some(2),
+                    event_topic_count: Some(1),
+                    error_selector_count: Some(0),
+                    duplicate_selector_count: Some(0),
+                    conflict_count: Some(1),
+                    notes: Some("function selector conflict".to_string()),
+                });
+            },
+        );
+        let analysis = analysis_for(&tx, None, context_with_sources(vec![source]));
+        let uncertainties = uncertainty_codes(&analysis);
+        assert!(uncertainties.contains(&"selectorCollision".to_string()));
+        assert!(!uncertainties.contains(&"eventDecodeConflict".to_string()));
+    }
+
+    #[test]
+    fn decode_revert_data_generates_builtin_and_abi_error_candidates() {
+        let tx = parsed_tx_for_analysis(
+            calldata_with_tokens("0x12345678", &[Token::Uint(U256::from(1u64))]),
+            Some(TO),
+            "0",
+        );
+        let receipt = parsed_receipt_for_analysis(0, Vec::new());
+        let builtin_revert = normalized_revert_data(calldata_with_tokens(
+            ERROR_STRING_SELECTOR,
+            &[Token::String("nope".to_string())],
+        ));
+        let builtin_analysis = analysis_for_with_revert(
+            &tx,
+            Some(&receipt),
+            AbiDecodeContext::default(),
+            &builtin_revert,
+        );
+        assert_eq!(builtin_analysis.revert_data_status, "present");
+        assert!(builtin_analysis
+            .error_candidates
+            .iter()
+            .any(
+                |candidate| candidate.error_signature == ERROR_STRING_SIGNATURE
+                    && candidate.decode_status == "decoded"
+            ));
+        assert_eq!(
+            decoded_arg_value(
+                &builtin_analysis.error_candidates[0].argument_summary,
+                "message"
+            )
+            .as_deref(),
+            Some("nope")
+        );
+        let serialized = joined_json(&builtin_analysis);
+        assert!(!serialized
+            .contains("08c379a00000000000000000000000000000000000000000000000000000000000000020"));
+
+        let abi_error_signature = "Unauthorized(address)";
+        let abi_revert = normalized_revert_data(calldata_with_tokens(
+            &selector_for_signature(abi_error_signature),
+            &[Token::Address(test_address(FROM))],
+        ));
+        let source = source_for_analysis(
+            TO,
+            json!([raw_error(
+                "Unauthorized",
+                vec![raw_param("caller", "address")]
+            )]),
+            |_| {},
+        );
+        let abi_analysis = analysis_for_with_revert(
+            &tx,
+            Some(&receipt),
+            context_with_sources(vec![source]),
+            &abi_revert,
+        );
+        assert!(abi_analysis
+            .error_candidates
+            .iter()
+            .any(|candidate| candidate.error_signature == abi_error_signature
+                && candidate.source.is_some()
+                && candidate.decode_status == "decoded"));
+    }
+
+    #[test]
+    fn decode_revert_data_surfaces_malformed_bounded_input() {
+        let tx = parsed_tx_for_analysis(Vec::new(), Some(TO), "0");
+        let malformed = NormalizedRevertData {
+            source: "testBoundedInput".to_string(),
+            status: "malformed".to_string(),
+            bytes: None,
+            error_summary: Some("boundedRevertData must have an even hex length".to_string()),
+        };
+        let analysis = analysis_for_with_revert(&tx, None, AbiDecodeContext::default(), &malformed);
+        assert_eq!(analysis.revert_data_status, "malformed");
+        assert!(analysis.error_candidates.is_empty());
+        assert!(uncertainty_codes(&analysis).contains(&"malformedRevertData".to_string()));
+        assert_eq!(
+            analysis
+                .revert_data
+                .as_ref()
+                .and_then(|summary| summary.data_hash.as_deref()),
+            None
+        );
+    }
+
+    #[test]
+    fn decode_revert_data_rejects_trailing_and_oversized_payloads() {
+        let tx = parsed_tx_for_analysis(Vec::new(), Some(TO), "0");
+        let mut trailing =
+            calldata_with_tokens(ERROR_STRING_SELECTOR, &[Token::String("nope".to_string())]);
+        trailing.extend(encode(&[Token::Uint(U256::from(1u64))]));
+        let trailing_revert = normalized_revert_data(trailing);
+        let analysis =
+            analysis_for_with_revert(&tx, None, AbiDecodeContext::default(), &trailing_revert);
+        assert!(analysis.error_candidates.iter().any(|candidate| {
+            candidate.error_signature == ERROR_STRING_SIGNATURE
+                && candidate.decode_status == "decodeError"
+        }));
+        assert!(!analysis.error_candidates.iter().any(|candidate| {
+            candidate.error_signature == ERROR_STRING_SIGNATURE
+                && candidate.decode_status == "decoded"
+        }));
+        assert!(uncertainty_codes(&analysis).contains(&"malformedRevertData".to_string()));
+
+        let oversized = format!("0x{}zz", "00".repeat(MAX_REVERT_DATA_BYTES + 1));
+        let normalized = normalize_bounded_revert_data(TxAnalysisBoundedRevertDataInput {
+            data: oversized,
+            source: Some("test".to_string()),
+        });
+        assert_eq!(normalized.status, "payloadTooLarge");
+        assert!(normalized.bytes.is_none());
+    }
+
+    #[test]
+    fn unselected_invalid_and_stale_abi_sources_do_not_drive_decode() {
+        let tx = parsed_tx_for_analysis(
+            calldata_with_tokens(
+                &selector_for_signature("setOwner(address)"),
+                &[Token::Address(test_address(CREATED))],
+            ),
+            Some(TO),
+            "0",
+        );
+        let raw_abi = json!([raw_function(
+            "setOwner",
+            vec![raw_param("owner", "address")]
+        )]);
+        let unselected = source_for_analysis(TO, raw_abi.clone(), |source| {
+            source.selected = false;
+            source.selection_status = "unselected".to_string();
+            source.version_id = "unselected".to_string();
+        });
+        let invalid = source_for_analysis(TO, raw_abi.clone(), |source| {
+            source.validation_status = "malformedAbi".to_string();
+            source.version_id = "invalid".to_string();
+        });
+        let stale = source_for_analysis(TO, raw_abi, |source| {
+            source.cache_status = "cacheStale".to_string();
+            source.version_id = "stale".to_string();
+        });
+        let analysis = analysis_for(
+            &tx,
+            None,
+            context_with_sources(vec![unselected, invalid, stale]),
+        );
+        assert!(analysis.function_candidates.is_empty());
+        assert!(!classification_kinds(&analysis).contains(&"managedAbiCall".to_string()));
+        let uncertainties = uncertainty_codes(&analysis);
+        assert!(uncertainties.contains(&"malformedAbi".to_string()));
+        assert!(uncertainties.contains(&"staleAbi".to_string()));
+    }
+
+    #[test]
+    fn builtin_and_abi_signature_disagreement_is_selector_collision() {
+        let tx = parsed_tx_for_analysis(
+            calldata_with_tokens(
+                ERC20_TRANSFER_SELECTOR,
+                &[
+                    Token::Address(test_address(CREATED)),
+                    Token::Uint(U256::from(123u64)),
+                ],
+            ),
+            Some(TO),
+            "0",
+        );
+        let source = source_for_analysis(
+            TO,
+            json!([raw_function(
+                "many_msg_babbage",
+                vec![raw_param("payload", "bytes1")]
+            )]),
+            |_| {},
+        );
+        let analysis = analysis_for(&tx, None, context_with_sources(vec![source]));
+        assert!(uncertainty_codes(&analysis).contains(&"selectorCollision".to_string()));
+        assert!(analysis.selector.conflict);
+        assert!(analysis
+            .function_candidates
+            .iter()
+            .any(
+                |candidate| candidate.function_signature == ERC20_TRANSFER_SIGNATURE
+                    && candidate.confidence == "low"
+            ));
+        assert!(analysis.function_candidates.iter().any(|candidate| {
+            candidate.function_signature == "many_msg_babbage(bytes1)"
+                && candidate.confidence == "low"
+        }));
+    }
+
+    #[test]
+    fn abi_decode_context_missing_app_dir_is_read_only() {
+        let (_override, dir) = AppDirOverride::missing("tx-analysis-missing-registry");
+        let mut addresses = BTreeSet::new();
+        addresses.insert(normalize_address_key(TO));
+
+        let context = load_abi_decode_context(1, &addresses);
+
+        assert!(context.sources_by_address.is_empty());
+        assert_eq!(context.load_error, None);
+        assert_missing_dir(&dir);
+    }
+
+    #[test]
+    fn abi_artifact_read_missing_app_dir_is_read_only() {
+        let (_override, dir) = AppDirOverride::missing("tx-analysis-missing-artifact");
+        let entry = cache_entry_for_analysis(TO);
+
+        let result = read_abi_artifact_text(&entry);
+
+        assert!(result.is_err());
+        assert_missing_dir(&dir);
+    }
+
     #[tokio::test]
     async fn fetches_valid_confirmed_tx_summary_without_full_payloads() {
         let (rpc_url, requests, handle) = start_rpc_server(successful_confirmed_steps());
@@ -1808,6 +4837,7 @@ mod tests {
             chain_id: 1,
             tx_hash: HASH.to_string(),
             selected_rpc: None,
+            bounded_revert_data: None,
         })
         .await;
         let serialized = joined_json(&result);
@@ -1829,6 +4859,7 @@ mod tests {
             chain_id: 1,
             tx_hash: HASH.to_string(),
             selected_rpc: Some(selected_rpc("https://other-rpc.example/v1?apiKey=other")),
+            bounded_revert_data: None,
         })
         .await;
         let serialized = joined_json(&result);
@@ -1852,6 +4883,7 @@ mod tests {
             chain_id: 1,
             tx_hash: HASH.to_string(),
             selected_rpc: Some(selected_rpc),
+            bounded_revert_data: None,
         })
         .await;
 
@@ -2165,6 +5197,7 @@ mod tests {
             chain_id: 1,
             tx_hash: OTHER_HASH[..20].to_string(),
             selected_rpc: None,
+            bounded_revert_data: None,
         })
         .await;
 

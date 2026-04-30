@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::io::ErrorKind;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -12,7 +12,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::diagnostics::sanitize_diagnostic_message;
-use crate::storage::{abi_registry_path, ensure_app_dir, write_file_atomic};
+use crate::storage::{
+    abi_registry_path, abi_registry_path_readonly, ensure_app_dir, write_file_atomic,
+};
 
 const ABI_REGISTRY_SCHEMA_VERSION: u8 = 1;
 pub const ABI_PAYLOAD_SIZE_LIMIT_BYTES: usize = 1_048_576;
@@ -401,6 +403,10 @@ pub fn load_abi_registry_state() -> Result<AbiRegistryState, String> {
     read_abi_registry_state().map(into_read_state)
 }
 
+pub fn load_abi_registry_state_readonly() -> Result<AbiRegistryState, String> {
+    read_abi_registry_state_readonly().map(into_read_state)
+}
+
 #[tauri::command]
 pub fn upsert_abi_data_source_config(
     input: UpsertAbiDataSourceConfigInput,
@@ -775,6 +781,15 @@ pub async fn fetch_explorer_abi(
 
 fn read_abi_registry_state() -> Result<StoredAbiRegistryState, String> {
     let path = abi_registry_path()?;
+    read_abi_registry_state_from_path(&path)
+}
+
+fn read_abi_registry_state_readonly() -> Result<StoredAbiRegistryState, String> {
+    let path = abi_registry_path_readonly()?;
+    read_abi_registry_state_from_path(&path)
+}
+
+fn read_abi_registry_state_from_path(path: &Path) -> Result<StoredAbiRegistryState, String> {
     match fs::read_to_string(&path) {
         Ok(raw) => {
             let state = serde_json::from_str::<StoredAbiRegistryState>(&raw).map_err(|_| {

@@ -261,6 +261,12 @@ export interface TxAnalysisFetchInput {
   chainId: number;
   txHash: string;
   selectedRpc: RawCalldataRpcIdentity | null;
+  boundedRevertData?: TxAnalysisBoundedRevertDataInput | null;
+}
+
+export interface TxAnalysisBoundedRevertDataInput {
+  data: string;
+  source?: string | null;
 }
 
 export interface TxAnalysisSourceStatus {
@@ -349,6 +355,137 @@ export interface TxAnalysisSourceStatuses {
   localHistory: TxAnalysisSourceStatus;
 }
 
+export interface TxAnalysisDecodedFieldSummary {
+  name?: string | null;
+  value: TxAnalysisDecodedValueSummary;
+}
+
+export interface TxAnalysisDecodedValueSummary {
+  name?: string | null;
+  kind: string;
+  type: string;
+  value?: string | null;
+  byteLength?: number | null;
+  hash?: string | null;
+  items?: TxAnalysisDecodedValueSummary[] | null;
+  fields?: TxAnalysisDecodedFieldSummary[] | null;
+  truncated: boolean;
+}
+
+export interface TxAnalysisSelectorDecodeSummary {
+  selector?: string | null;
+  selectorStatus: string;
+  selectorMatchCount: number;
+  uniqueSignatureCount: number;
+  sourceCount: number;
+  conflict: boolean;
+}
+
+export interface TxAnalysisAbiSourceSummary {
+  contractAddress: string;
+  sourceKind: AbiSourceKind | string;
+  providerConfigId?: string | null;
+  userSourceId?: string | null;
+  versionId: string;
+  attemptId: string;
+  sourceFingerprint: string;
+  abiHash: string;
+  selected: boolean;
+  fetchSourceStatus: AbiFetchSourceStatus | string;
+  validationStatus: AbiValidationStatus | string;
+  cacheStatus: AbiCacheStatus | string;
+  selectionStatus: AbiSelectionStatus | string;
+  selectorSummary?: AbiSelectorSummaryRecord | null;
+  artifactStatus: string;
+  proxyDetected: boolean;
+  providerProxyHint?: string | null;
+  errorSummary?: string | null;
+}
+
+export interface TxAnalysisFunctionDecodeCandidate {
+  selector: string;
+  functionSignature: string;
+  source?: TxAnalysisAbiSourceSummary | null;
+  sourceLabel: string;
+  decodeStatus: string;
+  confidence: string;
+  argumentSummary: TxAnalysisDecodedValueSummary[];
+  statuses: string[];
+  errorSummary?: string | null;
+}
+
+export interface TxAnalysisEventDecodeCandidate {
+  address: string;
+  logIndex?: number | null;
+  topic0?: string | null;
+  topicsCount: number;
+  dataByteLength: number;
+  dataHashVersion: string;
+  dataHash: string;
+  eventSignature: string;
+  source?: TxAnalysisAbiSourceSummary | null;
+  sourceLabel: string;
+  decodeStatus: string;
+  confidence: string;
+  argumentSummary: TxAnalysisDecodedValueSummary[];
+  statuses: string[];
+  errorSummary?: string | null;
+}
+
+export interface TxAnalysisErrorDecodeCandidate {
+  selector: string;
+  errorSignature: string;
+  source?: TxAnalysisAbiSourceSummary | null;
+  sourceLabel: string;
+  decodeStatus: string;
+  confidence: string;
+  argumentSummary: TxAnalysisDecodedValueSummary[];
+  statuses: string[];
+  errorSummary?: string | null;
+}
+
+export interface TxAnalysisClassificationCandidate {
+  kind: string;
+  label: string;
+  confidence: string;
+  source: string;
+  selector?: string | null;
+  signature?: string | null;
+  argumentSummary: TxAnalysisDecodedValueSummary[];
+  reasons: string[];
+}
+
+export interface TxAnalysisUncertaintyStatus {
+  code: string;
+  severity: string;
+  source: string;
+  summary?: string | null;
+}
+
+export interface TxAnalysisRevertDataSummary {
+  source: string;
+  status: string;
+  selector?: string | null;
+  byteLength?: number | null;
+  dataHashVersion?: string | null;
+  dataHash?: string | null;
+  errorSummary?: string | null;
+}
+
+export interface TxAnalysisDecodeReadModel {
+  status: string;
+  reasons: string[];
+  selector: TxAnalysisSelectorDecodeSummary;
+  abiSources: TxAnalysisAbiSourceSummary[];
+  functionCandidates: TxAnalysisFunctionDecodeCandidate[];
+  eventCandidates: TxAnalysisEventDecodeCandidate[];
+  errorCandidates: TxAnalysisErrorDecodeCandidate[];
+  classificationCandidates: TxAnalysisClassificationCandidate[];
+  uncertaintyStatuses: TxAnalysisUncertaintyStatus[];
+  revertDataStatus: string;
+  revertData?: TxAnalysisRevertDataSummary | null;
+}
+
 export interface TxAnalysisFetchReadModel {
   status: string;
   reasons: string[];
@@ -360,6 +497,7 @@ export interface TxAnalysisFetchReadModel {
   block?: TxAnalysisBlockSummary | null;
   addressCodes: TxAnalysisAddressCodeSummary[];
   sources: TxAnalysisSourceStatuses;
+  analysis: TxAnalysisDecodeReadModel;
   errorSummary?: string | null;
 }
 

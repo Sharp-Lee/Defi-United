@@ -6,6 +6,12 @@ use rand::Rng;
 
 const APP_DIR_ENV: &str = "EVM_WALLET_WORKBENCH_APP_DIR";
 
+#[cfg(test)]
+pub fn test_app_dir_env_lock() -> &'static std::sync::Mutex<()> {
+    static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| std::sync::Mutex::new(()))
+}
+
 pub fn app_dir() -> Result<PathBuf, String> {
     if let Some(override_dir) = std::env::var_os(APP_DIR_ENV) {
         return Ok(PathBuf::from(override_dir));
@@ -51,6 +57,16 @@ pub fn token_watchlist_path() -> Result<PathBuf, String> {
 
 pub fn abi_registry_path() -> Result<PathBuf, String> {
     Ok(ensure_app_dir()?.join("abi-registry.json"))
+}
+
+pub fn abi_registry_path_readonly() -> Result<PathBuf, String> {
+    Ok(app_dir()?.join("abi-registry.json"))
+}
+
+pub fn abi_artifact_path_readonly(abi_hash: &str) -> Result<PathBuf, String> {
+    Ok(app_dir()?
+        .join("abi-artifacts")
+        .join(format!("{}.json", abi_hash.trim_start_matches("0x"))))
 }
 
 pub fn write_new_file_atomic(path: &Path, contents: &str) -> Result<(), String> {

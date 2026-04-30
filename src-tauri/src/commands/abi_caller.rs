@@ -3165,7 +3165,6 @@ mod tests {
     use std::collections::BTreeMap;
     use std::fs;
     use std::path::{Path, PathBuf};
-    use std::sync::{Mutex, OnceLock};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use ethers::abi::encode;
@@ -3317,11 +3316,6 @@ mod tests {
         entry
     }
 
-    fn test_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-    }
-
     fn unique_test_dir(label: &str) -> PathBuf {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -3334,7 +3328,7 @@ mod tests {
     }
 
     fn with_test_app_dir(test_name: &str, f: impl FnOnce(&Path)) {
-        let _guard = test_lock()
+        let _guard = crate::storage::test_app_dir_env_lock()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = unique_test_dir(test_name);
