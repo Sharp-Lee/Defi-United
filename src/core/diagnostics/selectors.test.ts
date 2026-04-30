@@ -140,4 +140,19 @@ describe("diagnostic selectors", () => {
       expect(summary).not.toContain(`"${sensitiveValue}"`);
     }
   });
+
+  it("redacts approval revoke diagnostic export scope secrets", () => {
+    const summary = diagnosticExportScopeSummary({
+      limit: 200,
+      category: "assetApprovalRevoke",
+      status:
+        "allowance point read failed raw signed transaction 0xsigned private key 0xsecret api key scan-secret",
+    });
+
+    expect(summary).toContain("category assetApprovalRevoke");
+    expect(summary).toContain("[redacted filter]");
+    expect(summary).not.toContain("0xsigned");
+    expect(summary).not.toContain("0xsecret");
+    expect(summary).not.toContain("scan-secret");
+  });
 });

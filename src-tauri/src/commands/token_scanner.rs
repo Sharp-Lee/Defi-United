@@ -8,10 +8,13 @@ use ethers::utils::to_checksum;
 use serde::Deserialize;
 
 use crate::commands::token_watchlist::{
-    load_token_watchlist_state, upsert_erc20_balance_snapshot, upsert_token_metadata_cache,
-    upsert_token_scan_state, BalanceStatus, RawMetadataStatus, ResolvedTokenMetadataSnapshot,
-    TokenScanStatus, TokenWatchlistState, UpsertErc20BalanceSnapshotInput,
-    UpsertTokenMetadataCacheInput, UpsertTokenScanStateInput,
+    load_token_watchlist_state, upsert_allowance_snapshot, upsert_asset_scan_job,
+    upsert_erc20_balance_snapshot, upsert_nft_approval_snapshot, upsert_token_metadata_cache,
+    upsert_token_scan_state, AllowanceSnapshotStatus, ApprovalSourceKind, ApprovalWatchKind,
+    AssetScanJobStatus, BalanceStatus, NftApprovalSnapshotStatus, RawMetadataStatus,
+    ResolvedTokenMetadataSnapshot, SourceMetadataInput, TokenScanStatus, TokenWatchlistState,
+    UpsertAllowanceSnapshotInput, UpsertAssetScanJobInput, UpsertErc20BalanceSnapshotInput,
+    UpsertNftApprovalSnapshotInput, UpsertTokenMetadataCacheInput, UpsertTokenScanStateInput,
 };
 use crate::diagnostics::sanitize_diagnostic_message;
 
@@ -19,6 +22,10 @@ const ERC20_DECIMALS_SELECTOR: [u8; 4] = [0x31, 0x3c, 0xe5, 0x67];
 const ERC20_SYMBOL_SELECTOR: [u8; 4] = [0x95, 0xd8, 0x9b, 0x41];
 const ERC20_NAME_SELECTOR: [u8; 4] = [0x06, 0xfd, 0xde, 0x03];
 const ERC20_BALANCE_OF_SELECTOR: [u8; 4] = [0x70, 0xa0, 0x82, 0x31];
+const ERC20_ALLOWANCE_SELECTOR: [u8; 4] = [0xdd, 0x62, 0xed, 0x3e];
+const NFT_IS_APPROVED_FOR_ALL_SELECTOR: [u8; 4] = [0xe9, 0x85, 0xe9, 0xc5];
+const ERC721_GET_APPROVED_SELECTOR: [u8; 4] = [0x08, 0x18, 0x12, 0xfc];
+const ZERO_ADDRESS: &str = "0x0000000000000000000000000000000000000000";
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -60,6 +67,54 @@ pub struct ScanWatchlistBalancesInput {
     pub token_contracts: Option<Vec<String>>,
     #[serde(default, alias = "retry_failed_only")]
     pub retry_failed_only: bool,
+    #[serde(default, alias = "rpc_profile_id")]
+    pub rpc_profile_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScanErc20AllowanceInput {
+    #[serde(alias = "rpc_url")]
+    pub rpc_url: String,
+    #[serde(alias = "chain_id")]
+    pub chain_id: u64,
+    pub owner: String,
+    #[serde(alias = "token_contract")]
+    pub token_contract: String,
+    pub spender: String,
+    #[serde(default, alias = "rpc_profile_id")]
+    pub rpc_profile_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScanNftOperatorApprovalInput {
+    #[serde(alias = "rpc_url")]
+    pub rpc_url: String,
+    #[serde(alias = "chain_id")]
+    pub chain_id: u64,
+    pub owner: String,
+    #[serde(alias = "token_contract")]
+    pub token_contract: String,
+    pub operator: String,
+    #[serde(default, alias = "rpc_profile_id")]
+    pub rpc_profile_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScanErc721TokenApprovalInput {
+    #[serde(alias = "rpc_url")]
+    pub rpc_url: String,
+    #[serde(alias = "chain_id")]
+    pub chain_id: u64,
+    pub owner: String,
+    #[serde(alias = "token_contract")]
+    pub token_contract: String,
+    #[serde(alias = "token_id")]
+    pub token_id: String,
+    #[serde(default)]
+    pub operator: Option<String>,
     #[serde(default, alias = "rpc_profile_id")]
     pub rpc_profile_id: Option<String>,
 }
@@ -179,6 +234,52 @@ pub async fn scan_watchlist_balances(
         }
     }
     Ok(latest)
+}
+
+#[tauri::command]
+pub async fn scan_erc20_allowance(
+    input: ScanErc20AllowanceInput,
+) -> Result<TokenWatchlistState, String> {
+    scan_allowance_impl(
+        &input.rpc_url,
+        input.chain_id,
+        &input.owner,
+        &input.token_contract,
+        &input.spender,
+        input.rpc_profile_id.as_deref(),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn scan_nft_operator_approval(
+    input: ScanNftOperatorApprovalInput,
+) -> Result<TokenWatchlistState, String> {
+    scan_nft_operator_approval_impl(
+        &input.rpc_url,
+        input.chain_id,
+        &input.owner,
+        &input.token_contract,
+        &input.operator,
+        input.rpc_profile_id.as_deref(),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn scan_erc721_token_approval(
+    input: ScanErc721TokenApprovalInput,
+) -> Result<TokenWatchlistState, String> {
+    scan_erc721_token_approval_impl(
+        &input.rpc_url,
+        input.chain_id,
+        &input.owner,
+        &input.token_contract,
+        &input.token_id,
+        input.operator.as_deref(),
+        input.rpc_profile_id.as_deref(),
+    )
+    .await
 }
 
 async fn scan_metadata_impl(
@@ -330,6 +431,752 @@ async fn scan_balance_impl(
         false,
     )
     .await
+}
+
+async fn scan_allowance_impl(
+    rpc_url: &str,
+    chain_id: u64,
+    owner: &str,
+    token_contract: &str,
+    spender: &str,
+    rpc_profile_id: Option<&str>,
+) -> Result<TokenWatchlistState, String> {
+    let chain_id = normalize_chain_id(chain_id)?;
+    let owner = normalize_evm_address(owner, "owner")?;
+    let token_contract = normalize_evm_address(token_contract, "token contract")?;
+    let spender = normalize_evm_address(spender, "spender")?;
+    let rpc_identity = summarize_rpc_endpoint(rpc_url);
+    mark_approval_job_started(
+        chain_id,
+        &owner,
+        &token_contract,
+        &rpc_identity,
+        rpc_profile_id,
+    )?;
+    let provider = match Provider::<Http>::try_from(rpc_url) {
+        Ok(provider) => provider,
+        Err(error) => {
+            let message = sanitized_summary(format!("rpc provider invalid: {error}"));
+            let had_previous =
+                previous_displayable_allowance(&owner, chain_id, &token_contract, &spender)?;
+            upsert_allowance_scan_failure(
+                chain_id,
+                &owner,
+                &token_contract,
+                &spender,
+                classify_allowance_failure(&message, had_previous),
+                Some(message),
+                &rpc_identity,
+                rpc_profile_id,
+            )?;
+            return mark_approval_job_finished(
+                chain_id,
+                &owner,
+                &token_contract,
+                AssetScanJobStatus::SourceUnavailable,
+                Some("rpc provider invalid".to_string()),
+                &rpc_identity,
+                rpc_profile_id,
+            );
+        }
+    };
+
+    let actual = match provider.get_chainid().await {
+        Ok(value) => value.as_u64(),
+        Err(error) => {
+            let message = sanitized_summary(format!("rpc chainId probe failed: {error}"));
+            let had_previous =
+                previous_displayable_allowance(&owner, chain_id, &token_contract, &spender)?;
+            upsert_allowance_scan_failure(
+                chain_id,
+                &owner,
+                &token_contract,
+                &spender,
+                classify_allowance_failure(&message, had_previous),
+                Some(message.clone()),
+                &rpc_identity,
+                rpc_profile_id,
+            )?;
+            return mark_approval_job_finished(
+                chain_id,
+                &owner,
+                &token_contract,
+                AssetScanJobStatus::SourceUnavailable,
+                Some(message),
+                &rpc_identity,
+                rpc_profile_id,
+            );
+        }
+    };
+    if actual != chain_id {
+        let message = chain_mismatch_message(chain_id, actual);
+        upsert_allowance_scan_failure(
+            chain_id,
+            &owner,
+            &token_contract,
+            &spender,
+            AllowanceSnapshotStatus::ChainMismatch,
+            Some(message.clone()),
+            &rpc_identity,
+            rpc_profile_id,
+        )?;
+        return mark_approval_job_finished(
+            chain_id,
+            &owner,
+            &token_contract,
+            AssetScanJobStatus::ChainMismatch,
+            Some(message),
+            &rpc_identity,
+            rpc_profile_id,
+        );
+    }
+
+    let token_address = parse_address(&token_contract, "token contract")?;
+    let owner_address = parse_address(&owner, "owner")?;
+    let spender_address = parse_address(&spender, "spender")?;
+    let call: TypedTransaction = TransactionRequest::new()
+        .to(token_address)
+        .data(build_two_address_calldata(
+            ERC20_ALLOWANCE_SELECTOR,
+            owner_address,
+            spender_address,
+        ))
+        .into();
+    match provider.call(&call, None).await {
+        Ok(bytes) => match decode_u256_result(&bytes, "allowance") {
+            Ok(allowance) => {
+                let status = if allowance.is_zero() {
+                    AllowanceSnapshotStatus::Zero
+                } else {
+                    AllowanceSnapshotStatus::Active
+                };
+                upsert_allowance_snapshot(UpsertAllowanceSnapshotInput {
+                    chain_id,
+                    owner: owner.clone(),
+                    token_contract: token_contract.clone(),
+                    spender: spender.clone(),
+                    allowance_raw: Some(allowance.to_string()),
+                    status,
+                    source: Some(rpc_point_source()),
+                    last_scanned_at: Some(nowish()),
+                    clear_last_scanned_at: false,
+                    last_error_summary: None,
+                    clear_last_error_summary: true,
+                    stale_after: None,
+                    clear_stale_after: true,
+                    rpc_identity: Some(rpc_identity.to_string()),
+                    clear_rpc_identity: false,
+                    rpc_profile_id: rpc_profile_id.map(str::to_string),
+                    clear_rpc_profile_id: rpc_profile_id.is_none(),
+                })?;
+                mark_approval_job_finished(
+                    chain_id,
+                    &owner,
+                    &token_contract,
+                    AssetScanJobStatus::Ok,
+                    None,
+                    &rpc_identity,
+                    rpc_profile_id,
+                )
+            }
+            Err(message) => {
+                let message = sanitized_summary(message);
+                let had_previous =
+                    previous_displayable_allowance(&owner, chain_id, &token_contract, &spender)?;
+                upsert_allowance_scan_failure(
+                    chain_id,
+                    &owner,
+                    &token_contract,
+                    &spender,
+                    classify_allowance_failure(&message, had_previous),
+                    Some(message.clone()),
+                    &rpc_identity,
+                    rpc_profile_id,
+                )?;
+                mark_approval_job_finished(
+                    chain_id,
+                    &owner,
+                    &token_contract,
+                    AssetScanJobStatus::Failed,
+                    Some(message),
+                    &rpc_identity,
+                    rpc_profile_id,
+                )
+            }
+        },
+        Err(error) => {
+            let message = sanitized_summary(format!("allowanceCallFailed: {error}"));
+            let had_previous =
+                previous_displayable_allowance(&owner, chain_id, &token_contract, &spender)?;
+            upsert_allowance_scan_failure(
+                chain_id,
+                &owner,
+                &token_contract,
+                &spender,
+                classify_allowance_failure(&message, had_previous),
+                Some(message.clone()),
+                &rpc_identity,
+                rpc_profile_id,
+            )?;
+            mark_approval_job_finished(
+                chain_id,
+                &owner,
+                &token_contract,
+                classify_job_failure(&message),
+                Some(message),
+                &rpc_identity,
+                rpc_profile_id,
+            )
+        }
+    }
+}
+
+async fn scan_nft_operator_approval_impl(
+    rpc_url: &str,
+    chain_id: u64,
+    owner: &str,
+    token_contract: &str,
+    operator: &str,
+    rpc_profile_id: Option<&str>,
+) -> Result<TokenWatchlistState, String> {
+    let chain_id = normalize_chain_id(chain_id)?;
+    let owner = normalize_evm_address(owner, "owner")?;
+    let token_contract = normalize_evm_address(token_contract, "token contract")?;
+    let operator = normalize_evm_address(operator, "operator")?;
+    let rpc_identity = summarize_rpc_endpoint(rpc_url);
+    mark_approval_job_started(
+        chain_id,
+        &owner,
+        &token_contract,
+        &rpc_identity,
+        rpc_profile_id,
+    )?;
+    let provider = match Provider::<Http>::try_from(rpc_url) {
+        Ok(provider) => provider,
+        Err(error) => {
+            let message = sanitized_summary(format!("rpc provider invalid: {error}"));
+            let had_previous = previous_displayable_nft_approval(
+                &owner,
+                chain_id,
+                &token_contract,
+                ApprovalWatchKind::Erc721ApprovalForAll,
+                &operator,
+                None,
+            )?;
+            upsert_nft_approval_scan_failure(
+                NftApprovalFailureTarget {
+                    chain_id,
+                    owner: &owner,
+                    token_contract: &token_contract,
+                    kind: ApprovalWatchKind::Erc721ApprovalForAll,
+                    operator: &operator,
+                    token_id: None,
+                },
+                classify_nft_approval_failure(&message, had_previous),
+                Some(message),
+                &rpc_identity,
+                rpc_profile_id,
+            )?;
+            return mark_approval_job_finished(
+                chain_id,
+                &owner,
+                &token_contract,
+                AssetScanJobStatus::SourceUnavailable,
+                Some("rpc provider invalid".to_string()),
+                &rpc_identity,
+                rpc_profile_id,
+            );
+        }
+    };
+
+    let actual = match provider.get_chainid().await {
+        Ok(value) => value.as_u64(),
+        Err(error) => {
+            let message = sanitized_summary(format!("rpc chainId probe failed: {error}"));
+            let had_previous = previous_displayable_nft_approval(
+                &owner,
+                chain_id,
+                &token_contract,
+                ApprovalWatchKind::Erc721ApprovalForAll,
+                &operator,
+                None,
+            )?;
+            upsert_nft_approval_scan_failure(
+                NftApprovalFailureTarget {
+                    chain_id,
+                    owner: &owner,
+                    token_contract: &token_contract,
+                    kind: ApprovalWatchKind::Erc721ApprovalForAll,
+                    operator: &operator,
+                    token_id: None,
+                },
+                classify_nft_approval_failure(&message, had_previous),
+                Some(message.clone()),
+                &rpc_identity,
+                rpc_profile_id,
+            )?;
+            return mark_approval_job_finished(
+                chain_id,
+                &owner,
+                &token_contract,
+                AssetScanJobStatus::SourceUnavailable,
+                Some(message),
+                &rpc_identity,
+                rpc_profile_id,
+            );
+        }
+    };
+    if actual != chain_id {
+        let message = chain_mismatch_message(chain_id, actual);
+        upsert_nft_approval_scan_failure(
+            NftApprovalFailureTarget {
+                chain_id,
+                owner: &owner,
+                token_contract: &token_contract,
+                kind: ApprovalWatchKind::Erc721ApprovalForAll,
+                operator: &operator,
+                token_id: None,
+            },
+            NftApprovalSnapshotStatus::ChainMismatch,
+            Some(message.clone()),
+            &rpc_identity,
+            rpc_profile_id,
+        )?;
+        return mark_approval_job_finished(
+            chain_id,
+            &owner,
+            &token_contract,
+            AssetScanJobStatus::ChainMismatch,
+            Some(message),
+            &rpc_identity,
+            rpc_profile_id,
+        );
+    }
+
+    let token_address = parse_address(&token_contract, "token contract")?;
+    let owner_address = parse_address(&owner, "owner")?;
+    let operator_address = parse_address(&operator, "operator")?;
+    let call: TypedTransaction = TransactionRequest::new()
+        .to(token_address)
+        .data(build_two_address_calldata(
+            NFT_IS_APPROVED_FOR_ALL_SELECTOR,
+            owner_address,
+            operator_address,
+        ))
+        .into();
+    match provider.call(&call, None).await {
+        Ok(bytes) => match decode_bool_result(&bytes, "isApprovedForAll") {
+            Ok(approved) => {
+                let status = if approved {
+                    NftApprovalSnapshotStatus::Active
+                } else {
+                    NftApprovalSnapshotStatus::Revoked
+                };
+                upsert_nft_approval_snapshot(UpsertNftApprovalSnapshotInput {
+                    chain_id,
+                    owner: owner.clone(),
+                    token_contract: token_contract.clone(),
+                    kind: ApprovalWatchKind::Erc721ApprovalForAll,
+                    operator: operator.clone(),
+                    token_id: None,
+                    approved: Some(approved),
+                    status,
+                    source: Some(rpc_point_source()),
+                    last_scanned_at: Some(nowish()),
+                    clear_last_scanned_at: false,
+                    last_error_summary: None,
+                    clear_last_error_summary: true,
+                    stale_after: None,
+                    clear_stale_after: true,
+                    rpc_identity: Some(rpc_identity.to_string()),
+                    clear_rpc_identity: false,
+                    rpc_profile_id: rpc_profile_id.map(str::to_string),
+                    clear_rpc_profile_id: rpc_profile_id.is_none(),
+                })?;
+                mark_approval_job_finished(
+                    chain_id,
+                    &owner,
+                    &token_contract,
+                    AssetScanJobStatus::Ok,
+                    None,
+                    &rpc_identity,
+                    rpc_profile_id,
+                )
+            }
+            Err(message) => {
+                let message = sanitized_summary(message);
+                let had_previous = previous_displayable_nft_approval(
+                    &owner,
+                    chain_id,
+                    &token_contract,
+                    ApprovalWatchKind::Erc721ApprovalForAll,
+                    &operator,
+                    None,
+                )?;
+                upsert_nft_approval_scan_failure(
+                    NftApprovalFailureTarget {
+                        chain_id,
+                        owner: &owner,
+                        token_contract: &token_contract,
+                        kind: ApprovalWatchKind::Erc721ApprovalForAll,
+                        operator: &operator,
+                        token_id: None,
+                    },
+                    classify_nft_approval_failure(&message, had_previous),
+                    Some(message.clone()),
+                    &rpc_identity,
+                    rpc_profile_id,
+                )?;
+                mark_approval_job_finished(
+                    chain_id,
+                    &owner,
+                    &token_contract,
+                    AssetScanJobStatus::Failed,
+                    Some(message),
+                    &rpc_identity,
+                    rpc_profile_id,
+                )
+            }
+        },
+        Err(error) => {
+            let message = sanitized_summary(format!("approvalForAllCallFailed: {error}"));
+            let had_previous = previous_displayable_nft_approval(
+                &owner,
+                chain_id,
+                &token_contract,
+                ApprovalWatchKind::Erc721ApprovalForAll,
+                &operator,
+                None,
+            )?;
+            upsert_nft_approval_scan_failure(
+                NftApprovalFailureTarget {
+                    chain_id,
+                    owner: &owner,
+                    token_contract: &token_contract,
+                    kind: ApprovalWatchKind::Erc721ApprovalForAll,
+                    operator: &operator,
+                    token_id: None,
+                },
+                classify_nft_approval_failure(&message, had_previous),
+                Some(message.clone()),
+                &rpc_identity,
+                rpc_profile_id,
+            )?;
+            mark_approval_job_finished(
+                chain_id,
+                &owner,
+                &token_contract,
+                classify_job_failure(&message),
+                Some(message),
+                &rpc_identity,
+                rpc_profile_id,
+            )
+        }
+    }
+}
+
+async fn scan_erc721_token_approval_impl(
+    rpc_url: &str,
+    chain_id: u64,
+    owner: &str,
+    token_contract: &str,
+    token_id: &str,
+    operator_hint: Option<&str>,
+    rpc_profile_id: Option<&str>,
+) -> Result<TokenWatchlistState, String> {
+    let chain_id = normalize_chain_id(chain_id)?;
+    let owner = normalize_evm_address(owner, "owner")?;
+    let token_contract = normalize_evm_address(token_contract, "token contract")?;
+    let token_id = normalize_token_id(token_id)?;
+    let operator_hint = operator_hint
+        .map(|operator| normalize_evm_address(operator, "operator"))
+        .transpose()?;
+    let rpc_identity = summarize_rpc_endpoint(rpc_url);
+    mark_approval_job_started(
+        chain_id,
+        &owner,
+        &token_contract,
+        &rpc_identity,
+        rpc_profile_id,
+    )?;
+    let provider = match Provider::<Http>::try_from(rpc_url) {
+        Ok(provider) => provider,
+        Err(error) => {
+            let message = sanitized_summary(format!("rpc provider invalid: {error}"));
+            let operator = token_approval_failure_operator(
+                &owner,
+                chain_id,
+                &token_contract,
+                &token_id,
+                operator_hint.as_deref(),
+            )?;
+            let had_previous = previous_displayable_nft_approval(
+                &owner,
+                chain_id,
+                &token_contract,
+                ApprovalWatchKind::Erc721TokenApproval,
+                &operator,
+                Some(&token_id),
+            )?;
+            upsert_nft_approval_scan_failure(
+                NftApprovalFailureTarget {
+                    chain_id,
+                    owner: &owner,
+                    token_contract: &token_contract,
+                    kind: ApprovalWatchKind::Erc721TokenApproval,
+                    operator: &operator,
+                    token_id: Some(&token_id),
+                },
+                classify_nft_approval_failure(&message, had_previous),
+                Some(message),
+                &rpc_identity,
+                rpc_profile_id,
+            )?;
+            return mark_approval_job_finished(
+                chain_id,
+                &owner,
+                &token_contract,
+                AssetScanJobStatus::SourceUnavailable,
+                Some("rpc provider invalid".to_string()),
+                &rpc_identity,
+                rpc_profile_id,
+            );
+        }
+    };
+
+    let actual = match provider.get_chainid().await {
+        Ok(value) => value.as_u64(),
+        Err(error) => {
+            let message = sanitized_summary(format!("rpc chainId probe failed: {error}"));
+            let operator = token_approval_failure_operator(
+                &owner,
+                chain_id,
+                &token_contract,
+                &token_id,
+                operator_hint.as_deref(),
+            )?;
+            let had_previous = previous_displayable_nft_approval(
+                &owner,
+                chain_id,
+                &token_contract,
+                ApprovalWatchKind::Erc721TokenApproval,
+                &operator,
+                Some(&token_id),
+            )?;
+            upsert_nft_approval_scan_failure(
+                NftApprovalFailureTarget {
+                    chain_id,
+                    owner: &owner,
+                    token_contract: &token_contract,
+                    kind: ApprovalWatchKind::Erc721TokenApproval,
+                    operator: &operator,
+                    token_id: Some(&token_id),
+                },
+                classify_nft_approval_failure(&message, had_previous),
+                Some(message.clone()),
+                &rpc_identity,
+                rpc_profile_id,
+            )?;
+            return mark_approval_job_finished(
+                chain_id,
+                &owner,
+                &token_contract,
+                AssetScanJobStatus::SourceUnavailable,
+                Some(message),
+                &rpc_identity,
+                rpc_profile_id,
+            );
+        }
+    };
+    if actual != chain_id {
+        let message = chain_mismatch_message(chain_id, actual);
+        let operator = token_approval_failure_operator(
+            &owner,
+            chain_id,
+            &token_contract,
+            &token_id,
+            operator_hint.as_deref(),
+        )?;
+        upsert_nft_approval_scan_failure(
+            NftApprovalFailureTarget {
+                chain_id,
+                owner: &owner,
+                token_contract: &token_contract,
+                kind: ApprovalWatchKind::Erc721TokenApproval,
+                operator: &operator,
+                token_id: Some(&token_id),
+            },
+            NftApprovalSnapshotStatus::ChainMismatch,
+            Some(message.clone()),
+            &rpc_identity,
+            rpc_profile_id,
+        )?;
+        return mark_approval_job_finished(
+            chain_id,
+            &owner,
+            &token_contract,
+            AssetScanJobStatus::ChainMismatch,
+            Some(message),
+            &rpc_identity,
+            rpc_profile_id,
+        );
+    }
+
+    let token_address = parse_address(&token_contract, "token contract")?;
+    let token_id_value = U256::from_dec_str(&token_id).map_err(|_| {
+        "tokenId must be a non-negative integer string within uint256 range".to_string()
+    })?;
+    let call: TypedTransaction = TransactionRequest::new()
+        .to(token_address)
+        .data(build_u256_calldata(
+            ERC721_GET_APPROVED_SELECTOR,
+            token_id_value,
+        ))
+        .into();
+    match provider.call(&call, None).await {
+        Ok(bytes) => match decode_address_result(&bytes, "getApproved") {
+            Ok(approved_address) => {
+                let approved = approved_address != Address::zero();
+                let status = if approved {
+                    NftApprovalSnapshotStatus::Active
+                } else {
+                    NftApprovalSnapshotStatus::Revoked
+                };
+                let operator = if approved {
+                    to_checksum(&approved_address, None)
+                } else {
+                    token_approval_failure_operator(
+                        &owner,
+                        chain_id,
+                        &token_contract,
+                        &token_id,
+                        operator_hint.as_deref(),
+                    )?
+                };
+                upsert_nft_approval_snapshot(UpsertNftApprovalSnapshotInput {
+                    chain_id,
+                    owner: owner.clone(),
+                    token_contract: token_contract.clone(),
+                    kind: ApprovalWatchKind::Erc721TokenApproval,
+                    operator: operator.clone(),
+                    token_id: Some(token_id.clone()),
+                    approved: Some(approved),
+                    status,
+                    source: Some(rpc_point_source()),
+                    last_scanned_at: Some(nowish()),
+                    clear_last_scanned_at: false,
+                    last_error_summary: None,
+                    clear_last_error_summary: true,
+                    stale_after: None,
+                    clear_stale_after: true,
+                    rpc_identity: Some(rpc_identity.to_string()),
+                    clear_rpc_identity: false,
+                    rpc_profile_id: rpc_profile_id.map(str::to_string),
+                    clear_rpc_profile_id: rpc_profile_id.is_none(),
+                })?;
+                mark_token_approval_operators_revoked(
+                    &owner,
+                    chain_id,
+                    &token_contract,
+                    &token_id,
+                    approved.then_some(operator.as_str()),
+                    &rpc_identity,
+                    rpc_profile_id,
+                )?;
+                mark_approval_job_finished(
+                    chain_id,
+                    &owner,
+                    &token_contract,
+                    AssetScanJobStatus::Ok,
+                    None,
+                    &rpc_identity,
+                    rpc_profile_id,
+                )
+            }
+            Err(message) => {
+                let message = sanitized_summary(message);
+                let operator = token_approval_failure_operator(
+                    &owner,
+                    chain_id,
+                    &token_contract,
+                    &token_id,
+                    operator_hint.as_deref(),
+                )?;
+                let had_previous = previous_displayable_nft_approval(
+                    &owner,
+                    chain_id,
+                    &token_contract,
+                    ApprovalWatchKind::Erc721TokenApproval,
+                    &operator,
+                    Some(&token_id),
+                )?;
+                upsert_nft_approval_scan_failure(
+                    NftApprovalFailureTarget {
+                        chain_id,
+                        owner: &owner,
+                        token_contract: &token_contract,
+                        kind: ApprovalWatchKind::Erc721TokenApproval,
+                        operator: &operator,
+                        token_id: Some(&token_id),
+                    },
+                    classify_nft_approval_failure(&message, had_previous),
+                    Some(message.clone()),
+                    &rpc_identity,
+                    rpc_profile_id,
+                )?;
+                mark_approval_job_finished(
+                    chain_id,
+                    &owner,
+                    &token_contract,
+                    AssetScanJobStatus::Failed,
+                    Some(message),
+                    &rpc_identity,
+                    rpc_profile_id,
+                )
+            }
+        },
+        Err(error) => {
+            let message = sanitized_summary(format!("getApprovedCallFailed: {error}"));
+            let operator = token_approval_failure_operator(
+                &owner,
+                chain_id,
+                &token_contract,
+                &token_id,
+                operator_hint.as_deref(),
+            )?;
+            let had_previous = previous_displayable_nft_approval(
+                &owner,
+                chain_id,
+                &token_contract,
+                ApprovalWatchKind::Erc721TokenApproval,
+                &operator,
+                Some(&token_id),
+            )?;
+            upsert_nft_approval_scan_failure(
+                NftApprovalFailureTarget {
+                    chain_id,
+                    owner: &owner,
+                    token_contract: &token_contract,
+                    kind: ApprovalWatchKind::Erc721TokenApproval,
+                    operator: &operator,
+                    token_id: Some(&token_id),
+                },
+                classify_nft_approval_failure(&message, had_previous),
+                Some(message.clone()),
+                &rpc_identity,
+                rpc_profile_id,
+            )?;
+            mark_approval_job_finished(
+                chain_id,
+                &owner,
+                &token_contract,
+                classify_job_failure(&message),
+                Some(message),
+                &rpc_identity,
+                rpc_profile_id,
+            )
+        }
+    }
 }
 
 async fn scan_metadata_with_provider(
@@ -551,6 +1398,354 @@ fn upsert_balance_snapshot(
         resolved_metadata: metadata,
         clear_resolved_metadata: false,
     })
+}
+
+fn upsert_allowance_scan_failure(
+    chain_id: u64,
+    owner: &str,
+    token_contract: &str,
+    spender: &str,
+    status: AllowanceSnapshotStatus,
+    last_error_summary: Option<String>,
+    rpc_identity: &str,
+    rpc_profile_id: Option<&str>,
+) -> Result<TokenWatchlistState, String> {
+    upsert_allowance_snapshot(UpsertAllowanceSnapshotInput {
+        chain_id,
+        owner: owner.to_string(),
+        token_contract: token_contract.to_string(),
+        spender: spender.to_string(),
+        allowance_raw: None,
+        status,
+        source: Some(approval_failure_source(status)),
+        last_scanned_at: Some(nowish()),
+        clear_last_scanned_at: false,
+        last_error_summary,
+        clear_last_error_summary: false,
+        stale_after: None,
+        clear_stale_after: false,
+        rpc_identity: Some(rpc_identity.to_string()),
+        clear_rpc_identity: false,
+        rpc_profile_id: rpc_profile_id.map(str::to_string),
+        clear_rpc_profile_id: rpc_profile_id.is_none(),
+    })
+}
+
+struct NftApprovalFailureTarget<'a> {
+    chain_id: u64,
+    owner: &'a str,
+    token_contract: &'a str,
+    kind: ApprovalWatchKind,
+    operator: &'a str,
+    token_id: Option<&'a str>,
+}
+
+fn upsert_nft_approval_scan_failure(
+    target: NftApprovalFailureTarget<'_>,
+    status: NftApprovalSnapshotStatus,
+    last_error_summary: Option<String>,
+    rpc_identity: &str,
+    rpc_profile_id: Option<&str>,
+) -> Result<TokenWatchlistState, String> {
+    upsert_nft_approval_snapshot(UpsertNftApprovalSnapshotInput {
+        chain_id: target.chain_id,
+        owner: target.owner.to_string(),
+        token_contract: target.token_contract.to_string(),
+        kind: target.kind,
+        operator: target.operator.to_string(),
+        token_id: target.token_id.map(str::to_string),
+        approved: None,
+        status,
+        source: Some(nft_approval_failure_source(status)),
+        last_scanned_at: Some(nowish()),
+        clear_last_scanned_at: false,
+        last_error_summary,
+        clear_last_error_summary: false,
+        stale_after: None,
+        clear_stale_after: false,
+        rpc_identity: Some(rpc_identity.to_string()),
+        clear_rpc_identity: false,
+        rpc_profile_id: rpc_profile_id.map(str::to_string),
+        clear_rpc_profile_id: rpc_profile_id.is_none(),
+    })
+}
+
+fn mark_approval_job_started(
+    chain_id: u64,
+    owner: &str,
+    token_contract: &str,
+    rpc_identity: &str,
+    rpc_profile_id: Option<&str>,
+) -> Result<TokenWatchlistState, String> {
+    upsert_asset_scan_job(UpsertAssetScanJobInput {
+        job_id: None,
+        chain_id,
+        owner: owner.to_string(),
+        status: AssetScanJobStatus::Scanning,
+        source: Some(rpc_point_source()),
+        contract_filter: Some(token_contract.to_string()),
+        clear_contract_filter: false,
+        started_at: Some(nowish()),
+        clear_started_at: false,
+        finished_at: None,
+        clear_finished_at: true,
+        last_error_summary: None,
+        clear_last_error_summary: true,
+        rpc_identity: Some(rpc_identity.to_string()),
+        clear_rpc_identity: false,
+        rpc_profile_id: rpc_profile_id.map(str::to_string),
+        clear_rpc_profile_id: rpc_profile_id.is_none(),
+    })
+}
+
+fn mark_approval_job_finished(
+    chain_id: u64,
+    owner: &str,
+    token_contract: &str,
+    status: AssetScanJobStatus,
+    last_error_summary: Option<String>,
+    rpc_identity: &str,
+    rpc_profile_id: Option<&str>,
+) -> Result<TokenWatchlistState, String> {
+    upsert_asset_scan_job(UpsertAssetScanJobInput {
+        job_id: None,
+        chain_id,
+        owner: owner.to_string(),
+        status,
+        source: Some(if matches!(status, AssetScanJobStatus::Ok) {
+            rpc_point_source()
+        } else {
+            unavailable_source()
+        }),
+        contract_filter: Some(token_contract.to_string()),
+        clear_contract_filter: false,
+        started_at: None,
+        clear_started_at: false,
+        finished_at: Some(nowish()),
+        clear_finished_at: false,
+        last_error_summary,
+        clear_last_error_summary: matches!(status, AssetScanJobStatus::Ok),
+        rpc_identity: Some(rpc_identity.to_string()),
+        clear_rpc_identity: false,
+        rpc_profile_id: rpc_profile_id.map(str::to_string),
+        clear_rpc_profile_id: rpc_profile_id.is_none(),
+    })
+}
+
+fn rpc_point_source() -> SourceMetadataInput {
+    SourceMetadataInput {
+        kind: ApprovalSourceKind::RpcPointRead,
+        label: None,
+        source_id: None,
+        summary: None,
+        provider_hint: None,
+        observed_at: Some(nowish()),
+    }
+}
+
+fn unavailable_source() -> SourceMetadataInput {
+    SourceMetadataInput {
+        kind: ApprovalSourceKind::Unavailable,
+        label: None,
+        source_id: None,
+        summary: None,
+        provider_hint: None,
+        observed_at: Some(nowish()),
+    }
+}
+
+fn approval_failure_source(status: AllowanceSnapshotStatus) -> SourceMetadataInput {
+    if matches!(status, AllowanceSnapshotStatus::Stale) {
+        rpc_point_source()
+    } else {
+        unavailable_source()
+    }
+}
+
+fn nft_approval_failure_source(status: NftApprovalSnapshotStatus) -> SourceMetadataInput {
+    if matches!(status, NftApprovalSnapshotStatus::Stale) {
+        rpc_point_source()
+    } else {
+        unavailable_source()
+    }
+}
+
+fn classify_allowance_failure(message: &str, had_previous: bool) -> AllowanceSnapshotStatus {
+    if had_previous {
+        AllowanceSnapshotStatus::Stale
+    } else if looks_rate_limited(message) {
+        AllowanceSnapshotStatus::RateLimited
+    } else if looks_source_unavailable(message) {
+        AllowanceSnapshotStatus::SourceUnavailable
+    } else {
+        AllowanceSnapshotStatus::ReadFailed
+    }
+}
+
+fn classify_nft_approval_failure(message: &str, had_previous: bool) -> NftApprovalSnapshotStatus {
+    if had_previous {
+        NftApprovalSnapshotStatus::Stale
+    } else if looks_rate_limited(message) {
+        NftApprovalSnapshotStatus::RateLimited
+    } else if looks_source_unavailable(message) {
+        NftApprovalSnapshotStatus::SourceUnavailable
+    } else {
+        NftApprovalSnapshotStatus::ReadFailed
+    }
+}
+
+fn classify_job_failure(message: &str) -> AssetScanJobStatus {
+    if looks_source_unavailable(message) || looks_rate_limited(message) {
+        AssetScanJobStatus::SourceUnavailable
+    } else {
+        AssetScanJobStatus::Failed
+    }
+}
+
+fn looks_rate_limited(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    lower.contains("rate limit")
+        || lower.contains("rate-limit")
+        || lower.contains("too many requests")
+        || lower.contains("429")
+}
+
+fn looks_source_unavailable(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    lower.contains("timeout")
+        || lower.contains("timed out")
+        || lower.contains("connection")
+        || lower.contains("unavailable")
+        || lower.contains("temporarily unavailable")
+        || lower.contains("provider invalid")
+        || lower.contains("chainid probe failed")
+}
+
+fn previous_displayable_allowance(
+    owner: &str,
+    chain_id: u64,
+    token_contract: &str,
+    spender: &str,
+) -> Result<bool, String> {
+    let state = load_token_watchlist_state()?;
+    Ok(state.allowance_snapshots.iter().any(|item| {
+        item.owner == owner
+            && item.chain_id == chain_id
+            && item.token_contract == token_contract
+            && item.spender == spender
+            && matches!(
+                item.status,
+                AllowanceSnapshotStatus::Active
+                    | AllowanceSnapshotStatus::Zero
+                    | AllowanceSnapshotStatus::Stale
+            )
+    }))
+}
+
+fn previous_displayable_nft_approval(
+    owner: &str,
+    chain_id: u64,
+    token_contract: &str,
+    kind: ApprovalWatchKind,
+    operator: &str,
+    token_id: Option<&str>,
+) -> Result<bool, String> {
+    let state = load_token_watchlist_state()?;
+    Ok(state.nft_approval_snapshots.iter().any(|item| {
+        item.owner == owner
+            && item.chain_id == chain_id
+            && item.token_contract == token_contract
+            && item.kind == kind
+            && item.operator == operator
+            && item.token_id.as_deref() == token_id
+            && matches!(
+                item.status,
+                NftApprovalSnapshotStatus::Active
+                    | NftApprovalSnapshotStatus::Revoked
+                    | NftApprovalSnapshotStatus::Stale
+            )
+    }))
+}
+
+fn token_approval_failure_operator(
+    owner: &str,
+    chain_id: u64,
+    token_contract: &str,
+    token_id: &str,
+    operator_hint: Option<&str>,
+) -> Result<String, String> {
+    if let Some(operator) = operator_hint {
+        return Ok(operator.to_string());
+    }
+    let state = load_token_watchlist_state()?;
+    Ok(state
+        .nft_approval_snapshots
+        .iter()
+        .find(|item| {
+            item.owner == owner
+                && item.chain_id == chain_id
+                && item.token_contract == token_contract
+                && item.kind == ApprovalWatchKind::Erc721TokenApproval
+                && item.token_id.as_deref() == Some(token_id)
+                && matches!(
+                    item.status,
+                    NftApprovalSnapshotStatus::Active
+                        | NftApprovalSnapshotStatus::Revoked
+                        | NftApprovalSnapshotStatus::Stale
+                )
+        })
+        .map(|item| item.operator.clone())
+        .unwrap_or_else(|| ZERO_ADDRESS.to_string()))
+}
+
+fn mark_token_approval_operators_revoked(
+    owner: &str,
+    chain_id: u64,
+    token_contract: &str,
+    token_id: &str,
+    except_operator: Option<&str>,
+    rpc_identity: &str,
+    rpc_profile_id: Option<&str>,
+) -> Result<(), String> {
+    let state = load_token_watchlist_state()?;
+    let stale_operators = state
+        .nft_approval_snapshots
+        .iter()
+        .filter(|item| {
+            item.owner == owner
+                && item.chain_id == chain_id
+                && item.token_contract == token_contract
+                && item.kind == ApprovalWatchKind::Erc721TokenApproval
+                && item.token_id.as_deref() == Some(token_id)
+                && except_operator != Some(item.operator.as_str())
+                && item.operator != ZERO_ADDRESS
+        })
+        .map(|item| item.operator.clone())
+        .collect::<Vec<_>>();
+    for operator in stale_operators {
+        upsert_nft_approval_snapshot(UpsertNftApprovalSnapshotInput {
+            chain_id,
+            owner: owner.to_string(),
+            token_contract: token_contract.to_string(),
+            kind: ApprovalWatchKind::Erc721TokenApproval,
+            operator,
+            token_id: Some(token_id.to_string()),
+            approved: Some(false),
+            status: NftApprovalSnapshotStatus::Revoked,
+            source: Some(rpc_point_source()),
+            last_scanned_at: Some(nowish()),
+            clear_last_scanned_at: false,
+            last_error_summary: None,
+            clear_last_error_summary: true,
+            stale_after: None,
+            clear_stale_after: true,
+            rpc_identity: Some(rpc_identity.to_string()),
+            clear_rpc_identity: false,
+            rpc_profile_id: rpc_profile_id.map(str::to_string),
+            clear_rpc_profile_id: rpc_profile_id.is_none(),
+        })?;
+    }
+    Ok(())
 }
 
 fn resolved_metadata_snapshot(
@@ -818,6 +2013,25 @@ fn build_balance_of_calldata(owner: Address) -> Bytes {
     Bytes::from(data)
 }
 
+fn build_two_address_calldata(selector: [u8; 4], first: Address, second: Address) -> Bytes {
+    let mut data = Vec::with_capacity(68);
+    data.extend_from_slice(&selector);
+    data.extend_from_slice(&[0u8; 12]);
+    data.extend_from_slice(first.as_bytes());
+    data.extend_from_slice(&[0u8; 12]);
+    data.extend_from_slice(second.as_bytes());
+    Bytes::from(data)
+}
+
+fn build_u256_calldata(selector: [u8; 4], value: U256) -> Bytes {
+    let mut word = [0u8; 32];
+    value.to_big_endian(&mut word);
+    let mut data = Vec::with_capacity(36);
+    data.extend_from_slice(&selector);
+    data.extend_from_slice(&word);
+    Bytes::from(data)
+}
+
 enum MetadataDecodeError {
     Missing,
     Malformed(String),
@@ -882,14 +2096,43 @@ fn decode_stringish(bytes: &Bytes) -> Result<Option<String>, String> {
 }
 
 fn decode_balance(bytes: &Bytes) -> Result<U256, String> {
+    decode_u256_result(bytes, "balanceOf")
+}
+
+fn decode_u256_result(bytes: &Bytes, method: &str) -> Result<U256, String> {
     let raw = bytes.as_ref();
     if raw.len() != 32 {
         return Err(format!(
-            "balanceOf returned {} bytes; expected 32-byte uint256 ABI payload",
+            "{method} returned {} bytes; expected 32-byte uint256 ABI payload",
             raw.len()
         ));
     }
     Ok(U256::from_big_endian(raw))
+}
+
+fn decode_bool_result(bytes: &Bytes, method: &str) -> Result<bool, String> {
+    let value = decode_u256_result(bytes, method)?;
+    if value.is_zero() {
+        Ok(false)
+    } else if value == U256::one() {
+        Ok(true)
+    } else {
+        Err(format!("{method} returned non-boolean uint256 value"))
+    }
+}
+
+fn decode_address_result(bytes: &Bytes, method: &str) -> Result<Address, String> {
+    let raw = bytes.as_ref();
+    if raw.len() != 32 {
+        return Err(format!(
+            "{method} returned {} bytes; expected 32-byte address ABI payload",
+            raw.len()
+        ));
+    }
+    if raw[..12].iter().any(|byte| *byte != 0) {
+        return Err(format!("{method} returned malformed address padding"));
+    }
+    Ok(Address::from_slice(&raw[12..]))
 }
 
 fn previous_displayable_balance(
@@ -922,6 +2165,22 @@ fn normalize_evm_address(value: &str, label: &str) -> Result<String, String> {
         return Err(format!("{label} cannot be the zero address"));
     }
     Ok(to_checksum(&address, None))
+}
+
+fn normalize_token_id(value: &str) -> Result<String, String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() || !trimmed.chars().all(|ch| ch.is_ascii_digit()) {
+        return Err("tokenId must be a non-negative integer string".to_string());
+    }
+    let normalized = trimmed.trim_start_matches('0');
+    let token_id = if normalized.is_empty() {
+        "0".to_string()
+    } else {
+        normalized.to_string()
+    };
+    U256::from_dec_str(&token_id)
+        .map_err(|_| "tokenId must be a non-negative integer string within uint256 range")?;
+    Ok(token_id)
 }
 
 fn parse_address(value: &str, label: &str) -> Result<Address, String> {

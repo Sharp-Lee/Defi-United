@@ -13,6 +13,7 @@ export type TransactionType =
   | "erc20Transfer"
   | "contractCall"
   | "rawCalldata"
+  | "assetApprovalRevoke"
   | "unknown";
 
 export type SubmissionKind =
@@ -21,6 +22,7 @@ export type SubmissionKind =
   | "erc20Transfer"
   | "abiWriteCall"
   | "rawCalldata"
+  | "assetApprovalRevoke"
   | "replacement"
   | "cancellation"
   | "unsupported";
@@ -389,6 +391,59 @@ export interface RawCalldataHistoryMetadata {
   recovery: RawCalldataRecoveryPlaceholder | null;
 }
 
+export interface AssetApprovalRevokeSnapshotMetadata {
+  identity_key: string | null;
+  status: string | null;
+  source_kind: string | null;
+  source_summary: string | null;
+  stale: boolean | null;
+  failure: boolean | null;
+  created_at: string | null;
+  updated_at: string | null;
+  last_scanned_at: string | null;
+  stale_after: string | null;
+  rpc_identity: string | null;
+  rpc_profile_id: string | null;
+}
+
+export interface AssetApprovalRevokeHistoryMetadata {
+  intent_kind: "assetApprovalRevoke" | "unknown";
+  draft_id: string | null;
+  created_at: string | null;
+  frozen_at: string | null;
+  chain_id: number | null;
+  account_index: number | null;
+  from: string | null;
+  to: string | null;
+  value_wei: string | null;
+  approval_kind: string | null;
+  token_approval_contract: string | null;
+  spender: string | null;
+  operator: string | null;
+  token_id: string | null;
+  method: string | null;
+  selector: string | null;
+  calldata_hash: string | null;
+  calldata_byte_length: number | null;
+  calldata_args: AbiDecodedFieldHistorySummary[];
+  gas_limit: string | null;
+  latest_base_fee_per_gas: string | null;
+  base_fee_per_gas: string | null;
+  max_fee_per_gas: string | null;
+  max_priority_fee_per_gas: string | null;
+  nonce: number | null;
+  selected_rpc: AbiCallSelectedRpcSummary | null;
+  snapshot: AssetApprovalRevokeSnapshotMetadata | null;
+  warning_acknowledgements: AbiCallStatusSummary[];
+  warning_summaries: AbiCallStatusSummary[];
+  blocking_statuses: AbiCallStatusSummary[];
+  frozen_key: string | null;
+  future_submission: AbiCallSubmissionPlaceholder | null;
+  future_outcome: AbiCallOutcomePlaceholder | null;
+  broadcast: AbiCallBroadcastPlaceholder | null;
+  recovery: AbiCallRecoveryPlaceholder | null;
+}
+
 export interface HistoryRecord {
   schema_version: number;
   intent: HistoryTransactionIntent;
@@ -399,6 +454,7 @@ export interface HistoryRecord {
   batch_metadata?: BatchHistoryMetadata | null;
   abi_call_metadata?: AbiCallHistoryMetadata | null;
   raw_calldata_metadata?: RawCalldataHistoryMetadata | null;
+  asset_approval_revoke_metadata?: AssetApprovalRevokeHistoryMetadata | null;
 }
 
 const LEGACY = "legacy";
@@ -413,6 +469,7 @@ const TRANSACTION_TYPES = new Set<TransactionType>([
   "erc20Transfer",
   "contractCall",
   "rawCalldata",
+  "assetApprovalRevoke",
   "unknown",
 ]);
 const SUBMISSION_KINDS = new Set<SubmissionKind>([
@@ -421,6 +478,7 @@ const SUBMISSION_KINDS = new Set<SubmissionKind>([
   "erc20Transfer",
   "abiWriteCall",
   "rawCalldata",
+  "assetApprovalRevoke",
   "replacement",
   "cancellation",
   "unsupported",
@@ -609,9 +667,24 @@ function canonicalRawCalldataTypedFields<T extends TypedTransactionFields>(value
   };
 }
 
+function canonicalAssetApprovalRevokeTypedFields<T extends TypedTransactionFields>(value: T): T {
+  return {
+    ...value,
+    transaction_type: "assetApprovalRevoke",
+    recipient: null,
+    amount_raw: null,
+    decimals: null,
+    token_symbol: null,
+    token_name: null,
+    token_metadata_source: null,
+    native_value_wei: value.native_value_wei ?? "0",
+  };
+}
+
 function transactionTypeFallbackForSubmission(kind: SubmissionKind): TransactionType {
   if (kind === "abiWriteCall") return "contractCall";
   if (kind === "rawCalldata") return "rawCalldata";
+  if (kind === "assetApprovalRevoke") return "assetApprovalRevoke";
   return kind === "erc20Transfer" ? "erc20Transfer" : "nativeTransfer";
 }
 
@@ -1095,6 +1168,95 @@ export function normalizeRawCalldataMetadata(rawMetadata: unknown): RawCalldataH
   };
 }
 
+function normalizeAssetApprovalRevokeIntentKind(
+  value: unknown,
+): AssetApprovalRevokeHistoryMetadata["intent_kind"] {
+  return value === "assetApprovalRevoke" ? value : "unknown";
+}
+
+function normalizeAssetApprovalRevokeSnapshotMetadata(
+  rawSnapshot: unknown,
+): AssetApprovalRevokeSnapshotMetadata | null {
+  if (rawSnapshot == null) return null;
+  const snapshot = objectOrEmpty(rawSnapshot);
+  return {
+    identity_key: stringOrNull(snapshot.identity_key ?? snapshot.identityKey),
+    status: stringOrNull(snapshot.status),
+    source_kind: stringOrNull(snapshot.source_kind ?? snapshot.sourceKind),
+    source_summary: sanitizeDurableRpcSummary(snapshot.source_summary ?? snapshot.sourceSummary, 160),
+    stale: booleanOrNull(snapshot.stale),
+    failure: booleanOrNull(snapshot.failure),
+    created_at: stringOrNull(snapshot.created_at ?? snapshot.createdAt),
+    updated_at: stringOrNull(snapshot.updated_at ?? snapshot.updatedAt),
+    last_scanned_at: stringOrNull(snapshot.last_scanned_at ?? snapshot.lastScannedAt),
+    stale_after: stringOrNull(snapshot.stale_after ?? snapshot.staleAfter),
+    rpc_identity: sanitizeDurableRpcSummary(snapshot.rpc_identity ?? snapshot.rpcIdentity, 200),
+    rpc_profile_id: stringOrNull(snapshot.rpc_profile_id ?? snapshot.rpcProfileId),
+  };
+}
+
+export function normalizeAssetApprovalRevokeMetadata(
+  rawMetadata: unknown,
+): AssetApprovalRevokeHistoryMetadata | null {
+  if (rawMetadata == null) return null;
+  const metadata = objectOrEmpty(rawMetadata);
+  return {
+    intent_kind: normalizeAssetApprovalRevokeIntentKind(metadata.intent_kind ?? metadata.intentKind),
+    draft_id: stringOrNull(metadata.draft_id ?? metadata.draftId),
+    created_at: stringOrNull(metadata.created_at ?? metadata.createdAt),
+    frozen_at: stringOrNull(metadata.frozen_at ?? metadata.frozenAt),
+    chain_id: numberOrNull(metadata.chain_id ?? metadata.chainId),
+    account_index: numberOrNull(metadata.account_index ?? metadata.accountIndex),
+    from: stringOrNull(metadata.from),
+    to: stringOrNull(metadata.to),
+    value_wei: stringOrNull(metadata.value_wei ?? metadata.valueWei),
+    approval_kind: stringOrNull(metadata.approval_kind ?? metadata.approvalKind),
+    token_approval_contract: stringOrNull(
+      metadata.token_approval_contract ?? metadata.tokenApprovalContract,
+    ),
+    spender: stringOrNull(metadata.spender),
+    operator: stringOrNull(metadata.operator),
+    token_id: stringOrNull(metadata.token_id ?? metadata.tokenId),
+    method: stringOrNull(metadata.method),
+    selector: normalizeRawCalldataSelector(metadata.selector),
+    calldata_hash: normalizeRawCalldataHash(metadata.calldata_hash ?? metadata.calldataHash, "keccak256-v1"),
+    calldata_byte_length: numberOrNull(metadata.calldata_byte_length ?? metadata.calldataByteLength),
+    calldata_args: Array.isArray(metadata.calldata_args ?? metadata.calldataArgs)
+      ? ((metadata.calldata_args ?? metadata.calldataArgs) as unknown[])
+          .slice(0, 8)
+          .map((arg: unknown) => normalizeAbiDecodedFieldSummary(arg, 0))
+      : [],
+    gas_limit: stringOrNull(metadata.gas_limit ?? metadata.gasLimit),
+    latest_base_fee_per_gas: stringOrNull(
+      metadata.latest_base_fee_per_gas ?? metadata.latestBaseFeePerGas,
+    ),
+    base_fee_per_gas: stringOrNull(metadata.base_fee_per_gas ?? metadata.baseFeePerGas),
+    max_fee_per_gas: stringOrNull(metadata.max_fee_per_gas ?? metadata.maxFeePerGas),
+    max_priority_fee_per_gas: stringOrNull(
+      metadata.max_priority_fee_per_gas ?? metadata.maxPriorityFeePerGas,
+    ),
+    nonce: numberOrNull(metadata.nonce),
+    selected_rpc: normalizeAbiSelectedRpcSummary(metadata.selected_rpc ?? metadata.selectedRpc),
+    snapshot: normalizeAssetApprovalRevokeSnapshotMetadata(metadata.snapshot),
+    warning_acknowledgements: normalizeAbiStatusSummaries(
+      metadata.warning_acknowledgements ?? metadata.warningAcknowledgements,
+    ),
+    warning_summaries: normalizeAbiStatusSummaries(
+      metadata.warning_summaries ?? metadata.warningSummaries,
+    ),
+    blocking_statuses: normalizeAbiStatusSummaries(
+      metadata.blocking_statuses ?? metadata.blockingStatuses,
+    ),
+    frozen_key: sanitizeRawFrozenKey(metadata.frozen_key ?? metadata.frozenKey),
+    future_submission: normalizeAbiSubmissionPlaceholder(
+      metadata.future_submission ?? metadata.futureSubmission,
+    ),
+    future_outcome: normalizeAbiOutcomePlaceholder(metadata.future_outcome ?? metadata.futureOutcome),
+    broadcast: normalizeAbiBroadcastPlaceholder(metadata.broadcast),
+    recovery: normalizeAbiRecoveryPlaceholder(metadata.recovery),
+  };
+}
+
 export function normalizeHistoryRecord(rawRecord: unknown): HistoryRecord {
   const record = objectOrEmpty(rawRecord);
   const intentSnapshot = objectOrEmpty(record.intent_snapshot);
@@ -1103,18 +1265,37 @@ export function normalizeHistoryRecord(rawRecord: unknown): HistoryRecord {
   const rawCalldataMetadata = normalizeRawCalldataMetadata(
     record.raw_calldata_metadata ?? record.rawCalldataMetadata,
   );
+  const assetApprovalRevokeMetadata = normalizeAssetApprovalRevokeMetadata(
+    record.asset_approval_revoke_metadata ?? record.assetApprovalRevokeMetadata,
+  );
   const isRawCalldata =
     intent.transaction_type === "rawCalldata" ||
     submission.kind === "rawCalldata" ||
     submission.transaction_type === "rawCalldata" ||
     rawCalldataMetadata != null;
-  const normalizedIntent = isRawCalldata ? canonicalRawCalldataTypedFields(intent) : intent;
+  const isAssetApprovalRevoke =
+    !isRawCalldata &&
+    (intent.transaction_type === "assetApprovalRevoke" ||
+      submission.kind === "assetApprovalRevoke" ||
+      submission.transaction_type === "assetApprovalRevoke" ||
+      assetApprovalRevokeMetadata != null);
+  const normalizedIntent = isRawCalldata
+    ? canonicalRawCalldataTypedFields(intent)
+    : isAssetApprovalRevoke
+      ? canonicalAssetApprovalRevokeTypedFields(intent)
+      : intent;
   const normalizedSubmission = isRawCalldata
     ? {
         ...canonicalRawCalldataTypedFields(submission),
         frozen_key: sanitizeRawFrozenKey(submission.frozen_key) ?? UNKNOWN,
         kind: "rawCalldata" as const,
       }
+    : isAssetApprovalRevoke
+      ? {
+          ...canonicalAssetApprovalRevokeTypedFields(submission),
+          frozen_key: sanitizeRawFrozenKey(submission.frozen_key) ?? UNKNOWN,
+          kind: "assetApprovalRevoke" as const,
+        }
     : submission;
   return {
     schema_version: numberOrNull(record.schema_version) ?? 1,
@@ -1126,11 +1307,14 @@ export function normalizeHistoryRecord(rawRecord: unknown): HistoryRecord {
     submission: normalizedSubmission,
     outcome: normalizeOutcome(record.outcome),
     nonce_thread: normalizeNonceThread(record.nonce_thread),
-    batch_metadata: isRawCalldata ? null : normalizeBatchMetadata(record.batch_metadata ?? record.batchMetadata),
-    abi_call_metadata: isRawCalldata
+    batch_metadata: isRawCalldata || isAssetApprovalRevoke
+      ? null
+      : normalizeBatchMetadata(record.batch_metadata ?? record.batchMetadata),
+    abi_call_metadata: isRawCalldata || isAssetApprovalRevoke
       ? null
       : normalizeAbiCallMetadata(record.abi_call_metadata ?? record.abiCallMetadata),
-    raw_calldata_metadata: rawCalldataMetadata,
+    raw_calldata_metadata: isAssetApprovalRevoke ? null : rawCalldataMetadata,
+    asset_approval_revoke_metadata: assetApprovalRevokeMetadata,
   };
 }
 

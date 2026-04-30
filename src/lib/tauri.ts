@@ -2,10 +2,12 @@ import { invoke } from "@tauri-apps/api/core";
 import {
   normalizeHistoryRecord,
   normalizeAbiCallMetadata,
+  normalizeAssetApprovalRevokeMetadata,
   normalizeBatchMetadata,
   normalizeRawCalldataMetadata,
   parseTransactionHistoryPayload,
   type AbiCallHistoryMetadata,
+  type AssetApprovalRevokeHistoryMetadata,
   type BatchHistoryMetadata,
   type HistoryRecord as NormalizedHistoryRecord,
   type NativeTransferIntent as NormalizedNativeTransferIntent,
@@ -37,6 +39,7 @@ export type {
   HistoryRecord,
   NativeTransferIntent,
   RawCalldataHistoryMetadata,
+  AssetApprovalRevokeHistoryMetadata,
   SubmissionKind,
   TransactionType,
 } from "../core/history/schema";
@@ -406,6 +409,87 @@ export interface RawCalldataSubmitInput {
   humanPreview: RawCalldataHumanPreview;
 }
 
+export interface AssetApprovalRevokeSelectedRpcInput {
+  chainId?: number | null;
+  providerConfigId?: string | null;
+  endpointId?: string | null;
+  endpointName?: string | null;
+  endpointSummary?: string | null;
+  endpointFingerprint?: string | null;
+}
+
+export interface AssetApprovalRevokeSnapshotIdentityInput {
+  identityKey: string;
+  chainId: number;
+  owner: string;
+  contract: string;
+  kind: "erc20Allowance" | "erc721ApprovalForAll" | "erc721TokenApproval" | string;
+  spender?: string | null;
+  operator?: string | null;
+  tokenId?: string | null;
+  status: string;
+  sourceKind: string;
+  sourceSummary?: string | null;
+  source?: unknown;
+  stale?: boolean;
+  failure?: boolean;
+  ref?: {
+    createdAt?: string | null;
+    updatedAt?: string | null;
+    lastScannedAt?: string | null;
+    staleAfter?: string | null;
+    rpcIdentity?: string | null;
+    rpcProfileId?: string | null;
+  };
+}
+
+export interface AssetApprovalRevokeCalldataArgInput {
+  name: string;
+  type: string;
+  value: string | boolean;
+}
+
+export interface AssetApprovalRevokeStatusInput {
+  level: string;
+  code: string;
+  message: string;
+  source: string;
+  requiresAcknowledgement?: boolean;
+  acknowledged?: boolean;
+}
+
+export interface AssetApprovalRevokeSubmitInput {
+  rpcUrl: string;
+  draftId?: string | null;
+  frozenKey: string;
+  createdAt?: string | null;
+  frozenAt?: string | null;
+  chainId: number;
+  selectedRpc: AssetApprovalRevokeSelectedRpcInput;
+  from: string;
+  accountIndex: number;
+  to: string;
+  valueWei: "0" | string;
+  approvalIdentity: AssetApprovalRevokeSnapshotIdentityInput;
+  approvalKind: string;
+  tokenApprovalContract: string;
+  spender?: string | null;
+  operator?: string | null;
+  tokenId?: string | null;
+  method: string;
+  selector: string;
+  calldata: string;
+  calldataArgs: AssetApprovalRevokeCalldataArgInput[];
+  nonce: number;
+  gasLimit: string;
+  latestBaseFeePerGas?: string | null;
+  baseFeePerGas?: string | null;
+  maxFeePerGas: string;
+  maxPriorityFeePerGas: string;
+  warnings: AssetApprovalRevokeStatusInput[];
+  blockingStatuses: AssetApprovalRevokeStatusInput[];
+}
+
 export interface AbiCallDataSummary {
   byteLength: number;
   hash: string;
@@ -532,6 +616,54 @@ export type BalanceStatus =
   | "rpcFailed"
   | "chainMismatch"
   | "stale";
+export type ApprovalSourceKind =
+  | "rpcPointRead"
+  | "userWatchlist"
+  | "historyDerivedCandidate"
+  | "explorerCandidate"
+  | "indexerCandidate"
+  | "manualImport"
+  | "unavailable";
+export type ApprovalWatchKind =
+  | "erc20Allowance"
+  | "erc721ApprovalForAll"
+  | "erc721TokenApproval";
+export type AssetKind = "erc20" | "erc721" | "erc1155";
+export type AssetSnapshotStatus =
+  | "active"
+  | "zero"
+  | "unknown"
+  | "stale"
+  | "readFailed"
+  | "sourceUnavailable"
+  | "rateLimited"
+  | "chainMismatch";
+export type AllowanceSnapshotStatus =
+  | "active"
+  | "zero"
+  | "unknown"
+  | "stale"
+  | "readFailed"
+  | "sourceUnavailable"
+  | "rateLimited"
+  | "chainMismatch";
+export type NftApprovalSnapshotStatus =
+  | "active"
+  | "revoked"
+  | "unknown"
+  | "stale"
+  | "readFailed"
+  | "sourceUnavailable"
+  | "rateLimited"
+  | "chainMismatch";
+export type AssetScanJobStatus =
+  | "idle"
+  | "scanning"
+  | "ok"
+  | "partial"
+  | "failed"
+  | "chainMismatch"
+  | "sourceUnavailable";
 
 export interface MetadataOverride {
   symbol?: string | null;
@@ -606,6 +738,101 @@ export interface Erc20BalanceSnapshotRecord {
   resolvedMetadata?: ResolvedTokenMetadataSnapshot | null;
 }
 
+export interface ApprovalSourceMetadata {
+  kind: ApprovalSourceKind;
+  label?: string | null;
+  sourceId?: string | null;
+  summary?: string | null;
+  providerHint?: string | null;
+  observedAt?: string | null;
+}
+
+export interface ApprovalWatchlistRecord {
+  chainId: number;
+  owner: string;
+  tokenContract: string;
+  kind: ApprovalWatchKind;
+  spender?: string | null;
+  operator?: string | null;
+  tokenId?: string | null;
+  enabled: boolean;
+  label?: string | null;
+  userNotes?: string | null;
+  source: ApprovalSourceMetadata;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AssetScanJobRecord {
+  jobId: string;
+  chainId: number;
+  owner: string;
+  status: AssetScanJobStatus;
+  source: ApprovalSourceMetadata;
+  contractFilter?: string | null;
+  startedAt?: string | null;
+  finishedAt?: string | null;
+  lastErrorSummary?: string | null;
+  rpcIdentity?: string | null;
+  rpcProfileId?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AssetSnapshotRecord {
+  chainId: number;
+  owner: string;
+  tokenContract: string;
+  assetKind: AssetKind;
+  tokenId?: string | null;
+  balanceRaw?: string | null;
+  status: AssetSnapshotStatus;
+  source: ApprovalSourceMetadata;
+  lastScannedAt?: string | null;
+  lastErrorSummary?: string | null;
+  staleAfter?: string | null;
+  rpcIdentity?: string | null;
+  rpcProfileId?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AllowanceSnapshotRecord {
+  chainId: number;
+  owner: string;
+  tokenContract: string;
+  spender: string;
+  allowanceRaw: string;
+  status: AllowanceSnapshotStatus;
+  source: ApprovalSourceMetadata;
+  lastScannedAt?: string | null;
+  lastErrorSummary?: string | null;
+  staleAfter?: string | null;
+  rpcIdentity?: string | null;
+  rpcProfileId?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface NftApprovalSnapshotRecord {
+  chainId: number;
+  owner: string;
+  tokenContract: string;
+  kind: ApprovalWatchKind;
+  operator: string;
+  tokenId?: string | null;
+  approved?: boolean | null;
+  status: NftApprovalSnapshotStatus;
+  source: ApprovalSourceMetadata;
+  lastScannedAt?: string | null;
+  lastErrorSummary?: string | null;
+  staleAfter?: string | null;
+  rpcIdentity?: string | null;
+  rpcProfileId?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface ResolvedTokenMetadataRecord extends ResolvedTokenMetadataSnapshot {
   chainId: number;
   tokenContract: string;
@@ -618,6 +845,11 @@ export interface TokenWatchlistState {
   tokenMetadataCache: TokenMetadataCacheRecord[];
   tokenScanState: TokenScanStateRecord[];
   erc20BalanceSnapshots: Erc20BalanceSnapshotRecord[];
+  approvalWatchlist?: ApprovalWatchlistRecord[];
+  assetScanJobs?: AssetScanJobRecord[];
+  assetSnapshots?: AssetSnapshotRecord[];
+  allowanceSnapshots?: AllowanceSnapshotRecord[];
+  nftApprovalSnapshots?: NftApprovalSnapshotRecord[];
   resolvedTokenMetadata: ResolvedTokenMetadataRecord[];
 }
 
@@ -712,6 +944,114 @@ export interface UpsertErc20BalanceSnapshotInput {
   clearResolvedMetadata?: boolean;
 }
 
+export interface ApprovalSourceMetadataInput {
+  kind: ApprovalSourceKind;
+  label?: string | null;
+  sourceId?: string | null;
+  summary?: string | null;
+  providerHint?: string | null;
+  observedAt?: string | null;
+}
+
+export interface UpsertApprovalWatchlistEntryInput {
+  chainId: number;
+  owner: string;
+  tokenContract: string;
+  kind: ApprovalWatchKind;
+  spender?: string | null;
+  operator?: string | null;
+  tokenId?: string | null;
+  enabled?: boolean | null;
+  label?: string | null;
+  clearLabel?: boolean;
+  userNotes?: string | null;
+  clearUserNotes?: boolean;
+  source?: ApprovalSourceMetadataInput | null;
+}
+
+export interface UpsertAssetScanJobInput {
+  jobId?: string | null;
+  chainId: number;
+  owner: string;
+  status: AssetScanJobStatus;
+  source?: ApprovalSourceMetadataInput | null;
+  contractFilter?: string | null;
+  clearContractFilter?: boolean;
+  startedAt?: string | null;
+  clearStartedAt?: boolean;
+  finishedAt?: string | null;
+  clearFinishedAt?: boolean;
+  lastErrorSummary?: string | null;
+  clearLastErrorSummary?: boolean;
+  rpcIdentity?: string | null;
+  clearRpcIdentity?: boolean;
+  rpcProfileId?: string | null;
+  clearRpcProfileId?: boolean;
+}
+
+export interface UpsertAssetSnapshotInput {
+  chainId: number;
+  owner: string;
+  tokenContract: string;
+  assetKind: AssetKind;
+  tokenId?: string | null;
+  balanceRaw?: string | null;
+  status: AssetSnapshotStatus;
+  source?: ApprovalSourceMetadataInput | null;
+  lastScannedAt?: string | null;
+  clearLastScannedAt?: boolean;
+  lastErrorSummary?: string | null;
+  clearLastErrorSummary?: boolean;
+  staleAfter?: string | null;
+  clearStaleAfter?: boolean;
+  rpcIdentity?: string | null;
+  clearRpcIdentity?: boolean;
+  rpcProfileId?: string | null;
+  clearRpcProfileId?: boolean;
+}
+
+export interface UpsertAllowanceSnapshotInput {
+  chainId: number;
+  owner: string;
+  tokenContract: string;
+  spender: string;
+  allowanceRaw?: string | null;
+  status: AllowanceSnapshotStatus;
+  source?: ApprovalSourceMetadataInput | null;
+  lastScannedAt?: string | null;
+  clearLastScannedAt?: boolean;
+  lastErrorSummary?: string | null;
+  clearLastErrorSummary?: boolean;
+  staleAfter?: string | null;
+  clearStaleAfter?: boolean;
+  rpcIdentity?: string | null;
+  clearRpcIdentity?: boolean;
+  rpcProfileId?: string | null;
+  clearRpcProfileId?: boolean;
+}
+
+export interface UpsertNftApprovalSnapshotInput {
+  chainId: number;
+  owner: string;
+  tokenContract: string;
+  kind: Exclude<ApprovalWatchKind, "erc20Allowance">;
+  operator: string;
+  tokenId?: string | null;
+  approved?: boolean | null;
+  status: NftApprovalSnapshotStatus;
+  source?: ApprovalSourceMetadataInput | null;
+  lastScannedAt?: string | null;
+  clearLastScannedAt?: boolean;
+  lastErrorSummary?: string | null;
+  clearLastErrorSummary?: boolean;
+  staleAfter?: string | null;
+  clearStaleAfter?: boolean;
+  rpcIdentity?: string | null;
+  clearRpcIdentity?: boolean;
+  rpcProfileId?: string | null;
+  clearRpcProfileId?: boolean;
+}
+
 export interface ScanWatchlistTokenMetadataInput {
   rpcUrl: string;
   chainId: number;
@@ -733,6 +1073,34 @@ export interface ScanWatchlistBalancesInput {
   accounts?: string[] | null;
   tokenContracts?: string[] | null;
   retryFailedOnly?: boolean;
+  rpcProfileId?: string | null;
+}
+
+export interface ScanErc20AllowanceInput {
+  rpcUrl: string;
+  chainId: number;
+  owner: string;
+  tokenContract: string;
+  spender: string;
+  rpcProfileId?: string | null;
+}
+
+export interface ScanNftOperatorApprovalInput {
+  rpcUrl: string;
+  chainId: number;
+  owner: string;
+  tokenContract: string;
+  operator: string;
+  rpcProfileId?: string | null;
+}
+
+export interface ScanErc721TokenApprovalInput {
+  rpcUrl: string;
+  chainId: number;
+  owner: string;
+  tokenContract: string;
+  tokenId: string;
+  operator?: string | null;
   rpcProfileId?: string | null;
 }
 
@@ -820,6 +1188,7 @@ export interface HistoryRecoveryIntent {
     | "erc20Transfer"
     | "abiWriteCall"
     | "rawCalldata"
+    | "assetApprovalRevoke"
     | "replacement"
     | "cancellation"
     | "unsupported";
@@ -847,6 +1216,7 @@ export interface HistoryRecoveryIntent {
   batchMetadata?: BatchHistoryMetadata | null;
   abiCallMetadata?: AbiCallHistoryMetadata | null;
   rawCalldataMetadata?: RawCalldataHistoryMetadata | null;
+  assetApprovalRevokeMetadata?: AssetApprovalRevokeHistoryMetadata | null;
   broadcastedAt: string;
   writeError: string;
   lastRecoveryError: string | null;
@@ -862,6 +1232,8 @@ function normalizeHistoryRecoveryIntent(rawIntent: unknown): HistoryRecoveryInte
     batchMetadata?: unknown;
     raw_calldata_metadata?: unknown;
     rawCalldataMetadata?: unknown;
+    asset_approval_revoke_metadata?: unknown;
+    assetApprovalRevokeMetadata?: unknown;
   };
   return {
     ...intent,
@@ -869,6 +1241,9 @@ function normalizeHistoryRecoveryIntent(rawIntent: unknown): HistoryRecoveryInte
     batchMetadata: normalizeBatchMetadata(intent.batchMetadata ?? intent.batch_metadata),
     rawCalldataMetadata: normalizeRawCalldataMetadata(
       intent.rawCalldataMetadata ?? intent.raw_calldata_metadata,
+    ),
+    assetApprovalRevokeMetadata: normalizeAssetApprovalRevokeMetadata(
+      intent.assetApprovalRevokeMetadata ?? intent.asset_approval_revoke_metadata,
     ),
   };
 }
@@ -998,6 +1373,11 @@ export async function submitRawCalldata(input: RawCalldataSubmitInput) {
   return normalizeHistoryRecord(JSON.parse(raw));
 }
 
+export async function submitAssetApprovalRevoke(input: AssetApprovalRevokeSubmitInput) {
+  const raw = await invoke<string>("submit_asset_approval_revoke_command", { input });
+  return normalizeHistoryRecord(JSON.parse(raw));
+}
+
 export function loadTokenWatchlistState() {
   return invoke<TokenWatchlistState>("load_token_watchlist_state");
 }
@@ -1026,6 +1406,26 @@ export function upsertErc20BalanceSnapshot(input: UpsertErc20BalanceSnapshotInpu
   return invoke<TokenWatchlistState>("upsert_erc20_balance_snapshot", { input });
 }
 
+export function upsertApprovalWatchlistEntry(input: UpsertApprovalWatchlistEntryInput) {
+  return invoke<TokenWatchlistState>("upsert_approval_watchlist_entry", { input });
+}
+
+export function upsertAssetScanJob(input: UpsertAssetScanJobInput) {
+  return invoke<TokenWatchlistState>("upsert_asset_scan_job", { input });
+}
+
+export function upsertAssetSnapshot(input: UpsertAssetSnapshotInput) {
+  return invoke<TokenWatchlistState>("upsert_asset_snapshot", { input });
+}
+
+export function upsertAllowanceSnapshot(input: UpsertAllowanceSnapshotInput) {
+  return invoke<TokenWatchlistState>("upsert_allowance_snapshot", { input });
+}
+
+export function upsertNftApprovalSnapshot(input: UpsertNftApprovalSnapshotInput) {
+  return invoke<TokenWatchlistState>("upsert_nft_approval_snapshot", { input });
+}
+
 export function scanWatchlistTokenMetadata(input: ScanWatchlistTokenMetadataInput) {
   return invoke<TokenWatchlistState>("scan_watchlist_token_metadata", { input });
 }
@@ -1036,6 +1436,18 @@ export function scanErc20Balance(input: ScanErc20BalanceInput) {
 
 export function scanWatchlistBalances(input: ScanWatchlistBalancesInput) {
   return invoke<TokenWatchlistState>("scan_watchlist_balances", { input });
+}
+
+export function scanErc20Allowance(input: ScanErc20AllowanceInput) {
+  return invoke<TokenWatchlistState>("scan_erc20_allowance", { input });
+}
+
+export function scanNftOperatorApproval(input: ScanNftOperatorApprovalInput) {
+  return invoke<TokenWatchlistState>("scan_nft_operator_approval", { input });
+}
+
+export function scanErc721TokenApproval(input: ScanErc721TokenApprovalInput) {
+  return invoke<TokenWatchlistState>("scan_erc721_token_approval", { input });
 }
 
 export async function createAndScanAccount(index: number, chainId: number, rpcUrl: string) {

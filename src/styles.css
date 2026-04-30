@@ -226,7 +226,8 @@ td {
   gap: 8px;
 }
 
-.tokens-grid {
+.tokens-grid,
+.assets-grid {
   max-width: 1180px;
 }
 
@@ -521,6 +522,24 @@ td {
     minmax(150px, 1fr) auto;
   gap: 10px;
   align-items: end;
+}
+
+.asset-filter-grid {
+  display: grid;
+  grid-template-columns: repeat(8, minmax(120px, 1fr));
+  gap: 10px;
+  align-items: end;
+}
+
+.asset-candidate-grid {
+  display: grid;
+  grid-template-columns: minmax(170px, 0.9fr) minmax(190px, 1fr) minmax(220px, 1.2fr) 90px minmax(220px, 1.2fr);
+  gap: 10px;
+  align-items: end;
+}
+
+.asset-candidate-grid button {
+  min-height: 38px;
 }
 
 .token-edit-grid {
@@ -1171,6 +1190,8 @@ td {
 
   .history-controls,
   .diagnostics-controls,
+  .asset-filter-grid,
+  .asset-candidate-grid,
   .abi-target-grid,
   .abi-caller-grid,
   .abi-write-controls,

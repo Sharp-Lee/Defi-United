@@ -102,6 +102,7 @@ pub enum SubmissionKind {
     Erc20Transfer,
     AbiWriteCall,
     RawCalldata,
+    AssetApprovalRevoke,
     Replacement,
     Cancellation,
     #[serde(other)]
@@ -122,6 +123,7 @@ pub enum TransactionType {
     Erc20Transfer,
     ContractCall,
     RawCalldata,
+    AssetApprovalRevoke,
     #[serde(other)]
     Unknown,
 }
@@ -214,6 +216,21 @@ impl TypedTransactionFields {
             transaction_type: TransactionType::RawCalldata,
             selector,
             native_value_wei: Some(native_value_wei.into()),
+            ..Self::default()
+        }
+    }
+
+    pub fn asset_approval_revoke(
+        token_contract: impl Into<String>,
+        selector: impl Into<String>,
+        method_name: impl Into<String>,
+    ) -> Self {
+        Self {
+            transaction_type: TransactionType::AssetApprovalRevoke,
+            token_contract: Some(token_contract.into()),
+            selector: Some(selector.into()),
+            method_name: Some(method_name.into()),
+            native_value_wei: Some("0".to_string()),
             ..Self::default()
         }
     }
@@ -856,6 +873,110 @@ pub struct RawCalldataHistoryMetadata {
         deserialize_with = "deserialize_sanitized_raw_frozen_key_option",
         serialize_with = "serialize_sanitized_raw_frozen_key_option"
     )]
+    pub frozen_key: Option<String>,
+    #[serde(default, alias = "future_submission")]
+    pub future_submission: Option<AbiCallSubmissionPlaceholder>,
+    #[serde(default, alias = "future_outcome")]
+    pub future_outcome: Option<AbiCallOutcomePlaceholder>,
+    #[serde(default)]
+    pub broadcast: Option<AbiCallBroadcastPlaceholder>,
+    #[serde(default)]
+    pub recovery: Option<AbiCallRecoveryPlaceholder>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AssetApprovalRevokeSnapshotMetadata {
+    #[serde(default, alias = "identity_key")]
+    pub identity_key: Option<String>,
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default, alias = "source_kind")]
+    pub source_kind: Option<String>,
+    #[serde(default, alias = "source_summary")]
+    pub source_summary: Option<String>,
+    #[serde(default)]
+    pub stale: Option<bool>,
+    #[serde(default)]
+    pub failure: Option<bool>,
+    #[serde(default, alias = "created_at")]
+    pub created_at: Option<String>,
+    #[serde(default, alias = "updated_at")]
+    pub updated_at: Option<String>,
+    #[serde(default, alias = "last_scanned_at")]
+    pub last_scanned_at: Option<String>,
+    #[serde(default, alias = "stale_after")]
+    pub stale_after: Option<String>,
+    #[serde(default, alias = "rpc_identity")]
+    pub rpc_identity: Option<String>,
+    #[serde(default, alias = "rpc_profile_id")]
+    pub rpc_profile_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AssetApprovalRevokeHistoryMetadata {
+    #[serde(default = "unknown_string", alias = "intent_kind")]
+    pub intent_kind: String,
+    #[serde(default, alias = "draft_id")]
+    pub draft_id: Option<String>,
+    #[serde(default, alias = "created_at")]
+    pub created_at: Option<String>,
+    #[serde(default, alias = "frozen_at")]
+    pub frozen_at: Option<String>,
+    #[serde(default, alias = "chain_id")]
+    pub chain_id: Option<u64>,
+    #[serde(default, alias = "account_index")]
+    pub account_index: Option<u32>,
+    #[serde(default)]
+    pub from: Option<String>,
+    #[serde(default)]
+    pub to: Option<String>,
+    #[serde(default, alias = "value_wei")]
+    pub value_wei: Option<String>,
+    #[serde(default, alias = "approval_kind")]
+    pub approval_kind: Option<String>,
+    #[serde(default, alias = "token_approval_contract")]
+    pub token_approval_contract: Option<String>,
+    #[serde(default)]
+    pub spender: Option<String>,
+    #[serde(default)]
+    pub operator: Option<String>,
+    #[serde(default, alias = "token_id")]
+    pub token_id: Option<String>,
+    #[serde(default)]
+    pub method: Option<String>,
+    #[serde(default)]
+    pub selector: Option<String>,
+    #[serde(default, alias = "calldata_hash")]
+    pub calldata_hash: Option<String>,
+    #[serde(default, alias = "calldata_byte_length")]
+    pub calldata_byte_length: Option<u64>,
+    #[serde(default, alias = "calldata_args")]
+    pub calldata_args: Vec<AbiDecodedFieldHistorySummary>,
+    #[serde(default, alias = "gas_limit")]
+    pub gas_limit: Option<String>,
+    #[serde(default, alias = "latest_base_fee_per_gas")]
+    pub latest_base_fee_per_gas: Option<String>,
+    #[serde(default, alias = "base_fee_per_gas")]
+    pub base_fee_per_gas: Option<String>,
+    #[serde(default, alias = "max_fee_per_gas")]
+    pub max_fee_per_gas: Option<String>,
+    #[serde(default, alias = "max_priority_fee_per_gas")]
+    pub max_priority_fee_per_gas: Option<String>,
+    #[serde(default)]
+    pub nonce: Option<u64>,
+    #[serde(default, alias = "selected_rpc")]
+    pub selected_rpc: Option<AbiCallSelectedRpcSummary>,
+    #[serde(default, alias = "snapshot")]
+    pub snapshot: Option<AssetApprovalRevokeSnapshotMetadata>,
+    #[serde(default, alias = "warning_acknowledgements")]
+    pub warning_acknowledgements: Vec<AbiCallStatusSummary>,
+    #[serde(default, alias = "warning_summaries")]
+    pub warning_summaries: Vec<AbiCallStatusSummary>,
+    #[serde(default, alias = "blocking_statuses")]
+    pub blocking_statuses: Vec<AbiCallStatusSummary>,
+    #[serde(default, alias = "frozen_key")]
     pub frozen_key: Option<String>,
     #[serde(default, alias = "future_submission")]
     pub future_submission: Option<AbiCallSubmissionPlaceholder>,
@@ -1847,6 +1968,7 @@ pub struct HistoryRecord {
     pub batch_metadata: Option<BatchHistoryMetadata>,
     pub abi_call_metadata: Option<AbiCallHistoryMetadata>,
     pub raw_calldata_metadata: Option<RawCalldataHistoryMetadata>,
+    pub asset_approval_revoke_metadata: Option<AssetApprovalRevokeHistoryMetadata>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1870,6 +1992,12 @@ struct HistoryRecordUnchecked {
         skip_serializing_if = "Option::is_none"
     )]
     raw_calldata_metadata: Option<RawCalldataHistoryMetadata>,
+    #[serde(
+        default,
+        alias = "assetApprovalRevokeMetadata",
+        skip_serializing_if = "Option::is_none"
+    )]
+    asset_approval_revoke_metadata: Option<AssetApprovalRevokeHistoryMetadata>,
 }
 
 impl<'de> Deserialize<'de> for HistoryRecord {
@@ -1894,6 +2022,7 @@ impl From<HistoryRecordUnchecked> for HistoryRecord {
             batch_metadata: value.batch_metadata,
             abi_call_metadata: value.abi_call_metadata,
             raw_calldata_metadata: value.raw_calldata_metadata,
+            asset_approval_revoke_metadata: value.asset_approval_revoke_metadata,
         }
     }
 }
@@ -1917,6 +2046,7 @@ impl HistoryRecord {
             self.submission.kind = SubmissionKind::RawCalldata;
             self.batch_metadata = None;
             self.abi_call_metadata = None;
+            self.asset_approval_revoke_metadata = None;
         }
     }
 
@@ -1944,6 +2074,7 @@ impl Serialize for HistoryRecord {
             batch_metadata: value.batch_metadata,
             abi_call_metadata: value.abi_call_metadata,
             raw_calldata_metadata: value.raw_calldata_metadata,
+            asset_approval_revoke_metadata: value.asset_approval_revoke_metadata,
         }
         .serialize(serializer)
     }
@@ -2027,6 +2158,12 @@ pub struct HistoryRecoveryIntent {
         skip_serializing_if = "Option::is_none"
     )]
     pub raw_calldata_metadata: Option<RawCalldataHistoryMetadata>,
+    #[serde(
+        default,
+        alias = "assetApprovalRevokeMetadata",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub asset_approval_revoke_metadata: Option<AssetApprovalRevokeHistoryMetadata>,
     pub broadcasted_at: String,
     pub write_error: String,
     #[serde(default)]

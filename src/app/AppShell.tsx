@@ -1,10 +1,15 @@
 import { AccountsView } from "../features/accounts/AccountsView";
 import { AbiLibraryView } from "../features/abi/AbiLibraryView";
 import type { AbiMutationHandlerResult } from "../features/abi/AbiLibraryView";
+import { AssetApprovalsView } from "../features/assets/AssetApprovalsView";
 import { DiagnosticsView } from "../features/diagnostics/DiagnosticsView";
 import { HistoryView } from "../features/history/HistoryView";
 import { AccountOrchestrationView } from "../features/orchestration/AccountOrchestrationView";
-import { RawCalldataView } from "../features/rawCalldata/RawCalldataView";
+import {
+  RawCalldataView,
+  rawCalldataRpcEndpointFingerprint,
+  summarizeRawCalldataRpcEndpoint,
+} from "../features/rawCalldata/RawCalldataView";
 import { SettingsView } from "../features/settings/SettingsView";
 import { TokensView } from "../features/tokens/TokensView";
 import { TransferView } from "../features/transfer/TransferView";
@@ -22,6 +27,7 @@ import type {
   PendingMutationRequest,
   RawCalldataSubmitInput,
   AddWatchlistTokenInput,
+  UpsertApprovalWatchlistEntryInput,
   AbiCacheEntryRecord,
   AbiCalldataPreviewInput,
   AbiCalldataPreviewResult,
@@ -32,6 +38,7 @@ import type {
   AbiReadCallResult,
   AbiRegistryState,
   AbiWriteSubmitInput,
+  AssetApprovalRevokeSubmitInput,
   FetchExplorerAbiInput,
   EditWatchlistTokenInput,
   TokenWatchlistState,
@@ -44,6 +51,7 @@ export type WorkspaceTab =
   | "accounts"
   | "abi"
   | "tokens"
+  | "assets"
   | "orchestration"
   | "transfer"
   | "rawCalldata"
@@ -102,6 +110,28 @@ export interface AppShellProps {
     account: string,
     retryFailedOnly?: boolean,
   ) => Promise<boolean | void> | boolean | void;
+  onAddApprovalCandidate?: (
+    input: UpsertApprovalWatchlistEntryInput,
+  ) => Promise<boolean | void> | boolean | void;
+  onScanErc20Allowance?: (
+    owner: string,
+    chainId: number,
+    tokenContract: string,
+    spender: string,
+  ) => Promise<boolean | void> | boolean | void;
+  onScanNftOperatorApproval?: (
+    owner: string,
+    chainId: number,
+    tokenContract: string,
+    operator: string,
+  ) => Promise<boolean | void> | boolean | void;
+  onScanErc721TokenApproval?: (
+    owner: string,
+    chainId: number,
+    tokenContract: string,
+    tokenId: string,
+    operator?: string | null,
+  ) => Promise<boolean | void> | boolean | void;
   onRefreshAbiRegistry?: () => Promise<boolean | void> | boolean | void;
   onSaveAbiDataSource?: (
     input: UpsertAbiDataSourceConfigInput,
@@ -125,6 +155,7 @@ export interface AppShellProps {
   ) => Promise<AbiCalldataPreviewResult>;
   onCallReadOnlyAbiFunction?: (input: AbiReadCallInput) => Promise<AbiReadCallResult>;
   onSubmitAbiWriteCall?: (input: AbiWriteSubmitInput) => Promise<HistoryRecord>;
+  onSubmitAssetApprovalRevoke?: (input: AssetApprovalRevokeSubmitInput) => Promise<HistoryRecord>;
   onRefreshAccounts?: () => Promise<void> | void;
   onRefreshHistory?: () => Promise<void> | void;
   onQuarantineHistory?: () => Promise<void> | void;
@@ -148,6 +179,7 @@ const workspaceTabs: WorkspaceTab[] = [
   "accounts",
   "abi",
   "tokens",
+  "assets",
   "orchestration",
   "transfer",
   "rawCalldata",
@@ -159,6 +191,7 @@ const workspaceTabs: WorkspaceTab[] = [
 function tabLabel(tab: WorkspaceTab) {
   if (tab === "abi") return "ABI Library";
   if (tab === "rawCalldata") return "Raw Calldata";
+  if (tab === "assets") return "Assets & Approvals";
   return tab[0].toUpperCase() + tab.slice(1);
 }
 
@@ -195,6 +228,10 @@ export function AppShell({
   onScanWatchlistTokenMetadata = async () => {},
   onScanErc20Balance = async () => {},
   onScanWatchlistBalances = async () => {},
+  onAddApprovalCandidate = async () => {},
+  onScanErc20Allowance = async () => {},
+  onScanNftOperatorApproval = async () => {},
+  onScanErc721TokenApproval = async () => {},
   onRefreshAbiRegistry = async () => {},
   onSaveAbiDataSource = async () => {},
   onRemoveAbiDataSource = async () => {},
@@ -271,12 +308,25 @@ export function AppShell({
   onSubmitRawCalldata = async () => {
     throw new Error("Raw calldata submitter is not configured.");
   },
+  onSubmitAssetApprovalRevoke = async () => {
+    throw new Error("Asset approval revoke submitter is not configured.");
+  },
   onNativeBatchSubmitFailed = async () => {},
   onNativeBatchSubmitted = () => {},
   onErc20BatchSubmitted = () => {},
 }: AppShellProps) {
   const selectedChain = chains.find((chain) => chain.chainId === selectedChainId) ?? chains[0];
   const chainReady = settingsStatusKind === "ok" && rpcUrl.trim().length > 0;
+  const selectedRpcForAssets = chainReady
+    ? {
+        chainId: Number(selectedChainId),
+        providerConfigId: `chain-${selectedChainId.toString()}`,
+        endpointId: "active",
+        endpointName: "Selected RPC",
+        endpointSummary: summarizeRawCalldataRpcEndpoint(rpcUrl),
+        endpointFingerprint: rawCalldataRpcEndpointFingerprint(rpcUrl),
+      }
+    : null;
   const globalErrorDisplay = appError
     ? getRawHistoryErrorDisplay({
         message: appError,
@@ -363,6 +413,23 @@ export function AppShell({
                 onScanMetadata={onScanWatchlistTokenMetadata}
                 onScanSelectedAccount={onScanWatchlistBalances}
                 rpcReady={chainReady}
+                selectedChainId={selectedChainId}
+                state={tokenWatchlistState}
+              />
+            )}
+            {activeTab === "assets" && (
+              <AssetApprovalsView
+                accounts={accounts}
+                busy={busy}
+                error={tokenWatchlistError}
+                onAddApprovalCandidate={onAddApprovalCandidate}
+                onScanErc20Allowance={onScanErc20Allowance}
+                onScanErc721TokenApproval={onScanErc721TokenApproval}
+                onScanNftOperatorApproval={onScanNftOperatorApproval}
+                onSubmitAssetApprovalRevoke={onSubmitAssetApprovalRevoke}
+                rpcReady={chainReady}
+                rpcUrl={rpcUrl}
+                selectedRpc={selectedRpcForAssets}
                 selectedChainId={selectedChainId}
                 state={tokenWatchlistState}
               />

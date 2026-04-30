@@ -615,6 +615,246 @@ describe("history schema normalization", () => {
     expect(durable).not.toContain("abandon abandon");
   });
 
+  it("normalizes asset approval revoke metadata without ABI/raw calldata fallback", () => {
+    const tokenContract = "0x4444444444444444444444444444444444444444";
+    const spender = "0x6666666666666666666666666666666666666666";
+    const records = normalizeHistoryRecords([
+      {
+        schema_version: 6,
+        intent: {
+          ...legacyIntent,
+          transaction_type: "assetApprovalRevoke",
+          to: tokenContract,
+          value_wei: "0",
+          token_contract: tokenContract,
+          selector: "0x095ea7b3",
+          method_name: "approve(address,uint256)",
+          native_value_wei: "0",
+          nonce: 17,
+        },
+        submission: {
+          frozen_key: "asset-revoke-frozen",
+          tx_hash: "0xassetrevoke",
+          kind: "assetApprovalRevoke",
+          transaction_type: "assetApprovalRevoke",
+          source: "assetApprovalRevokeDraft",
+          chain_id: 1,
+          account_index: 1,
+          from: legacyIntent.from,
+          to: tokenContract,
+          value_wei: "0",
+          token_contract: tokenContract,
+          selector: "0x095ea7b3",
+          method_name: "approve(address,uint256)",
+          native_value_wei: "0",
+          nonce: 17,
+          gas_limit: "50000",
+          max_fee_per_gas: "40000000000",
+          max_priority_fee_per_gas: "1500000000",
+          broadcasted_at: "1700000001",
+        },
+        outcome: { state: "Pending", tx_hash: "0xassetrevoke" },
+        nonce_thread: {
+          source: "assetApprovalRevokeDraft",
+          key: `1:1:${legacyIntent.from}:17`,
+          chain_id: 1,
+          account_index: 1,
+          from: legacyIntent.from,
+          nonce: 17,
+        },
+        abi_call_metadata: {
+          intent_kind: "abiWriteCall",
+          function_signature: "shouldNotWin()",
+        },
+        assetApprovalRevokeMetadata: {
+          intentKind: "assetApprovalRevoke",
+          draftId: "asset-revoke-draft",
+          createdAt: "2026-04-29T01:02:03.000Z",
+          frozenAt: "2026-04-29T01:02:03.000Z",
+          chainId: 1,
+          accountIndex: 1,
+          from: legacyIntent.from,
+          to: tokenContract,
+          valueWei: "0",
+          approvalKind: "erc20Allowance",
+          tokenApprovalContract: tokenContract,
+          spender,
+          method: "approve(address,uint256)",
+          selector: "0x095ea7b3",
+          calldataHash: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          calldataByteLength: 68,
+          calldataArgs: [
+            { name: "spender", type: "address", display: spender },
+            { name: "amount", type: "uint256", display: "0" },
+          ],
+          gasLimit: "50000",
+          latestBaseFeePerGas: "1000000000",
+          baseFeePerGas: "1000000000",
+          maxFeePerGas: "40000000000",
+          maxPriorityFeePerGas: "1500000000",
+          nonce: 17,
+          selectedRpc: {
+            chainId: 1,
+            endpointSummary: "https://rpc.example/v1?apiKey=secret",
+            endpointFingerprint: "rpc-fp",
+          },
+          snapshot: {
+            identityKey: "asset-approval-identity",
+            status: "active",
+            sourceKind: "rpcPointRead",
+            sourceSummary: "RPC point read",
+            stale: false,
+            failure: false,
+            rpcIdentity: "https://rpc.example/v1?apiKey=secret",
+          },
+          warningAcknowledgements: [
+            { level: "warning", code: "manualFeeGas", message: "acknowledged", source: "fee" },
+          ],
+          warningSummaries: [],
+          blockingStatuses: [],
+          frozenKey: "asset-revoke-frozen",
+          futureSubmission: { status: "broadcasted", txHash: "0xassetrevoke" },
+          futureOutcome: null,
+          broadcast: { status: "broadcasted", txHash: "0xassetrevoke" },
+          recovery: { recoveryId: "asset-recovery", status: "active" },
+        },
+      },
+    ]);
+
+    const record = records[0];
+    expect(record.intent.transaction_type).toBe("assetApprovalRevoke");
+    expect(record.submission.kind).toBe("assetApprovalRevoke");
+    expect(record.abi_call_metadata).toBeNull();
+    expect(record.raw_calldata_metadata).toBeNull();
+    expect(record.asset_approval_revoke_metadata).toMatchObject({
+      intent_kind: "assetApprovalRevoke",
+      approval_kind: "erc20Allowance",
+      token_approval_contract: tokenContract,
+      spender,
+      method: "approve(address,uint256)",
+      selector: "0x095ea7b3",
+      calldata_byte_length: 68,
+      frozen_key: "asset-revoke-frozen",
+    });
+    expect(record.asset_approval_revoke_metadata?.selected_rpc?.endpoint_summary).not.toContain("apiKey=secret");
+    expect(record.asset_approval_revoke_metadata?.snapshot?.rpc_identity).not.toContain("apiKey=secret");
+    expect(record.asset_approval_revoke_metadata?.calldata_args).toHaveLength(2);
+  });
+
+  it("normalizes NFT operator and token-specific revoke metadata identities", () => {
+    const tokenContract = "0x4444444444444444444444444444444444444444";
+    const operator = "0x7777777777777777777777777777777777777777";
+    const rawRecord = (
+      txHash: string,
+      nonce: number,
+      approvalKind: "erc721ApprovalForAll" | "erc721TokenApproval",
+      tokenId: string | null,
+    ) => ({
+      schema_version: 6,
+      intent: {
+        ...legacyIntent,
+        transaction_type: "assetApprovalRevoke",
+        to: tokenContract,
+        value_wei: "0",
+        token_contract: tokenContract,
+        selector: approvalKind === "erc721ApprovalForAll" ? "0xa22cb465" : "0x095ea7b3",
+        method_name:
+          approvalKind === "erc721ApprovalForAll"
+            ? "setApprovalForAll(address,bool)"
+            : "approve(address,uint256)",
+        native_value_wei: "0",
+        nonce,
+      },
+      submission: {
+        frozen_key: `${txHash}-frozen`,
+        tx_hash: txHash,
+        kind: "assetApprovalRevoke",
+        transaction_type: "assetApprovalRevoke",
+        source: "assetApprovalRevokeDraft",
+        chain_id: 1,
+        account_index: 1,
+        from: legacyIntent.from,
+        to: tokenContract,
+        value_wei: "0",
+        token_contract: tokenContract,
+        selector: approvalKind === "erc721ApprovalForAll" ? "0xa22cb465" : "0x095ea7b3",
+        method_name:
+          approvalKind === "erc721ApprovalForAll"
+            ? "setApprovalForAll(address,bool)"
+            : "approve(address,uint256)",
+        native_value_wei: "0",
+        nonce,
+        gas_limit: "50000",
+        max_fee_per_gas: "40000000000",
+        max_priority_fee_per_gas: "1500000000",
+        broadcasted_at: "1700000001",
+      },
+      outcome: { state: "Pending", tx_hash: txHash },
+      assetApprovalRevokeMetadata: {
+        intentKind: "assetApprovalRevoke",
+        chainId: 1,
+        accountIndex: 1,
+        from: legacyIntent.from,
+        to: tokenContract,
+        valueWei: "0",
+        approvalKind,
+        tokenApprovalContract: tokenContract,
+        spender: null,
+        operator,
+        tokenId,
+        method:
+          approvalKind === "erc721ApprovalForAll"
+            ? "setApprovalForAll(address,bool)"
+            : "approve(address,uint256)",
+        selector: approvalKind === "erc721ApprovalForAll" ? "0xa22cb465" : "0x095ea7b3",
+        calldataHash: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        calldataByteLength: 68,
+        calldataArgs: tokenId
+          ? [
+              { name: "approved", type: "address", display: "0x0000000000000000000000000000000000000000" },
+              { name: "tokenId", type: "uint256", display: tokenId },
+            ]
+          : [
+              { name: "operator", type: "address", display: operator },
+              { name: "approved", type: "bool", display: "false" },
+            ],
+        gasLimit: "50000",
+        maxFeePerGas: "40000000000",
+        maxPriorityFeePerGas: "1500000000",
+        nonce,
+        snapshot: {
+          identityKey: `${approvalKind}-identity`,
+          status: "active",
+          sourceKind: "rpcPointRead",
+          stale: false,
+          failure: false,
+        },
+        frozenKey: `${txHash}-frozen`,
+      },
+    });
+
+    const records = normalizeHistoryRecords([
+      rawRecord("0xoperatorrevoke", 18, "erc721ApprovalForAll", null),
+      rawRecord("0xtokenrevoke", 19, "erc721TokenApproval", "42"),
+    ]);
+
+    expect(records[0].asset_approval_revoke_metadata).toMatchObject({
+      approval_kind: "erc721ApprovalForAll",
+      spender: null,
+      operator,
+      token_id: null,
+      method: "setApprovalForAll(address,bool)",
+      selector: "0xa22cb465",
+    });
+    expect(records[1].asset_approval_revoke_metadata).toMatchObject({
+      approval_kind: "erc721TokenApproval",
+      operator,
+      token_id: "42",
+      method: "approve(address,uint256)",
+      selector: "0x095ea7b3",
+    });
+  });
+
   it("redacts oversized accepted raw calldata summary fields", () => {
     const oversizedHex = `0x12345678${"ab".repeat(512)}`;
     const records = normalizeHistoryRecords([
