@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::sync::MutexGuard;
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Value};
 
@@ -25,11 +25,16 @@ const TEST_APP_DIR_ENV: &str = "EVM_WALLET_WORKBENCH_APP_DIR";
 struct FailingHotContractSampleProvider;
 
 impl HotContractSampleProvider for FailingHotContractSampleProvider {
-    fn fetch_samples(
-        &self,
-        _request: &HotContractSourceOutboundRequest,
-    ) -> Result<Vec<HotContractSourceSample>, String> {
-        Err("provider failed https://example.invalid?apiKey=secret-token token=abc123".to_string())
+    fn fetch_samples<'a>(
+        &'a self,
+        _request: &'a HotContractSourceOutboundRequest,
+    ) -> super::source::SampleFetchFuture<'a> {
+        Box::pin(async move {
+            Err(
+                "provider failed https://example.invalid?apiKey=secret-token token=abc123"
+                    .to_string(),
+            )
+        })
     }
 }
 
@@ -39,12 +44,41 @@ struct CapturingHotContractSampleProvider {
 }
 
 impl HotContractSampleProvider for CapturingHotContractSampleProvider {
-    fn fetch_samples(
-        &self,
-        request: &HotContractSourceOutboundRequest,
-    ) -> Result<Vec<HotContractSourceSample>, String> {
-        *self.request.lock().expect("capture request") = Some(request.clone());
-        Ok(vec![sample("0xa9059cbb")])
+    fn fetch_samples<'a>(
+        &'a self,
+        request: &'a HotContractSourceOutboundRequest,
+    ) -> super::source::SampleFetchFuture<'a> {
+        Box::pin(async move {
+            *self.request.lock().expect("capture request") = Some(request.clone());
+            Ok(vec![sample("0xa9059cbb")])
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+struct CapturingSamplesHotContractProvider {
+    request: Arc<Mutex<Option<HotContractSourceOutboundRequest>>>,
+    samples: Vec<HotContractSourceSample>,
+}
+
+impl CapturingSamplesHotContractProvider {
+    fn new(samples: Vec<HotContractSourceSample>) -> Self {
+        Self {
+            request: Arc::new(Mutex::new(None)),
+            samples,
+        }
+    }
+}
+
+impl HotContractSampleProvider for CapturingSamplesHotContractProvider {
+    fn fetch_samples<'a>(
+        &'a self,
+        request: &'a HotContractSourceOutboundRequest,
+    ) -> super::source::SampleFetchFuture<'a> {
+        Box::pin(async move {
+            *self.request.lock().expect("capture request") = Some(request.clone());
+            Ok(self.samples.clone())
+        })
     }
 }
 
@@ -72,18 +106,18 @@ fn rpc_endpoint_fingerprint_matches_existing_frontend_selected_rpc_vector() {
 
 #[tokio::test]
 async fn fetches_code_identity_without_full_payloads() {
-    let (_app_dir, _dir) = AppDirOverride::with_registry(
-        "hot-contract-code-identity",
-        &[data_source(
-            "missing-source",
-            1,
-            "customIndexer",
-            true,
-            None,
-            false,
-            None,
-        )],
+    let (source_url, _source_requests, source_handle) = start_source_server(json!([]));
+    let mut source = data_source(
+        "missing-source",
+        1,
+        "customIndexer",
+        true,
+        None,
+        false,
+        None,
     );
+    source["baseUrl"] = json!(source_url);
+    let (_app_dir, _dir) = AppDirOverride::with_registry("hot-contract-code-identity", &[source]);
     let (rpc_url, requests, handle) = start_rpc_server(vec![
         step("eth_chainId", json!("0x1")),
         step("eth_getCode", json!("0x6001600203")),
@@ -91,6 +125,7 @@ async fn fetches_code_identity_without_full_payloads() {
 
     let result = fetch_hot_contract_analysis_impl(base_input(&rpc_url)).await;
     handle.join().expect("rpc server joins");
+    source_handle.join().expect("source server joins");
     let serialized = serde_json::to_string(&result).expect("serialize result");
 
     assert_eq!(result.status, "ok");
@@ -177,10 +212,411 @@ async fn configured_source_fetch_populates_sample_coverage() {
     handle.join().expect("rpc server joins");
 
     assert_eq!(result.status, "ok");
+    assert_eq!(
+        result.sample_coverage.source_kind.as_deref(),
+        Some("customIndexer")
+    );
+    assert_eq!(
+        result.sample_coverage.provider_config_id.as_deref(),
+        Some("missing-source")
+    );
+    assert_eq!(result.sample_coverage.query_window.as_deref(), Some("24h"));
+    assert_eq!(result.sample_coverage.oldest_block, Some(123));
+    assert_eq!(result.sample_coverage.newest_block, Some(123));
+    assert_eq!(
+        result.sample_coverage.oldest_block_time.as_deref(),
+        Some("2026-04-30T00:00:00Z")
+    );
+    assert_eq!(
+        result.sample_coverage.newest_block_time.as_deref(),
+        Some("2026-04-30T00:00:00Z")
+    );
+    assert_eq!(result.sample_coverage.provider_status, "ok");
+    assert_eq!(result.sample_coverage.rate_limit_status, "notRateLimited");
+    assert_eq!(result.sample_coverage.completeness, "partial");
+    assert_eq!(result.sample_coverage.payload_status, "ok");
     assert_eq!(result.sample_coverage.requested_limit, 2);
     assert_eq!(result.sample_coverage.returned_samples, 2);
     assert_eq!(result.sample_coverage.omitted_samples, 1);
     assert_eq!(result.sample_coverage.source_status, "ok");
+}
+
+#[tokio::test]
+async fn production_configured_source_fetches_bounded_explorer_samples() {
+    let tx_hash = format!("0x{}", "44".repeat(32));
+    let source_body = json!({
+        "status": "1",
+        "message": "OK",
+        "result": [
+            {
+                "hash": tx_hash,
+                "from": "0x2222222222222222222222222222222222222222",
+                "to": CONTRACT,
+                "value": "0",
+                "input": "0xa9059cbb00000000000000000000000033333333333333333333333333333333333333330000000000000000000000000000000000000000000000000000000000000001",
+                "methodId": "0xa9059cbb",
+                "functionName": "transfer(address,uint256)",
+                "blockNumber": "123",
+                "timeStamp": "1777507200",
+                "isError": "0",
+                "txreceipt_status": "1"
+            }
+        ]
+    });
+    let (source_url, source_requests, source_handle) = start_source_server(source_body);
+    let mut source = data_source(
+        "configured-source",
+        1,
+        "etherscanCompatible",
+        true,
+        None,
+        false,
+        None,
+    );
+    source["baseUrl"] = json!(source_url);
+    let (_app_dir, _dir) =
+        AppDirOverride::with_registry("hot-contract-production-source-samples", &[source]);
+    let (rpc_url, _rpc_requests, rpc_handle) = start_rpc_server(vec![
+        step("eth_chainId", json!("0x1")),
+        step("eth_getCode", json!("0x6001600203")),
+    ]);
+
+    let result = fetch_hot_contract_analysis_impl(HotContractAnalysisFetchInput {
+        source: Some(HotContractSourceFetchInput {
+            provider_config_id: Some("configured-source".to_string()),
+            limit: Some(2),
+            window: None,
+            cursor: Some("cursor-ignored-locally".to_string()),
+        }),
+        ..base_input(&rpc_url)
+    })
+    .await;
+    rpc_handle.join().expect("rpc server joins");
+    source_handle.join().expect("source server joins");
+
+    let requests = source_requests.lock().expect("source request lock");
+    assert_eq!(requests.len(), 1, "configured source should be called once");
+    let request = requests[0].clone();
+    assert!(request.starts_with("GET /api?"));
+    assert!(request.contains("module=account"));
+    assert!(request.contains("action=txlist"));
+    assert!(request.contains(&format!("address={CONTRACT}")));
+    assert!(request.contains("page=1"));
+    assert!(request.contains("offset=2"));
+    assert!(request.contains("sort=desc"));
+    assert!(!request.contains("wallet"));
+    assert!(!request.contains("history"));
+    assert!(!request.contains("abi"));
+    assert_eq!(result.status, "ok");
+    assert_eq!(result.sample_coverage.returned_samples, 1);
+    assert_eq!(result.samples[0].tx_hash.as_deref(), Some(tx_hash.as_str()));
+    assert_eq!(result.samples[0].selector.as_deref(), Some("0xa9059cbb"));
+    assert_eq!(
+        result.samples[0].provider_label.as_deref(),
+        Some("transfer(address,uint256)")
+    );
+    assert!(selector_row(&result, "0xa9059cbb").sampled_call_count >= 1);
+}
+
+#[tokio::test]
+async fn production_explorer_source_rejects_window_without_calling_source() {
+    let mut source = data_source(
+        "configured-source",
+        1,
+        "etherscanCompatible",
+        true,
+        None,
+        false,
+        None,
+    );
+    source["baseUrl"] = json!("http://127.0.0.1:9/api");
+    let (_app_dir, _dir) =
+        AppDirOverride::with_registry("hot-contract-explorer-window-unsupported", &[source]);
+    let (rpc_url, _rpc_requests, rpc_handle) = start_rpc_server(vec![
+        step("eth_chainId", json!("0x1")),
+        step("eth_getCode", json!("0x6001600203")),
+    ]);
+
+    let result = fetch_hot_contract_analysis_impl(HotContractAnalysisFetchInput {
+        source: Some(HotContractSourceFetchInput {
+            provider_config_id: Some("configured-source".to_string()),
+            limit: Some(2),
+            window: Some("1h".to_string()),
+            cursor: None,
+        }),
+        ..base_input(&rpc_url)
+    })
+    .await;
+    rpc_handle.join().expect("rpc server joins");
+
+    assert_eq!(result.status, "sourceUnavailable");
+    assert_eq!(result.sources.source.status, "unavailable");
+    assert_eq!(
+        result.sources.source.reason.as_deref(),
+        Some("sourceFetchFailed")
+    );
+    assert_eq!(
+        result.error_summary.as_deref(),
+        Some("sourceWindowUnsupported")
+    );
+}
+
+#[tokio::test]
+async fn production_custom_sample_missing_to_defaults_to_analyzed_contract() {
+    let tx_hash = format!("0x{}", "55".repeat(32));
+    let source_body = json!({
+        "samples": [
+            {
+                "hash": tx_hash,
+                "input": "0xa9059cbb00000000000000000000000033333333333333333333333333333333333333330000000000000000000000000000000000000000000000000000000000000001"
+            }
+        ]
+    });
+    let (source_url, _source_requests, source_handle) = start_source_server(source_body);
+    let mut source = data_source(
+        "configured-source",
+        1,
+        "customIndexer",
+        true,
+        None,
+        false,
+        None,
+    );
+    source["baseUrl"] = json!(source_url);
+    let (_app_dir, _dir) =
+        AppDirOverride::with_registry("hot-contract-custom-missing-to-default", &[source]);
+    let (rpc_url, _rpc_requests, rpc_handle) = start_rpc_server(vec![
+        step("eth_chainId", json!("0x1")),
+        step("eth_getCode", json!("0x6001600203")),
+    ]);
+
+    let result = fetch_hot_contract_analysis_impl(HotContractAnalysisFetchInput {
+        source: Some(HotContractSourceFetchInput {
+            provider_config_id: Some("configured-source".to_string()),
+            limit: Some(2),
+            window: Some("1h".to_string()),
+            cursor: None,
+        }),
+        ..base_input(&rpc_url)
+    })
+    .await;
+    rpc_handle.join().expect("rpc server joins");
+    source_handle.join().expect("source server joins");
+
+    assert_eq!(result.status, "ok");
+    assert_eq!(result.samples[0].to.as_deref(), Some(CONTRACT));
+    assert_eq!(selector_row(&result, "0xa9059cbb").sampled_call_count, 1);
+    assert!(!result
+        .analysis
+        .selectors
+        .iter()
+        .any(|row| row.selector == "contractCreation"));
+}
+
+#[tokio::test]
+async fn production_custom_sample_contract_address_identity_is_not_creation() {
+    let tx_hash = format!("0x{}", "66".repeat(32));
+    let source_body = json!({
+        "samples": [
+            {
+                "hash": tx_hash,
+                "contractAddress": CONTRACT,
+                "input": "0xa9059cbb00000000000000000000000033333333333333333333333333333333333333330000000000000000000000000000000000000000000000000000000000000001"
+            }
+        ]
+    });
+    let (source_url, _source_requests, source_handle) = start_source_server(source_body);
+    let mut source = data_source(
+        "configured-source",
+        1,
+        "customIndexer",
+        true,
+        None,
+        false,
+        None,
+    );
+    source["baseUrl"] = json!(source_url);
+    let (_app_dir, _dir) =
+        AppDirOverride::with_registry("hot-contract-contract-address-not-creation", &[source]);
+    let (rpc_url, _rpc_requests, rpc_handle) = start_rpc_server(vec![
+        step("eth_chainId", json!("0x1")),
+        step("eth_getCode", json!("0x6001600203")),
+    ]);
+
+    let result = fetch_hot_contract_analysis_impl(HotContractAnalysisFetchInput {
+        source: Some(HotContractSourceFetchInput {
+            provider_config_id: Some("configured-source".to_string()),
+            limit: Some(2),
+            window: Some("1h".to_string()),
+            cursor: None,
+        }),
+        ..base_input(&rpc_url)
+    })
+    .await;
+    rpc_handle.join().expect("rpc server joins");
+    source_handle.join().expect("source server joins");
+
+    assert_eq!(result.status, "ok");
+    assert_eq!(result.samples[0].to.as_deref(), Some(CONTRACT));
+    assert_eq!(selector_row(&result, "0xa9059cbb").sampled_call_count, 1);
+    assert!(!result
+        .analysis
+        .selectors
+        .iter()
+        .any(|row| row.selector == "contractCreation"));
+}
+
+#[tokio::test]
+async fn production_custom_source_rejects_malformed_sample_items() {
+    let source_body = json!({
+        "samples": [
+            "bad",
+            {}
+        ]
+    });
+    let (source_url, _source_requests, source_handle) = start_source_server(source_body);
+    let mut source = data_source(
+        "configured-source",
+        1,
+        "customIndexer",
+        true,
+        None,
+        false,
+        None,
+    );
+    source["baseUrl"] = json!(source_url);
+    let (_app_dir, _dir) =
+        AppDirOverride::with_registry("hot-contract-custom-malformed-samples", &[source]);
+    let (rpc_url, _rpc_requests, rpc_handle) = start_rpc_server(vec![
+        step("eth_chainId", json!("0x1")),
+        step("eth_getCode", json!("0x6001600203")),
+    ]);
+
+    let result = fetch_hot_contract_analysis_impl(HotContractAnalysisFetchInput {
+        source: Some(HotContractSourceFetchInput {
+            provider_config_id: Some("configured-source".to_string()),
+            limit: Some(2),
+            window: Some("1h".to_string()),
+            cursor: None,
+        }),
+        ..base_input(&rpc_url)
+    })
+    .await;
+    rpc_handle.join().expect("rpc server joins");
+    source_handle.join().expect("source server joins");
+
+    assert_eq!(result.status, "sourceUnavailable");
+    assert_eq!(result.sources.source.status, "malformed");
+    assert_eq!(
+        result.sources.source.reason.as_deref(),
+        Some("sourceMalformedPayload")
+    );
+    assert_eq!(result.samples.len(), 0);
+    assert_eq!(result.sample_coverage.payload_status, "malformed");
+    assert_eq!(result.sample_coverage.provider_status, "malformed");
+    assert_eq!(result.sample_coverage.completeness, "unknown");
+    assert_eq!(result.error_summary.as_deref(), Some("sourceInvalidSample"));
+}
+
+#[tokio::test]
+async fn production_custom_source_preserves_runtime_rate_limit_status() {
+    let (source_url, _source_requests, source_handle) =
+        start_source_server_raw(429, b"{\"error\":\"too many requests\"}".to_vec());
+    let mut source = data_source(
+        "configured-source",
+        1,
+        "customIndexer",
+        true,
+        None,
+        false,
+        None,
+    );
+    source["baseUrl"] = json!(source_url);
+    let (_app_dir, _dir) =
+        AppDirOverride::with_registry("hot-contract-custom-source-runtime-429", &[source]);
+    let (rpc_url, _rpc_requests, rpc_handle) = start_rpc_server(vec![
+        step("eth_chainId", json!("0x1")),
+        step("eth_getCode", json!("0x6001600203")),
+    ]);
+
+    let result = fetch_hot_contract_analysis_impl(HotContractAnalysisFetchInput {
+        source: Some(HotContractSourceFetchInput {
+            provider_config_id: Some("configured-source".to_string()),
+            limit: Some(2),
+            window: Some("1h".to_string()),
+            cursor: None,
+        }),
+        ..base_input(&rpc_url)
+    })
+    .await;
+    rpc_handle.join().expect("rpc server joins");
+    source_handle.join().expect("source server joins");
+
+    assert_eq!(result.status, "sourceUnavailable");
+    assert_eq!(result.sources.source.status, "rateLimited");
+    assert_eq!(
+        result.sources.source.reason.as_deref(),
+        Some("sourceRateLimited")
+    );
+    assert_eq!(result.sample_coverage.provider_status, "rateLimited");
+    assert_eq!(result.sample_coverage.rate_limit_status, "rateLimited");
+    assert!(result
+        .reasons
+        .iter()
+        .any(|reason| reason == "sourceRateLimited"));
+    assert!(!result
+        .reasons
+        .iter()
+        .any(|reason| reason == "sourceFetchFailed"));
+}
+
+#[tokio::test]
+async fn production_custom_source_treats_invalid_utf8_as_malformed_payload() {
+    let (source_url, _source_requests, source_handle) =
+        start_source_server_raw(200, vec![0xff, 0xfe, 0xfd]);
+    let mut source = data_source(
+        "configured-source",
+        1,
+        "customIndexer",
+        true,
+        None,
+        false,
+        None,
+    );
+    source["baseUrl"] = json!(source_url);
+    let (_app_dir, _dir) =
+        AppDirOverride::with_registry("hot-contract-custom-source-invalid-utf8", &[source]);
+    let (rpc_url, _rpc_requests, rpc_handle) = start_rpc_server(vec![
+        step("eth_chainId", json!("0x1")),
+        step("eth_getCode", json!("0x6001600203")),
+    ]);
+
+    let result = fetch_hot_contract_analysis_impl(HotContractAnalysisFetchInput {
+        source: Some(HotContractSourceFetchInput {
+            provider_config_id: Some("configured-source".to_string()),
+            limit: Some(2),
+            window: Some("1h".to_string()),
+            cursor: None,
+        }),
+        ..base_input(&rpc_url)
+    })
+    .await;
+    rpc_handle.join().expect("rpc server joins");
+    source_handle.join().expect("source server joins");
+
+    assert_eq!(result.status, "sourceUnavailable");
+    assert_eq!(result.sources.source.status, "malformed");
+    assert_eq!(
+        result.sources.source.reason.as_deref(),
+        Some("sourceMalformedPayload")
+    );
+    assert_eq!(result.sample_coverage.payload_status, "malformed");
+    assert_eq!(result.sample_coverage.provider_status, "malformed");
+    assert!(result
+        .reasons
+        .iter()
+        .any(|reason| reason == "sourceMalformedPayload"));
+    assert_eq!(result.error_summary.as_deref(), Some("sourceInvalidUtf8"));
 }
 
 #[tokio::test]
@@ -948,6 +1384,208 @@ async fn serialized_hot_contract_read_model_excludes_bounded_payloads_and_secret
 }
 
 #[tokio::test]
+async fn p6_2f_integration_read_model_keeps_hot_analysis_advisory_and_bounded() {
+    let abi = json!([raw_function("customDoThing", &[("amount", "uint256")])]);
+    let (_app_dir, dir) = AppDirOverride::with_registry_and_cache(
+        "hot-contract-p6-2f-integration-boundaries",
+        &[data_source(
+            "missing-source",
+            1,
+            "customIndexer",
+            true,
+            None,
+            false,
+            None,
+        )],
+        vec![
+            cache_entry("managed", &abi, |_| {}),
+            cache_entry("stale", &abi, |entry| {
+                entry["cacheStatus"] = json!("cacheStale");
+            }),
+            cache_entry("unverified-proxy", &abi, |entry| {
+                entry["fetchSourceStatus"] = json!("notVerified");
+                entry["proxyDetected"] = json!(true);
+                entry["providerProxyHint"] = json!("implementation may differ");
+            }),
+        ],
+    );
+    write_abi_artifact(&dir, &abi);
+    let (rpc_url, _requests, handle) = start_rpc_server(vec![
+        step("eth_chainId", json!("0x1")),
+        step("eth_getCode", json!("0x6001600203")),
+    ]);
+    let malicious_full_payload = format!("0xa9059cbb{}", "ff".repeat(96));
+    let provider = CapturingSamplesHotContractProvider::new(vec![
+        sample_with(
+            "0xa9059cbb",
+            "success",
+            "0",
+            "0xaaaa",
+            100,
+            "2026-04-30T00:00:00Z",
+        ),
+        sample_with(
+            &approve_calldata("00"),
+            "success",
+            "0",
+            "0xbbbb",
+            101,
+            "2026-04-30T00:01:00Z",
+        ),
+        sample_with(
+            &format!("0xdafa4d41{}", "00".repeat(32)),
+            "success",
+            "0",
+            "0xcccc",
+            102,
+            "2026-04-30T00:02:00Z",
+        ),
+        sample_with(
+            "0x12345678",
+            "success",
+            "0",
+            "0xdddd",
+            103,
+            "2026-04-30T00:03:00Z",
+        ),
+        sample_with(
+            "0xe63d38ed",
+            "unknown",
+            "1",
+            "0xeeee",
+            104,
+            "2026-04-30T00:04:00Z",
+        ),
+        HotContractSourceSample {
+            calldata: Some(malicious_full_payload.clone()),
+            log_topic0: vec![
+                ERC20_TRANSFER_TOPIC.to_string(),
+                "full logs apiKey=log-secret".to_string(),
+            ],
+            provider_label: Some("provider raw response body queryToken=hidden".to_string()),
+            ..sample("0xa9059cbb")
+        },
+        sample_with(
+            "0xa9059cbb",
+            "success",
+            "0",
+            "0xffff",
+            105,
+            "2026-04-30T00:05:00Z",
+        ),
+    ]);
+    let captured = provider.request.clone();
+
+    let result = fetch_hot_contract_analysis_with_sample_provider(
+        HotContractAnalysisFetchInput {
+            source: Some(HotContractSourceFetchInput {
+                provider_config_id: Some("missing-source".to_string()),
+                limit: Some(6),
+                window: Some("24h".to_string()),
+                cursor: Some("cursor-1".to_string()),
+            }),
+            ..base_input(&rpc_url)
+        },
+        &provider,
+    )
+    .await;
+    handle.join().expect("rpc server joins");
+    let serialized = serde_json::to_string(&result).expect("serialize result");
+    let outbound = captured
+        .lock()
+        .expect("captured request lock")
+        .clone()
+        .expect("source outbound request captured");
+    let outbound_json = serde_json::to_string(&outbound).expect("serialize outbound");
+
+    assert_eq!(result.status, "ok");
+    assert_eq!(result.sample_coverage.returned_samples, 6);
+    assert_eq!(result.sample_coverage.omitted_samples, 1);
+    assert_eq!(result.sample_coverage.source_status, "ok");
+    assert_eq!(outbound.chain_id, 1);
+    assert_eq!(outbound.provider_config_id, "missing-source");
+    assert_eq!(outbound.contract_address, CONTRACT);
+    assert_eq!(outbound.limit, 6);
+    assert_eq!(outbound.window.as_deref(), Some("24h"));
+    assert_eq!(outbound.cursor.as_deref(), Some("cursor-1"));
+
+    assert!(selector_row(&result, "0xa9059cbb")
+        .advisory_labels
+        .contains(&"erc20Transfer".to_string()));
+    let approve = selector_row(&result, "0x095ea7b3");
+    assert!(approve
+        .advisory_labels
+        .contains(&"erc20Approval".to_string()));
+    assert!(approve
+        .advisory_labels
+        .contains(&"erc20RevokeCandidate".to_string()));
+    assert!(selector_row(&result, "0xe63d38ed")
+        .advisory_labels
+        .contains(&"batchDisperse".to_string()));
+    assert!(selector_row(&result, "0x12345678")
+        .advisory_labels
+        .contains(&"rawCalldataUnknown".to_string()));
+    assert!(result.decode.items.iter().any(|item| {
+        item.kind == "function"
+            && item.selector.as_deref() == Some("0xdafa4d41")
+            && item.signature.as_deref() == Some("customDoThing(uint256)")
+            && item.source == "abiCache"
+            && item.confidence == "advisory"
+    }));
+    assert!(!result
+        .decode
+        .classification_candidates
+        .iter()
+        .any(|candidate| {
+            candidate.kind == "rawCalldataUnknown"
+                && candidate.selector.as_deref() == Some("0xdafa4d41")
+        }));
+
+    let codes = uncertainty_codes(&result);
+    assert!(codes.contains(&"proxyImplementationUncertainty".to_string()));
+    assert!(codes.contains(&"staleAbi".to_string()));
+    assert!(codes.contains(&"unverifiedAbi".to_string()));
+    assert!(codes.contains(&"providerPartialSample".to_string()));
+    assert!(codes.contains(&"unknownSelector".to_string()));
+    assert!(result
+        .decode
+        .items
+        .iter()
+        .all(|item| item.confidence == "advisory" && item.source != "truth"));
+    assert!(result
+        .decode
+        .classification_candidates
+        .iter()
+        .all(|candidate| candidate.confidence != "truth" && candidate.source != "truth"));
+
+    for forbidden in [
+        malicious_full_payload.as_str(),
+        "full logs",
+        "log-secret",
+        "provider raw response body",
+        "queryToken=hidden",
+        "providerRawResponse",
+        "full calldata",
+        "full revert data",
+        "local history",
+        "account label",
+        "user note",
+        "wallet inventory",
+        "token watchlist",
+        "full local ABI catalog",
+    ] {
+        assert!(
+            !serialized.contains(forbidden),
+            "serialized read model leaked {forbidden}: {serialized}"
+        );
+        assert!(
+            !outbound_json.contains(forbidden),
+            "source outbound request leaked {forbidden}: {outbound_json}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn configured_source_fetch_exposes_normalized_samples_without_calldata() {
     let (_app_dir, _dir) = AppDirOverride::with_registry(
         "hot-contract-source-read-model-samples",
@@ -1192,7 +1830,30 @@ fn rejects_unbounded_or_invalid_source_windows() {
 }
 
 #[test]
-fn fixture_samples_are_bounded_and_omissions_counted() {
+fn rejects_non_ascii_source_windows_without_panicking() {
+    let result = std::panic::catch_unwind(|| {
+        validate_source_outbound_request(
+            1,
+            "configured-source",
+            CONTRACT,
+            HotContractSourceFetchInput {
+                provider_config_id: Some("configured-source".to_string()),
+                limit: Some(25),
+                window: Some("1𝕙".to_string()),
+                cursor: None,
+            },
+        )
+    });
+
+    assert!(result.is_ok(), "non-ascii window should not panic");
+    assert_eq!(
+        result.expect("request validation").unwrap_err(),
+        "source window must be 1h..720h or 1d..30d"
+    );
+}
+
+#[tokio::test]
+async fn fixture_samples_are_bounded_and_omissions_counted() {
     let samples = vec![
         sample("0xabcdef01"),
         sample("0xabcdef02"),
@@ -1214,7 +1875,10 @@ fn fixture_samples_are_bounded_and_omissions_counted() {
     .expect("valid request");
 
     let normalized = normalize_fixture_source_samples(
-        provider.fetch_samples(&request).expect("fixture samples"),
+        provider
+            .fetch_samples(&request)
+            .await
+            .expect("fixture samples"),
         2,
     );
 
@@ -1374,6 +2038,15 @@ fn unusable_abi_data_source_configs_cannot_be_sampling_sources() {
                 false,
                 None,
             ),
+            data_source(
+                "expired-cooldown",
+                1,
+                "customIndexer",
+                true,
+                Some("2000-01-01T00:00:00Z"),
+                false,
+                None,
+            ),
             data_source("unsupported", 1, "localOnly", true, None, false, None),
         ],
     );
@@ -1382,6 +2055,9 @@ fn unusable_abi_data_source_configs_cannot_be_sampling_sources() {
     assert_source_status("wrong-chain", "wrongChain", "sourceWrongChain");
     assert_source_status("rate-limited", "rateLimited", "sourceRateLimited");
     assert_source_status("stale", "stale", "sourceStale");
+    let expired = source_status_for("expired-cooldown");
+    assert_eq!(expired.status, "ok");
+    assert_eq!(expired.reason, None);
     assert_source_status("unsupported", "unsupported", "sourceUnsupported");
     assert_source_status("missing", "missing", "sourceProviderMissing");
 
@@ -1834,6 +2510,46 @@ fn start_rpc_server(
     )
 }
 
+fn start_source_server(body: Value) -> (String, Arc<Mutex<Vec<String>>>, thread::JoinHandle<()>) {
+    start_source_server_raw(200, body.to_string().into_bytes())
+}
+
+fn start_source_server_raw(
+    status_code: u16,
+    body: Vec<u8>,
+) -> (String, Arc<Mutex<Vec<String>>>, thread::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind source server");
+    listener
+        .set_nonblocking(true)
+        .expect("set source server nonblocking");
+    let addr = listener.local_addr().expect("source local addr");
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let captured = Arc::clone(&requests);
+    let handle = thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    let request = read_http_request(&mut stream).expect("read source request");
+                    let request_line = request.lines().next().unwrap_or_default().to_string();
+                    captured
+                        .lock()
+                        .expect("source request lock")
+                        .push(request_line);
+                    write_http_response_raw(&mut stream, status_code, &body)
+                        .expect("write source response");
+                    return;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => panic!("source server accept failed: {error}"),
+            }
+        }
+    });
+    (format!("http://{addr}/api"), requests, handle)
+}
+
 fn read_http_request(stream: &mut TcpStream) -> std::io::Result<String> {
     let mut bytes = Vec::new();
     let mut buffer = [0; 1024];
@@ -1868,6 +2584,19 @@ fn write_http_response(stream: &mut TcpStream, body: &str) -> std::io::Result<()
         body.len(),
         body
     )
+}
+
+fn write_http_response_raw(
+    stream: &mut TcpStream,
+    status_code: u16,
+    body: &[u8],
+) -> std::io::Result<()> {
+    write!(
+        stream,
+        "HTTP/1.1 {status_code} OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+        body.len()
+    )?;
+    stream.write_all(body)
 }
 
 fn http_body_start(bytes: &[u8]) -> Option<usize> {

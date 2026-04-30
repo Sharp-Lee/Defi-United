@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { AccountsView } from "../features/accounts/AccountsView";
 import { AbiLibraryView } from "../features/abi/AbiLibraryView";
 import type { AbiMutationHandlerResult } from "../features/abi/AbiLibraryView";
@@ -337,6 +338,10 @@ export function AppShell({
   onNativeBatchSubmitted = () => {},
   onErc20BatchSubmitted = () => {},
 }: AppShellProps) {
+  const [pendingHotContractSeed, setPendingHotContractSeed] = useState<{
+    contractAddress: string;
+    seedTxHash: string;
+  } | null>(null);
   const selectedChain = chains.find((chain) => chain.chainId === selectedChainId) ?? chains[0];
   const chainReady = settingsStatusKind === "ok" && rpcUrl.trim().length > 0;
   const selectedRpcForAssets = chainReady
@@ -480,6 +485,10 @@ export function AppShell({
                 chainName={selectedChain?.name ?? "Unknown chain"}
                 chainReady={chainReady}
                 history={history}
+                onAnalyzeContract={(seed) => {
+                  setPendingHotContractSeed(seed);
+                  onTabChange("hotContract");
+                }}
                 onFetchTxAnalysis={onFetchTxAnalysis}
                 rpcUrl={rpcUrl}
               />
@@ -491,6 +500,9 @@ export function AppShell({
                 chainName={selectedChain?.name ?? "Unknown chain"}
                 chainReady={chainReady}
                 history={history}
+                initialContractAddress={pendingHotContractSeed?.contractAddress ?? null}
+                initialSeedTxHash={pendingHotContractSeed?.seedTxHash ?? null}
+                onInitialValuesApplied={() => setPendingHotContractSeed(null)}
                 onFetchHotContractAnalysis={onFetchHotContractAnalysis}
                 rpcUrl={rpcUrl}
               />

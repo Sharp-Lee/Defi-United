@@ -18,6 +18,7 @@ The current product and test mainline is the Tauri desktop app. The older browse
 - Scan configured/known assets and approvals, including ERC-20 balances/allowances and known NFT approval points, with explicit source coverage and stale/failure states.
 - Revoke clearly active ERC-20/NFT approvals through the controlled desktop confirmation, Rust/Tauri signing/broadcast, and typed history path.
 - Analyze an existing transaction hash in a read-only desktop view with RPC transaction/receipt/log facts, ABI decode candidates, provider/source visibility, and local history comparison.
+- Analyze a contract address in a read-only hot contract view with bounded source sampling, selector/topic candidates, ABI/cache advisory decode, source visibility, uncertainty states, and no signing, broadcasting, history mutation, or full payload persistence.
 - Persist local transaction history with separate Intent, Submission, and ChainOutcome fields.
 - Reconcile pending history from RPC receipts/nonces.
 - Show history filters, nonce-thread grouping, replace/cancel relationships, categorized errors, pending-age guidance, and recovery prompts.
@@ -25,7 +26,7 @@ The current product and test mainline is the Tauri desktop app. The older browse
 - View and export non-sensitive diagnostics for RPC, chainId, history, broadcast, and reconcile troubleshooting.
 - Inspect damaged history storage, quarantine unreadable history, recover broadcasted-but-unwritten submissions, and manually review dropped records.
 
-Hot contract analysis, full portfolio or NFT collection discovery, batch revoke, and broader contract interaction tooling remain future P6+ exploration unless a later task explicitly implements them.
+Full portfolio or NFT collection discovery, full authorization discovery, batch revoke, risk scoring, wallet recovery automation, browser-version work, and broader contract interaction tooling remain future/non-goal exploration unless a later task explicitly implements them.
 
 Plaintext mnemonic import/export and backup UX are not part of P3. Until a future native secure recovery workflow exists, preserve the encrypted vault file together with the password needed to unlock it. On macOS the default app data directory is `~/Library/Application Support/EVMWalletWorkbench/`; the encrypted vault is `vault.json` in that directory. Losing both that vault file or an app-data backup and the password means the generated wallet cannot be recovered by the P3 desktop app.
 

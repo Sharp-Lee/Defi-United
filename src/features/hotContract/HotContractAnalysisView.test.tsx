@@ -35,7 +35,7 @@ function model(
       chainStatus: "matched",
     },
     code: {
-      status: "contract",
+      status: "ok",
       blockTag: "latest",
       byteLength: 2048,
       codeHashVersion: "keccak256-v1",
@@ -52,6 +52,17 @@ function model(
       returnedSamples: 2,
       omittedSamples: 1,
       sourceStatus: "ok",
+      sourceKind: "customIndexer",
+      providerConfigId: "configured-mainnet",
+      queryWindow: "24h",
+      oldestBlock: 100,
+      newestBlock: 123,
+      oldestBlockTime: "2026-04-30T00:00:00Z",
+      newestBlockTime: "2026-04-30T00:05:00Z",
+      providerStatus: "ok",
+      rateLimitStatus: "notRateLimited",
+      completeness: "partial",
+      payloadStatus: "ok",
     },
     samples: [
       {
@@ -310,6 +321,8 @@ function renderHotContract(
     chainReady?: boolean;
     chainId?: bigint;
     history?: HistoryRecord[];
+    initialContractAddress?: string | null;
+    initialSeedTxHash?: string | null;
     onFetchHotContractAnalysis?: (
       input: HotContractAnalysisFetchInput,
     ) => Promise<HotContractAnalysisReadModel>;
@@ -325,6 +338,8 @@ function renderHotContract(
       chainName="Ethereum"
       chainReady={options.chainReady ?? true}
       history={options.history}
+      initialContractAddress={options.initialContractAddress}
+      initialSeedTxHash={options.initialSeedTxHash}
       onFetchHotContractAnalysis={onFetchHotContractAnalysis}
       rpcUrl={rpcUrl}
     />,
@@ -403,7 +418,7 @@ describe("HotContractAnalysisView", () => {
         source: {
           providerConfigId: "configured-mainnet",
           limit: 500,
-          window: "24h",
+          window: null,
           cursor: null,
         },
       }),
@@ -429,6 +444,28 @@ describe("HotContractAnalysisView", () => {
     expect(selectedRpc).toBeDefined();
     expect(selectedRpc?.providerConfigId).toBeNull();
     expect(firstCall?.source?.providerConfigId).toBeNull();
+  });
+
+  it("ignores invalid local-only sample windows and submits no window", async () => {
+    const onFetchHotContractAnalysis = vi.fn<
+      (input: HotContractAnalysisFetchInput) => Promise<HotContractAnalysisReadModel>
+    >(async () => model());
+    renderHotContract({ onFetchHotContractAnalysis });
+
+    fireEvent.change(screen.getByLabelText("Contract address"), { target: { value: address } });
+    fireEvent.change(screen.getByLabelText("Sample window"), {
+      target: { value: "all-history apiKey=secret" },
+    });
+
+    expect(screen.queryByText("Use a bounded sample window from 1h to 720h or 1d to 30d.")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Analyze" })).toBeEnabled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Analyze" }));
+
+    await waitFor(() => expect(onFetchHotContractAnalysis).toHaveBeenCalledTimes(1));
+    const firstCall = onFetchHotContractAnalysis.mock.calls[0]?.[0];
+    expect(firstCall?.source?.providerConfigId).toBeNull();
+    expect(firstCall?.source?.window).toBeNull();
   });
 
   it("validates optional tx hash seed as display-only provenance", async () => {
@@ -460,7 +497,7 @@ describe("HotContractAnalysisView", () => {
     expect(JSON.stringify(firstCall?.selectedRpc)).not.toContain(seedTxHash);
     expect(JSON.stringify(firstCall?.source)).not.toContain(seedTxHash);
     expect(firstCall?.source?.cursor).toBeNull();
-    expect(firstCall?.source?.window).toBe("7d");
+    expect(firstCall?.source?.window).toBeNull();
     await waitFor(() => expect(screen.getAllByText(seedTxHash).length).toBeGreaterThan(0));
 
     fireEvent.click(screen.getByRole("button", { name: "Copy summary" }));
@@ -471,13 +508,59 @@ describe("HotContractAnalysisView", () => {
     expect(copiedSummary).not.toContain("secret-key");
   });
 
+  it("prefills initial contract and seed values when navigation props change", () => {
+    const seedTxHash = `0x${"c".repeat(64)}`;
+    const nextAddress = "0x3333333333333333333333333333333333333333";
+    const nextSeedTxHash = `0x${"d".repeat(64)}`;
+    const onFetchHotContractAnalysis = vi.fn<
+      (input: HotContractAnalysisFetchInput) => Promise<HotContractAnalysisReadModel>
+    >(async () => model());
+    const { rerender } = renderScreen(
+      <HotContractAnalysisView
+        chainId={1n}
+        chainName="Ethereum"
+        chainReady={true}
+        initialContractAddress={address}
+        initialSeedTxHash={seedTxHash}
+        onFetchHotContractAnalysis={onFetchHotContractAnalysis}
+        rpcUrl={rpcUrl}
+      />,
+    );
+
+    expect(screen.getByLabelText("Contract address")).toHaveValue(address);
+    expect(screen.getByLabelText("Optional tx hash seed (display only)")).toHaveValue(seedTxHash);
+
+    rerender(
+      <HotContractAnalysisView
+        chainId={1n}
+        chainName="Ethereum"
+        chainReady={true}
+        initialContractAddress={nextAddress}
+        initialSeedTxHash={nextSeedTxHash}
+        onFetchHotContractAnalysis={onFetchHotContractAnalysis}
+        rpcUrl={rpcUrl}
+      />,
+    );
+
+    expect(screen.getByLabelText("Contract address")).toHaveValue(nextAddress);
+    expect(screen.getByLabelText("Optional tx hash seed (display only)")).toHaveValue(nextSeedTxHash);
+  });
+
   it("validates and normalizes bounded sample windows", async () => {
     const onFetchHotContractAnalysis = vi.fn<
       (input: HotContractAnalysisFetchInput) => Promise<HotContractAnalysisReadModel>
     >(async () => model());
-    renderHotContract({ onFetchHotContractAnalysis });
+    renderHotContract({
+      abiRegistryState: abiRegistryState([
+        dataSource({ id: "configured-mainnet", chainId: 1, providerKind: "customIndexer" }),
+      ]),
+      onFetchHotContractAnalysis,
+    });
 
     fireEvent.change(screen.getByLabelText("Contract address"), { target: { value: address } });
+    fireEvent.change(screen.getByLabelText("Source provider"), {
+      target: { value: "configured-mainnet" },
+    });
     fireEvent.change(screen.getByLabelText("Sample window"), {
       target: { value: "all-history apiKey=secret" },
     });
@@ -538,6 +621,59 @@ describe("HotContractAnalysisView", () => {
     expect(screen.getByText("Source: rateLimited (provider rate limited)")).toBeInTheDocument();
   });
 
+  it("renders detailed sample coverage metadata", async () => {
+    renderHotContract({
+      onFetchHotContractAnalysis: vi.fn(async () =>
+        model({
+          sampleCoverage: {
+            requestedLimit: 25,
+            returnedSamples: 12,
+            omittedSamples: 3,
+            sourceStatus: "ok",
+            sourceKind: "customIndexer",
+            providerConfigId: "configured-mainnet",
+            queryWindow: "24h",
+            oldestBlock: 100,
+            newestBlock: 140,
+            oldestBlockTime: "2026-04-30T00:00:00Z",
+            newestBlockTime: "2026-04-30T00:10:00Z",
+            providerStatus: "ok",
+            rateLimitStatus: "notRateLimited",
+            completeness: "partial",
+            payloadStatus: "ok",
+          },
+        }),
+      ),
+    });
+
+    fireEvent.change(screen.getByLabelText("Contract address"), { target: { value: address } });
+    fireEvent.click(screen.getByRole("button", { name: "Analyze" }));
+
+    const coverage = await screen.findByLabelText("Sample coverage");
+    expect(within(coverage).getByText("Source kind").nextElementSibling).toHaveTextContent(
+      "customIndexer",
+    );
+    expect(within(coverage).getByText("Provider config ID").nextElementSibling).toHaveTextContent(
+      "configured-mainnet",
+    );
+    expect(within(coverage).getByText("Query window").nextElementSibling).toHaveTextContent("24h");
+    expect(within(coverage).getByText("Oldest block").nextElementSibling).toHaveTextContent("100");
+    expect(within(coverage).getByText("Newest block").nextElementSibling).toHaveTextContent("140");
+    expect(within(coverage).getByText("Oldest block time").nextElementSibling).toHaveTextContent(
+      "2026-04-30T00:00:00Z",
+    );
+    expect(within(coverage).getByText("Newest block time").nextElementSibling).toHaveTextContent(
+      "2026-04-30T00:10:00Z",
+    );
+    expect(within(coverage).getByText("Rate limit status").nextElementSibling).toHaveTextContent(
+      "notRateLimited",
+    );
+    expect(within(coverage).getByText("Completeness").nextElementSibling).toHaveTextContent(
+      "partial",
+    );
+    expect(within(coverage).getByText("Payload status").nextElementSibling).toHaveTextContent("ok");
+  });
+
   it("ignores stale in-flight analysis results after the contract changes", async () => {
     const first = deferred<HotContractAnalysisReadModel>();
     const second = deferred<HotContractAnalysisReadModel>();
@@ -576,7 +712,7 @@ describe("HotContractAnalysisView", () => {
     );
     renderHotContract({
       abiRegistryState: abiRegistryState([
-        dataSource({ id: "configured-mainnet", chainId: 1 }),
+        dataSource({ id: "configured-mainnet", chainId: 1, providerKind: "customIndexer" }),
       ]),
       onFetchHotContractAnalysis,
     });
@@ -630,6 +766,257 @@ describe("HotContractAnalysisView", () => {
     expect(screen.queryByText(fullPayload)).not.toBeInTheDocument();
     expect(document.body.textContent).not.toContain("topsecret");
     expect(document.body.textContent).not.toContain("secret-key");
+  });
+
+  it("renders P6-2f cross-layer security states as bounded advisory read models", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.assign(navigator, { clipboard: { writeText } });
+    const fullPayload = `0x${"f".repeat(256)}`;
+    const maliciousReason = [
+      "provider rate limited at https://user:password@api.example.invalid/v1?apikey=secret-key",
+      "Authorization: Bearer secret-token",
+      `calldata=${fullPayload}`,
+      "provider raw body={\"apiKey\":\"secret-json-key\",\"logs\":\"full logs\"}",
+    ].join(" ");
+    const baseModel = model();
+    const managedTxHash = `0x${"d".repeat(64)}`;
+    const onFetchHotContractAnalysis = vi.fn<
+      (input: HotContractAnalysisFetchInput) => Promise<HotContractAnalysisReadModel>
+    >(async () =>
+      model({
+        status: "sourceUnavailable",
+        rpc: {
+          ...baseModel.rpc,
+          actualChainId: 5,
+          chainStatus: "chainMismatch",
+        },
+        sources: {
+          chainId: status("chainMismatch", "wrong chain"),
+          source: status("rateLimited", maliciousReason),
+        },
+        sampleCoverage: {
+          requestedLimit: 25,
+          returnedSamples: 6,
+          omittedSamples: 2,
+          sourceStatus: "rateLimited",
+          sourceKind: "customIndexer",
+          providerConfigId: "configured-mainnet",
+          queryWindow: "24h",
+          oldestBlock: 100,
+          newestBlock: 123,
+          oldestBlockTime: "2026-04-30T00:00:00Z",
+          newestBlockTime: "2026-04-30T00:05:00Z",
+          providerStatus: "rateLimited",
+          rateLimitStatus: "rateLimited",
+          completeness: "partial",
+          payloadStatus: "unavailable",
+        },
+        samples: [
+          ...baseModel.samples,
+          {
+            ...baseModel.samples[0],
+            txHash: managedTxHash,
+            selector: "0xdafa4d41",
+            calldataLength: 36,
+            calldataHash: "0xmanagedcalldatahash",
+            logTopic0: [],
+            providerLabel: "advisory explorer sample",
+          },
+        ],
+        analysis: {
+          selectors: [
+            baseModel.analysis.selectors[0],
+            {
+              ...baseModel.analysis.selectors[0],
+              selector: "0x095ea7b3",
+              sampledCallCount: 2,
+              advisoryLabels: ["ERC-20 approval candidate", "ERC-20 revoke candidate"],
+            },
+            {
+              ...baseModel.analysis.selectors[0],
+              selector: "0xdafa4d41",
+              sampledCallCount: 1,
+              advisoryLabels: ["Managed ABI selector candidate"],
+            },
+            {
+              ...baseModel.analysis.selectors[0],
+              selector: "0x12345678",
+              sampledCallCount: 1,
+              advisoryLabels: ["Unknown raw selector candidate"],
+            },
+            {
+              ...baseModel.analysis.selectors[0],
+              selector: "0xe63d38ed",
+              sampledCallCount: 1,
+              advisoryLabels: ["Batch disperse candidate"],
+            },
+          ],
+          topics: baseModel.analysis.topics,
+        },
+        decode: {
+          status: "partial",
+          items: [
+            baseModel.decode.items[0],
+            {
+              kind: "function",
+              status: "candidate",
+              selector: "0xdafa4d41",
+              topic: null,
+              signature: "customDoThing(uint256)",
+              source: "abiCache",
+              confidence: "advisory",
+              abiVersionId: "stale-v1",
+              abiSelected: true,
+              reasons: ["abiFunctionSelectorMatch"],
+            },
+          ],
+          abiSources: [
+            {
+              ...baseModel.decode.abiSources[0],
+              sourceKind: "explorerFetched",
+              versionId: "stale-v1",
+              fetchSourceStatus: "notVerified",
+              cacheStatus: "cacheStale",
+              proxyDetected: true,
+              providerProxyHint: "implementation may differ",
+            },
+          ],
+          classificationCandidates: [
+            ...baseModel.decode.classificationCandidates,
+            {
+              kind: "erc20Approval",
+              label: "ERC-20 approval candidate",
+              confidence: "candidate",
+              source: "selector",
+              selector: "0x095ea7b3",
+              topic: null,
+              signature: "approve(address,uint256)",
+              reasons: ["sample selector"],
+            },
+            {
+              kind: "erc20RevokeCandidate",
+              label: "ERC-20 revoke candidate",
+              confidence: "candidate",
+              source: "selector",
+              selector: "0x095ea7b3",
+              topic: null,
+              signature: "approve(address,uint256)",
+              reasons: ["zero approval amount hint"],
+            },
+            {
+              kind: "batchDisperse",
+              label: "Batch disperse candidate",
+              confidence: "candidate",
+              source: "selector",
+              selector: "0xe63d38ed",
+              topic: null,
+              signature: null,
+              reasons: ["sample selector"],
+            },
+            {
+              kind: "rawCalldataUnknown",
+              label: "Unknown raw selector candidate",
+              confidence: "unknown",
+              source: "providerSample",
+              selector: "0x12345678",
+              topic: null,
+              signature: null,
+              reasons: ["noFunctionDecodeCandidate"],
+            },
+          ],
+          uncertaintyStatuses: [
+            ...baseModel.decode.uncertaintyStatuses,
+            {
+              code: "proxyImplementationUncertainty",
+              severity: "warning",
+              source: "abiCache",
+              summary: "implementation may differ",
+            },
+            {
+              code: "staleAbi",
+              severity: "warning",
+              source: "stale-v1",
+              summary: "ABI cache is stale.",
+            },
+            {
+              code: "unverifiedAbi",
+              severity: "warning",
+              source: "stale-v1",
+              summary: "Explorer ABI is not verified.",
+            },
+            {
+              code: "providerPartialSample",
+              severity: "warning",
+              source: "providerSample",
+              summary: "Source returned a partial sample.",
+            },
+            {
+              code: "unknownSelector",
+              severity: "info",
+              source: "providerSample",
+              summary: "A sampled selector had no decode candidate.",
+            },
+          ],
+        },
+      }),
+    );
+    renderHotContract({ history: [historyRecord()], onFetchHotContractAnalysis });
+
+    fireEvent.change(screen.getByLabelText("Contract address"), { target: { value: address } });
+    fireEvent.click(screen.getByRole("button", { name: "Analyze" }));
+
+    expect(await screen.findByText("Chain/RPC mismatch")).toBeInTheDocument();
+    expect(document.body.textContent).toContain("Source: rateLimited");
+    expect(document.body.textContent).toContain("[redacted_url]");
+    expect(document.body.textContent).toContain("[redacted_auth]");
+    expect(document.body.textContent).toContain("[redacted_body]");
+    const coverage = screen.getByLabelText("Sample coverage");
+    expect(within(coverage).getByText("Rate limit status").nextElementSibling).toHaveTextContent(
+      "rateLimited",
+    );
+    expect(within(coverage).getByText("Omitted samples").nextElementSibling).toHaveTextContent("2");
+    expect(screen.getByText("0x095ea7b3")).toBeInTheDocument();
+    expect(screen.getByText("0xdafa4d41")).toBeInTheDocument();
+    expect(screen.getByText("0x12345678")).toBeInTheDocument();
+    expect(screen.getByText("0xe63d38ed")).toBeInTheDocument();
+    expect(document.body.textContent).toContain("ERC-20 transfer candidate");
+    expect(document.body.textContent).toContain("ERC-20 approval candidate");
+    expect(document.body.textContent).toContain("ERC-20 revoke candidate");
+    expect(document.body.textContent).toContain("Managed ABI selector candidate");
+    expect(document.body.textContent).toContain("Unknown raw selector candidate");
+    expect(document.body.textContent).toContain("Batch disperse candidate");
+    expect(screen.getByText("customDoThing(uint256)")).toBeInTheDocument();
+    expect(screen.getByText("Proxy implementation uncertainty")).toBeInTheDocument();
+    expect(screen.getByText("Stale ABI")).toBeInTheDocument();
+    expect(screen.getByText("Unverified ABI")).toBeInTheDocument();
+    expect(screen.getByText("Provider Partial Sample")).toBeInTheDocument();
+    expect(screen.getByText("Unknown selector")).toBeInTheDocument();
+    expect(screen.getByText("function · candidate · abiCache")).toBeInTheDocument();
+    expect(screen.getByText("explorerFetched stale-v1")).toBeInTheDocument();
+    expect(screen.getByText("notVerified · ok · cacheStale")).toBeInTheDocument();
+    expect(screen.getAllByText("providerSample").length).toBeGreaterThan(0);
+
+    const request = JSON.stringify(onFetchHotContractAnalysis.mock.calls[0]?.[0]);
+    expect(request).not.toContain("private note");
+    expect(request).not.toContain("private wallet inventory");
+    expect(request).not.toContain("private local frozen key");
+    expect(request).not.toContain("local history secret source");
+    expect(request).not.toContain("abi_call_metadata");
+
+    const screenText = document.body.textContent ?? "";
+    expect(screenText).not.toContain(fullPayload);
+    expect(screenText).not.toContain("secret-key");
+    expect(screenText).not.toContain("secret-token");
+    expect(screenText).not.toContain("secret-json-key");
+    expect(screenText.toLowerCase()).not.toContain("raw body");
+
+    fireEvent.click(screen.getByRole("button", { name: "Copy summary" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    const copiedSummary = String(writeText.mock.calls.at(-1)?.[0] ?? "");
+    expect(copiedSummary).toContain("selector=0xdafa4d41");
+    expect(copiedSummary).not.toContain(fullPayload);
+    expect(copiedSummary).not.toContain("secret-key");
+    expect(copiedSummary).not.toContain("secret-token");
   });
 
   it("uses enabled ABI data sources for the active chain as source provider options", async () => {

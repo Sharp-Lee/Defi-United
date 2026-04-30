@@ -304,6 +304,7 @@ function renderTxAnalysis(
   options: {
     chainReady?: boolean;
     history?: HistoryRecord[];
+    onAnalyzeContract?: (input: { contractAddress: string; seedTxHash: string }) => void;
     onFetchTxAnalysis?: (input: TxAnalysisFetchInput) => Promise<TxAnalysisFetchReadModel>;
   } = {},
 ) {
@@ -316,6 +317,7 @@ function renderTxAnalysis(
       chainName="Ethereum"
       chainReady={options.chainReady ?? true}
       history={options.history ?? []}
+      onAnalyzeContract={options.onAnalyzeContract}
       onFetchTxAnalysis={onFetchTxAnalysis}
       rpcUrl={rpcUrl}
     />,
@@ -548,6 +550,79 @@ describe("TxAnalysisView", () => {
     expect(await screen.findByText("RPC unavailable after bounded retries.")).toBeInTheDocument();
     expect(screen.getByText("Transaction: unavailable (rpcUnavailable)")).toBeInTheDocument();
     expect(screen.queryByText("0xinitcodehash")).not.toBeInTheDocument();
+  });
+
+  it("offers hot contract analysis for the transaction recipient", async () => {
+    const onAnalyzeContract = vi.fn();
+    renderTxAnalysis({ onAnalyzeContract });
+
+    fireEvent.change(screen.getByLabelText("Transaction hash"), { target: { value: txHash } });
+    fireEvent.click(screen.getByRole("button", { name: "Analyze" }));
+
+    await screen.findByText("Analysis ready");
+    fireEvent.click(screen.getByRole("button", { name: "Analyze contract" }));
+
+    expect(onAnalyzeContract).toHaveBeenCalledWith({
+      contractAddress: to,
+      seedTxHash: txHash,
+    });
+  });
+
+  it("uses the receipt contract address for contract creation hot analysis", async () => {
+    const created = "0x3333333333333333333333333333333333333333";
+    const onAnalyzeContract = vi.fn();
+    renderTxAnalysis({
+      onAnalyzeContract,
+      onFetchTxAnalysis: vi.fn(async () =>
+        model({
+          transaction: {
+            ...model().transaction!,
+            to: null,
+            contractCreation: true,
+          },
+          receipt: {
+            ...model().receipt!,
+            contractAddress: created,
+          },
+        }),
+      ),
+    });
+
+    fireEvent.change(screen.getByLabelText("Transaction hash"), { target: { value: txHash } });
+    fireEvent.click(screen.getByRole("button", { name: "Analyze" }));
+
+    await screen.findByText("contract creation");
+    fireEvent.click(screen.getByRole("button", { name: "Analyze contract" }));
+
+    expect(onAnalyzeContract).toHaveBeenCalledWith({
+      contractAddress: created,
+      seedTxHash: txHash,
+    });
+  });
+
+  it("omits hot contract analysis when no target contract is known", async () => {
+    renderTxAnalysis({
+      onAnalyzeContract: vi.fn(),
+      onFetchTxAnalysis: vi.fn(async () =>
+        model({
+          transaction: {
+            ...model().transaction!,
+            to: null,
+            contractCreation: true,
+          },
+          receipt: {
+            ...model().receipt!,
+            contractAddress: null,
+          },
+        }),
+      ),
+    });
+
+    fireEvent.change(screen.getByLabelText("Transaction hash"), { target: { value: txHash } });
+    fireEvent.click(screen.getByRole("button", { name: "Analyze" }));
+
+    await screen.findByText("contract creation");
+    expect(screen.queryByRole("button", { name: "Analyze contract" })).not.toBeInTheDocument();
   });
 
   it("ignores stale in-flight analysis results after the input changes", async () => {

@@ -28,6 +28,9 @@ export interface HotContractAnalysisViewProps {
   chainReady: boolean;
   history?: HistoryRecord[];
   abiRegistryState?: AbiRegistryState | null;
+  initialContractAddress?: string | null;
+  initialSeedTxHash?: string | null;
+  onInitialValuesApplied?: () => void;
   onFetchHotContractAnalysis?: (
     input: HotContractAnalysisFetchInput,
   ) => Promise<HotContractAnalysisReadModel>;
@@ -147,10 +150,13 @@ export function HotContractAnalysisView({
   rpcUrl,
   chainReady,
   history = [],
+  initialContractAddress = null,
+  initialSeedTxHash = null,
+  onInitialValuesApplied,
   onFetchHotContractAnalysis,
 }: HotContractAnalysisViewProps) {
-  const [contractAddress, setContractAddress] = useState("");
-  const [seedTxHash, setSeedTxHash] = useState("");
+  const [contractAddress, setContractAddress] = useState(initialContractAddress ?? "");
+  const [seedTxHash, setSeedTxHash] = useState(initialSeedTxHash ?? "");
   const [sourceProvider, setSourceProvider] = useState("local-only");
   const [sampleLimit, setSampleLimit] = useState("25");
   const [sampleWindow, setSampleWindow] = useState("7d");
@@ -181,6 +187,9 @@ export function HotContractAnalysisView({
           ),
     [abiRegistryState, chainIdNumber],
   );
+  const selectedSourceProvider =
+    sourceProviders.find((source) => source.id === sourceProvider) ?? null;
+  const sourceWindowSupported = selectedSourceProvider?.providerKind === "customIndexer";
   const endpointSummary = trimmedRpcUrl ? summarizeRawCalldataRpcEndpoint(trimmedRpcUrl) : "none";
   const endpointFingerprint = trimmedRpcUrl
     ? rawCalldataRpcEndpointFingerprint(trimmedRpcUrl)
@@ -191,9 +200,9 @@ export function HotContractAnalysisView({
       ? UNSAFE_CHAIN_ID_ERROR
     : !validAddress
       ? "Enter a 0x-prefixed 20-byte contract address."
-      : !validSeedTxHash
-        ? "Enter a 0x-prefixed 32-byte transaction hash or leave seed empty."
-        : !normalizedSampleWindow.ok
+    : !validSeedTxHash
+      ? "Enter a 0x-prefixed 32-byte transaction hash or leave seed empty."
+        : sourceWindowSupported && !normalizedSampleWindow.ok
           ? SAMPLE_WINDOW_ERROR
           : null;
 
@@ -211,6 +220,18 @@ export function HotContractAnalysisView({
     setError(null);
     setCopied(null);
   }, [chainIdNumber, trimmedRpcUrl]);
+
+  useEffect(() => {
+    if (initialContractAddress === null && initialSeedTxHash === null) return;
+    clearAnalysisState(invalidateInFlightAnalysis, setAnalysis, setError, setCopied);
+    if (initialContractAddress !== null) {
+      setContractAddress(initialContractAddress);
+    }
+    if (initialSeedTxHash !== null) {
+      setSeedTxHash(initialSeedTxHash);
+    }
+    onInitialValuesApplied?.();
+  }, [initialContractAddress, initialSeedTxHash]);
 
   useEffect(() => {
     if (
@@ -252,7 +273,7 @@ export function HotContractAnalysisView({
         source: {
           providerConfigId: sourceProvider === "local-only" ? null : sourceProvider,
           limit: clampSampleLimit(sampleLimit),
-          window: normalizedSampleWindow.value,
+          window: sourceWindowSupported ? normalizedSampleWindow.value : null,
           cursor: null,
         },
       });
@@ -369,6 +390,7 @@ export function HotContractAnalysisView({
           <label>
             Sample window
             <input
+              disabled={!sourceWindowSupported}
               onChange={(event) => {
                 clearAnalysisState(invalidateInFlightAnalysis, setAnalysis, setError, setCopied);
                 setSampleWindow(event.target.value);
@@ -506,6 +528,28 @@ export function HotContractAnalysisView({
               <span className="pill">{analysis.sampleCoverage.sourceStatus}</span>
             </header>
             <dl className="confirmation-grid tx-analysis-summary-grid">
+              <div>Source kind</div>
+              <div className="mono">{analysis.sampleCoverage.sourceKind ?? "none"}</div>
+              <div>Provider config ID</div>
+              <div className="mono">{analysis.sampleCoverage.providerConfigId ?? "none"}</div>
+              <div>Query window</div>
+              <div className="mono">{analysis.sampleCoverage.queryWindow ?? "none"}</div>
+              <div>Oldest block</div>
+              <div>{analysis.sampleCoverage.oldestBlock ?? "none"}</div>
+              <div>Newest block</div>
+              <div>{analysis.sampleCoverage.newestBlock ?? "none"}</div>
+              <div>Oldest block time</div>
+              <div className="mono">{analysis.sampleCoverage.oldestBlockTime ?? "none"}</div>
+              <div>Newest block time</div>
+              <div className="mono">{analysis.sampleCoverage.newestBlockTime ?? "none"}</div>
+              <div>Provider status</div>
+              <div>{analysis.sampleCoverage.providerStatus}</div>
+              <div>Rate limit status</div>
+              <div>{analysis.sampleCoverage.rateLimitStatus}</div>
+              <div>Completeness</div>
+              <div>{analysis.sampleCoverage.completeness}</div>
+              <div>Payload status</div>
+              <div>{analysis.sampleCoverage.payloadStatus}</div>
               <div>Requested limit</div>
               <div>{analysis.sampleCoverage.requestedLimit}</div>
               <div>Returned samples</div>

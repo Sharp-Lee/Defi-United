@@ -27,7 +27,7 @@ function model(): HotContractAnalysisReadModel {
       chainStatus: "matched",
     },
     code: {
-      status: "contract",
+      status: "ok",
       blockTag: "latest",
       byteLength: 2048,
       codeHashVersion: "keccak256-v1",
@@ -44,6 +44,17 @@ function model(): HotContractAnalysisReadModel {
       returnedSamples: 3,
       omittedSamples: 2,
       sourceStatus: "limited",
+      sourceKind: "customIndexer",
+      providerConfigId: "configured-mainnet",
+      queryWindow: "24h",
+      oldestBlock: 100,
+      newestBlock: 123,
+      oldestBlockTime: "2026-04-30T00:00:00Z",
+      newestBlockTime: "2026-04-30T00:05:00Z",
+      providerStatus: "limited",
+      rateLimitStatus: "unknown",
+      completeness: "partial",
+      payloadStatus: "ok",
     },
     samples: [
       {
@@ -185,6 +196,27 @@ describe("hot contract read model", () => {
         },
       }),
     ).toBe("Source unavailable");
+  });
+
+  it("treats backend ok code status as available contract code", () => {
+    expect(
+      hotContractStatusTitle({
+        ...model(),
+        status: "ok",
+        code: {
+          ...model().code,
+          status: "ok",
+        },
+        sources: {
+          ...model().sources,
+          source: status("ok"),
+        },
+        sampleCoverage: {
+          ...model().sampleCoverage,
+          sourceStatus: "ok",
+        },
+      }),
+    ).toBe("Analysis ready");
   });
 
   it("redacts malicious source status reasons", () => {

@@ -67,7 +67,7 @@ export function hotContractStatusTitle(model: HotContractAnalysisReadModel) {
   if (model.status === "sourceUnavailable" || model.sources.source.status !== "ok") {
     return "Source unavailable";
   }
-  if (model.code.status !== "contract") return "Code unavailable";
+  if (model.code.status !== "ok" && model.code.status !== "contract") return "Code unavailable";
   return "Analysis ready";
 }
 

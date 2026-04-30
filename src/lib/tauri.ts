@@ -560,6 +560,17 @@ export interface HotContractSampleCoverage {
   returnedSamples: number;
   omittedSamples: number;
   sourceStatus: string;
+  sourceKind?: string | null;
+  providerConfigId?: string | null;
+  queryWindow?: string | null;
+  oldestBlock?: number | null;
+  newestBlock?: number | null;
+  oldestBlockTime?: string | null;
+  newestBlockTime?: string | null;
+  providerStatus: string;
+  rateLimitStatus: string;
+  completeness: string;
+  payloadStatus: string;
 }
 
 export interface HotContractSourceSample {

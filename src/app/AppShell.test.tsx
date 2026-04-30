@@ -1,9 +1,14 @@
 import { fireEvent, screen } from "@testing-library/react";
 import { within } from "@testing-library/react";
+import { useState } from "react";
 import { describe, expect, it } from "vitest";
 import { AppShell } from "./AppShell";
 import { renderScreen } from "../test/render";
-import type { AbiRegistryState } from "../lib/tauri";
+import type { AbiRegistryState, TxAnalysisFetchReadModel } from "../lib/tauri";
+
+const txHash = `0x${"a".repeat(64)}`;
+const from = "0x1111111111111111111111111111111111111111";
+const to = "0x2222222222222222222222222222222222222222";
 
 function abiRegistryState(
   dataSources: AbiRegistryState["dataSources"],
@@ -31,6 +36,98 @@ function abiDataSource(
     createdAt: "2026-04-30T00:00:00Z",
     updatedAt: "2026-04-30T00:00:00Z",
     ...rest,
+  };
+}
+
+function txAnalysisModel(
+  overrides: Partial<TxAnalysisFetchReadModel> = {},
+): TxAnalysisFetchReadModel {
+  const base: TxAnalysisFetchReadModel = {
+    status: "ok",
+    reasons: [],
+    hash: txHash,
+    chainId: 1,
+    rpc: {
+      endpoint: "https://rpc.example.invalid",
+      expectedChainId: 1,
+      actualChainId: 1,
+      chainStatus: "matched",
+    },
+    transaction: {
+      hash: txHash,
+      from,
+      to,
+      contractCreation: false,
+      nonce: "1",
+      valueWei: "0",
+      selector: "0xa9059cbb",
+      selectorStatus: "present",
+      calldataByteLength: 68,
+      calldataHashVersion: "keccak256-v1",
+      calldataHash: "0xcalldatahash",
+      blockNumber: 123,
+      blockHash: "0xblockhash",
+      transactionIndex: 0,
+    },
+    receipt: {
+      status: 1,
+      statusLabel: "success",
+      blockNumber: 123,
+      blockHash: "0xblockhash",
+      transactionIndex: 0,
+      gasUsed: "21000",
+      effectiveGasPrice: "1000000000",
+      contractAddress: null,
+      logsStatus: "present",
+      logsCount: 0,
+      logs: [],
+      omittedLogs: 0,
+    },
+    block: {
+      number: 123,
+      hash: "0xblockhash",
+      timestamp: "2026-04-30T00:00:00Z",
+      baseFeePerGas: "100000000",
+    },
+    addressCodes: [],
+    sources: {
+      chainId: { status: "ok", reason: null, errorSummary: null },
+      transaction: { status: "ok", reason: null, errorSummary: null },
+      receipt: { status: "ok", reason: null, errorSummary: null },
+      logs: { status: "ok", reason: null, errorSummary: null },
+      block: { status: "ok", reason: null, errorSummary: null },
+      code: { status: "ok", reason: null, errorSummary: null },
+      explorer: { status: "notConfigured", reason: null, errorSummary: null },
+      indexer: { status: "notConfigured", reason: null, errorSummary: null },
+      localHistory: { status: "noMatch", reason: null, errorSummary: null },
+    },
+    analysis: {
+      status: "decoded",
+      reasons: [],
+      selector: {
+        selector: "0xa9059cbb",
+        selectorStatus: "present",
+        selectorMatchCount: 0,
+        uniqueSignatureCount: 0,
+        sourceCount: 0,
+        conflict: false,
+      },
+      abiSources: [],
+      functionCandidates: [],
+      eventCandidates: [],
+      errorCandidates: [],
+      classificationCandidates: [],
+      uncertaintyStatuses: [],
+      revertDataStatus: "notAvailable",
+      revertData: null,
+    },
+    errorSummary: null,
+  };
+  return {
+    ...base,
+    ...overrides,
+    transaction: overrides.transaction === undefined ? base.transaction : overrides.transaction,
+    receipt: overrides.receipt === undefined ? base.receipt : overrides.receipt,
   };
 }
 
@@ -267,6 +364,118 @@ describe("AppShell", () => {
     const sourceSelect = screen.getByLabelText("Source provider");
     expect(within(sourceSelect).getByRole("option", { name: /configured-mainnet/ })).toBeInTheDocument();
     expect(within(sourceSelect).queryByRole("option", { name: /configured-base/ })).not.toBeInTheDocument();
+  });
+
+  it("jumps from Tx Analysis to Hot Contract with the recipient and seed tx hash", async () => {
+    function StatefulShell() {
+      const [activeTab, setActiveTab] = useState<"txAnalysis" | "hotContract">("txAnalysis");
+      return (
+        <AppShell
+          activeTab={activeTab}
+          onFetchTxAnalysis={async () => txAnalysisModel()}
+          onTabChange={(tab) => setActiveTab(tab as "txAnalysis" | "hotContract")}
+          onUnlock={async () => {}}
+          rpcUrl="https://rpc.example.invalid"
+          selectedChainId={1n}
+          session={{ status: "ready" }}
+          settingsStatusKind="ok"
+        />
+      );
+    }
+
+    renderScreen(<StatefulShell />);
+
+    fireEvent.change(screen.getByLabelText("Transaction hash"), { target: { value: txHash } });
+    fireEvent.click(screen.getByRole("button", { name: "Analyze" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Analyze contract" }));
+
+    expect(screen.getByRole("tab", { name: "Hot Contract" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    expect(screen.getByLabelText("Contract address")).toHaveValue(to);
+    expect(screen.getByLabelText("Optional tx hash seed (display only)")).toHaveValue(txHash);
+  });
+
+  it("consumes the Tx Analysis hot contract seed after applying it once", async () => {
+    function StatefulShell() {
+      const [activeTab, setActiveTab] = useState<"txAnalysis" | "hotContract" | "accounts">("txAnalysis");
+      return (
+        <AppShell
+          activeTab={activeTab}
+          onFetchTxAnalysis={async () => txAnalysisModel()}
+          onTabChange={(tab) => setActiveTab(tab as "txAnalysis" | "hotContract" | "accounts")}
+          onUnlock={async () => {}}
+          rpcUrl="https://rpc.example.invalid"
+          selectedChainId={1n}
+          session={{ status: "ready" }}
+          settingsStatusKind="ok"
+        />
+      );
+    }
+
+    renderScreen(<StatefulShell />);
+
+    fireEvent.change(screen.getByLabelText("Transaction hash"), { target: { value: txHash } });
+    fireEvent.click(screen.getByRole("button", { name: "Analyze" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Analyze contract" }));
+
+    expect(screen.getByLabelText("Contract address")).toHaveValue(to);
+    expect(screen.getByLabelText("Optional tx hash seed (display only)")).toHaveValue(txHash);
+
+    fireEvent.change(screen.getByLabelText("Contract address"), { target: { value: "" } });
+    fireEvent.change(screen.getByLabelText("Optional tx hash seed (display only)"), {
+      target: { value: "" },
+    });
+    fireEvent.click(screen.getByRole("tab", { name: "Accounts" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Hot Contract" }));
+
+    expect(screen.getByLabelText("Contract address")).toHaveValue("");
+    expect(screen.getByLabelText("Optional tx hash seed (display only)")).toHaveValue("");
+  });
+
+  it("jumps from Tx Analysis contract creation to Hot Contract with receipt contract address", async () => {
+    const created = "0x3333333333333333333333333333333333333333";
+    function StatefulShell() {
+      const [activeTab, setActiveTab] = useState<"txAnalysis" | "hotContract">("txAnalysis");
+      return (
+        <AppShell
+          activeTab={activeTab}
+          onFetchTxAnalysis={async () =>
+            txAnalysisModel({
+              transaction: {
+                ...txAnalysisModel().transaction!,
+                to: null,
+                contractCreation: true,
+              },
+              receipt: {
+                ...txAnalysisModel().receipt!,
+                contractAddress: created,
+              },
+            })
+          }
+          onTabChange={(tab) => setActiveTab(tab as "txAnalysis" | "hotContract")}
+          onUnlock={async () => {}}
+          rpcUrl="https://rpc.example.invalid"
+          selectedChainId={1n}
+          session={{ status: "ready" }}
+          settingsStatusKind="ok"
+        />
+      );
+    }
+
+    renderScreen(<StatefulShell />);
+
+    fireEvent.change(screen.getByLabelText("Transaction hash"), { target: { value: txHash } });
+    fireEvent.click(screen.getByRole("button", { name: "Analyze" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Analyze contract" }));
+
+    expect(screen.getByRole("tab", { name: "Hot Contract" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    expect(screen.getByLabelText("Contract address")).toHaveValue(created);
+    expect(screen.getByLabelText("Optional tx hash seed (display only)")).toHaveValue(txHash);
   });
 
   it("renders the desktop assets and approvals workspace tab", () => {

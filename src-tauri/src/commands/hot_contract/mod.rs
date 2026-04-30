@@ -22,8 +22,9 @@ use self::aggregate::aggregate_samples;
 use self::code::{fetch_contract_code, validate_selected_rpc};
 use self::decode::decode_samples;
 use self::source::{
-    fetch_normalized_source_samples, resolve_source_status, sample_coverage_from_fixture,
-    EmptyHotContractSampleProvider, HotContractSampleProvider,
+    build_sample_coverage, fetch_normalized_source_samples, resolve_source_kind,
+    resolve_source_status, sample_coverage_from_fixture, HotContractSampleProvider,
+    ProductionHotContractSampleProvider,
 };
 
 const STATUS_OK: &str = "ok";
@@ -48,7 +49,8 @@ pub async fn fetch_hot_contract_analysis(
 pub async fn fetch_hot_contract_analysis_impl(
     input: HotContractAnalysisFetchInput,
 ) -> HotContractAnalysisReadModel {
-    fetch_hot_contract_analysis_with_sample_provider(input, &EmptyHotContractSampleProvider).await
+    fetch_hot_contract_analysis_with_sample_provider(input, &ProductionHotContractSampleProvider)
+        .await
 }
 
 pub(crate) async fn fetch_hot_contract_analysis_with_sample_provider(
@@ -87,6 +89,8 @@ pub(crate) async fn fetch_hot_contract_analysis_with_sample_provider(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string);
+    let source_kind =
+        resolve_source_kind(normalized.chain_id, source_provider_config_id.as_deref());
 
     if let Err(reason) = validate_selected_rpc(
         &normalized.selected_rpc,
@@ -156,6 +160,19 @@ pub(crate) async fn fetch_hot_contract_analysis_with_sample_provider(
                     HotContractSourceStatus::new(STATUS_CODE_ABSENT, Some("codeAbsent"), None);
             } else {
                 if let Some(reason) = source_unavailable_reason {
+                    if let Some(request) = build_source_coverage_request(
+                        &normalized,
+                        source_provider_config_id.as_deref(),
+                    ) {
+                        model.sample_coverage = build_sample_coverage(
+                            &request,
+                            &model.sources.source,
+                            source_kind.as_deref(),
+                            &[],
+                            0,
+                            coverage_payload_status(&model.sources.source.status),
+                        );
+                    }
                     model.status = STATUS_SOURCE_UNAVAILABLE.to_string();
                     model.push_reason(reason.clone());
                     model.error_summary = Some(reason);
@@ -164,8 +181,10 @@ pub(crate) async fn fetch_hot_contract_analysis_with_sample_provider(
                         &mut model,
                         &normalized,
                         source_provider_config_id.as_deref(),
+                        source_kind.as_deref(),
                         sample_provider,
-                    );
+                    )
+                    .await;
                     if model.status == "pending" {
                         model.status = STATUS_OK.to_string();
                     }
@@ -192,10 +211,11 @@ pub(crate) async fn fetch_hot_contract_analysis_with_sample_provider(
     model
 }
 
-fn populate_sample_coverage(
+async fn populate_sample_coverage(
     model: &mut HotContractAnalysisReadModel,
     normalized: &NormalizedHotContractInput,
     provider_config_id: Option<&str>,
+    source_kind: Option<&str>,
     sample_provider: &dyn HotContractSampleProvider,
 ) {
     let Some(provider_config_id) = provider_config_id else {
@@ -227,10 +247,14 @@ fn populate_sample_coverage(
             return;
         }
     };
-    match fetch_normalized_source_samples(sample_provider, &request) {
+    match fetch_normalized_source_samples(sample_provider, &request).await {
         Ok(samples) => {
-            model.sample_coverage =
-                sample_coverage_from_fixture(&request, &model.sources.source, &samples);
+            model.sample_coverage = sample_coverage_from_fixture(
+                &request,
+                &model.sources.source,
+                source_kind,
+                &samples,
+            );
             model.samples = samples.samples;
             model.analysis = aggregate_samples(&model.samples);
             model.decode = decode_samples(
@@ -242,14 +266,85 @@ fn populate_sample_coverage(
             );
         }
         Err(error) => {
-            model.sources.source =
-                HotContractSourceStatus::unavailable("sourceFetchFailed", Some(error.clone()));
-            model.sample_coverage.source_status = model.sources.source.status.clone();
-            model.sample_coverage.requested_limit = request.limit;
+            let is_malformed = matches!(
+                error.as_str(),
+                "sourceInvalidJson"
+                    | "sourceInvalidUtf8"
+                    | "sourceInvalidSample"
+                    | "sourceUnexpectedJsonShape"
+                    | "sourceMissingSamples"
+            );
+            let is_rate_limited = error == "sourceRateLimited";
+            model.sources.source = if is_malformed {
+                HotContractSourceStatus::new(
+                    "malformed",
+                    Some("sourceMalformedPayload"),
+                    Some(error.clone()),
+                )
+            } else if is_rate_limited {
+                HotContractSourceStatus::new(
+                    "rateLimited",
+                    Some("sourceRateLimited"),
+                    Some(error.clone()),
+                )
+            } else {
+                HotContractSourceStatus::unavailable("sourceFetchFailed", Some(error.clone()))
+            };
+            model.sample_coverage = build_sample_coverage(
+                &request,
+                &model.sources.source,
+                source_kind,
+                &[],
+                0,
+                if is_malformed {
+                    "malformed"
+                } else {
+                    "unavailable"
+                },
+            );
             model.status = STATUS_SOURCE_UNAVAILABLE.to_string();
-            model.push_reason("sourceFetchFailed");
+            model.push_reason(if is_malformed {
+                "sourceMalformedPayload"
+            } else if is_rate_limited {
+                "sourceRateLimited"
+            } else {
+                "sourceFetchFailed"
+            });
             model.error_summary = Some(error);
         }
+    }
+}
+
+fn build_source_coverage_request(
+    normalized: &NormalizedHotContractInput,
+    provider_config_id: Option<&str>,
+) -> Option<HotContractSourceOutboundRequest> {
+    let provider_config_id = provider_config_id?;
+    let source_input = normalized
+        .source
+        .clone()
+        .unwrap_or_else(|| HotContractSourceFetchInput {
+            provider_config_id: Some(provider_config_id.to_string()),
+            limit: None,
+            window: None,
+            cursor: None,
+        });
+    validate_source_outbound_request(
+        normalized.chain_id,
+        provider_config_id,
+        &normalized.contract_address,
+        source_input,
+    )
+    .ok()
+}
+
+fn coverage_payload_status(source_status: &str) -> &'static str {
+    match source_status {
+        "malformed" => "malformed",
+        "unsupported" => "unsupported",
+        "rateLimited" | "disabled" | "wrongChain" | "stale" | "missing" => "unavailable",
+        "ok" => "ok",
+        _ => "unavailable",
     }
 }
 

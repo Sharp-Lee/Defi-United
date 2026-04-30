@@ -339,6 +339,17 @@ pub struct HotContractSampleCoverage {
     pub returned_samples: u64,
     pub omitted_samples: u64,
     pub source_status: String,
+    pub source_kind: Option<String>,
+    pub provider_config_id: Option<String>,
+    pub query_window: Option<String>,
+    pub oldest_block: Option<u64>,
+    pub newest_block: Option<u64>,
+    pub oldest_block_time: Option<String>,
+    pub newest_block_time: Option<String>,
+    pub provider_status: String,
+    pub rate_limit_status: String,
+    pub completeness: String,
+    pub payload_status: String,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]

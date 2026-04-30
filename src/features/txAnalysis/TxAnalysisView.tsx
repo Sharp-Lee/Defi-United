@@ -20,6 +20,7 @@ export interface TxAnalysisViewProps {
   rpcUrl: string;
   chainReady: boolean;
   history?: HistoryRecord[];
+  onAnalyzeContract?: (input: { contractAddress: string; seedTxHash: string }) => void;
   onFetchTxAnalysis?: (input: TxAnalysisFetchInput) => Promise<TxAnalysisFetchReadModel>;
 }
 
@@ -205,6 +206,7 @@ export function TxAnalysisView({
   rpcUrl,
   chainReady,
   history = [],
+  onAnalyzeContract,
   onFetchTxAnalysis,
 }: TxAnalysisViewProps) {
   const [txHash, setTxHash] = useState("");
@@ -313,6 +315,9 @@ export function TxAnalysisView({
   }
 
   const title = analysis ? statusTitle(analysis) : null;
+  const hotContractTarget = analysis?.transaction?.contractCreation
+    ? analysis.receipt?.contractAddress ?? null
+    : analysis?.transaction?.to ?? null;
 
   return (
     <section className="workspace-section tx-analysis-grid">
@@ -426,12 +431,27 @@ export function TxAnalysisView({
           <section aria-label="Transaction identity" className="confirmation-panel">
             <header className="section-header">
               <h3>Transaction Identity</h3>
-              <button
-                onClick={() => void copyText(analysis.hash, setCopied, "tx hash")}
-                type="button"
-              >
-                Copy tx hash
-              </button>
+              <div className="button-row">
+                {onAnalyzeContract && hotContractTarget && (
+                  <button
+                    onClick={() =>
+                      onAnalyzeContract({
+                        contractAddress: hotContractTarget,
+                        seedTxHash: analysis.hash,
+                      })
+                    }
+                    type="button"
+                  >
+                    Analyze contract
+                  </button>
+                )}
+                <button
+                  onClick={() => void copyText(analysis.hash, setCopied, "tx hash")}
+                  type="button"
+                >
+                  Copy tx hash
+                </button>
+              </div>
             </header>
             {copied === "tx hash" && <div className="inline-success">Copied tx hash.</div>}
             {analysis.transaction ? (

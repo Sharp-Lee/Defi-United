@@ -1870,7 +1870,9 @@ fn classify_explorer_response_text(
     }
 }
 
-fn resolve_api_key_ref(api_key_ref: Option<&str>) -> Result<Option<String>, &'static str> {
+pub(crate) fn resolve_api_key_ref(
+    api_key_ref: Option<&str>,
+) -> Result<Option<String>, &'static str> {
     let Some(api_key_ref) = api_key_ref else {
         return Ok(None);
     };
