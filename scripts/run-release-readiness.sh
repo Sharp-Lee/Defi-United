@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 LOG_DIR="${WALLET_WORKBENCH_RELEASE_LOG_DIR:-}"
 LOG_LOCATION_HINT="For locatable logs, rerun with WALLET_WORKBENCH_RELEASE_LOG_DIR set to a safe local directory."
-READINESS_MARKER_REGEX="${WALLET_WORKBENCH_RELEASE_DESKTOP_READY_MARKER_REGEX:-^[[:space:]]*Local:.*5173/}"
+READINESS_MARKER_REGEX="${WALLET_WORKBENCH_RELEASE_DESKTOP_READY_MARKER_REGEX:-^[[:space:]]*➜[[:space:]]*Local:[[:space:]]*http://127\.0\.0\.1:5173/}"
 READINESS_TIMEOUT_SECONDS="${WALLET_WORKBENCH_RELEASE_DESKTOP_READY_TIMEOUT_SECONDS:-120}"
 CONTROLLER_TIMEOUT_SECONDS="${WALLET_WORKBENCH_RELEASE_DESKTOP_SMOKE_TIMEOUT_SECONDS:-300}"
 
@@ -362,7 +362,7 @@ controller_gate() {
     printf 'release_readiness_controller_prompt timeout_s=%s allowed_inputs=pass|fail\n' "${CONTROLLER_TIMEOUT_SECONDS}"
   } | tee -a "${SMOKE_LOG_PATH}"
 
-  if [ -r /dev/tty ] && [ -w /dev/tty ]; then
+  if [ -r /dev/tty ] && [ -w /dev/tty ] && ( : </dev/tty ) 2>/dev/null; then
     controller_source="/dev/tty"
   fi
 
