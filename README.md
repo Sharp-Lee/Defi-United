@@ -51,7 +51,15 @@ npm run tauri:build
 
 ## Validation
 
-Recommended regression commands:
+Release readiness gate:
+
+```bash
+scripts/run-release-readiness.sh
+```
+
+This wrapper first confirms local `main` still matches `origin/main`, verifies a throwaway `origin/main` worktree is clean, checks dependency readiness, then runs an isolated interactive desktop startup/unlock/core smoke against a fresh app dir before frontend/core tests, typecheck, Rust suite, anvil smoke, and final diff check. The controller only enters pass/fail after the readiness marker has appeared, the checklist is complete, and the desktop smoke timeout is kept under control. Use `--post-merge` for merged-main rechecks; it skips only the already-proven `main_sync` stage.
+
+Recommended regression commands, which remain the manual fallback:
 
 ```bash
 npm test

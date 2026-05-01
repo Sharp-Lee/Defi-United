@@ -78,6 +78,13 @@ EVM Wallet Workbench 是一个面向本地桌面使用的 EVM 钱包工作台。
 
 P3 desktop 不提供明文助记词 import/export/backup UI。当前恢复边界是保护本地 encrypted vault file 和对应密码；更完整的 native secure recovery workflow 属于后续设计，不应在 P3 文档或 UI 中写成已完成。
 
+### 6.1 P7 release readiness gate
+
+- P7 是 release validation gate，不是新的 wallet runtime capability。
+- P7 通过 `scripts/run-release-readiness.sh` 运行，并带 controller verification。
+- README 里的当前能力 wording 只能列已经实现的钱包功能；未来能力、探索项和后续设计不能写成已完成。
+- browser-version work 仍然只是历史参考或未来/non-goal，不是 P7 的验收目标。
+
 ## 7. 架构边界
 
 - React/TypeScript 负责 UI、表单、视图状态、只读查询和用户意图表达。
