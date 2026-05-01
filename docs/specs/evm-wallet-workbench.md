@@ -4,7 +4,7 @@
 
 EVM Wallet Workbench 是一个面向本地桌面使用的 EVM 钱包工作台。当前主线形态是 Tauri desktop app，前端使用 React/TypeScript 表达工作流和界面状态，Tauri/Rust 负责 vault、账户派生、交易签名、广播和本地持久化。
 
-浏览器版本不再作为后续主线。后续产品、技术债治理、安全边界、测试和发布都以 Tauri desktop 形态为准；浏览器版本只作为历史参考或迁移来源，不承诺继续补齐功能。
+浏览器 donor 源码已经从当前仓库 source tree 中移除，当前仅在 git 历史中保留其迁移背景；后续产品、技术债治理、安全边界、测试和发布都以 Tauri desktop 形态为准，不再把浏览器实现视为当前可维护主线。
 
 ## 2. 产品目标
 

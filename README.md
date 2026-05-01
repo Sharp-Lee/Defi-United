@@ -2,7 +2,7 @@
 
 Local-first Tauri desktop workbench for EVM accounts, native-token transfers, ERC-20 transfers, ABI calls, raw calldata sends, batch workflows, and auditable transaction history.
 
-The current product and test mainline is the Tauri desktop app. The older browser donor workflow remains in the repository only as historical migration context; new wallet work should follow the desktop boundary in `src/app`, `src/features`, `src/core`, `src/lib/tauri.ts`, and `src-tauri`.
+The current product and test mainline is the Tauri desktop app. Browser donor source has been removed from the current source tree and remains only in git history as historical migration context; new wallet work should follow the desktop boundary in `src/app`, `src/features`, `src/core`, `src/lib/tauri.ts`, and `src-tauri`.
 
 ## What v1 Supports
 
