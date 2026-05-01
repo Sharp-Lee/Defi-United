@@ -15,6 +15,15 @@
 | P6-2f | Integration And Security Regressions | `codex/p6-2-hot-contract-analysis` | `c30a217` | passed | passed | yes | yes | Controller verification passed: `npm test -- src/features src/core`, `npm run typecheck`, `cargo test --manifest-path src-tauri/Cargo.toml`, `cargo test --manifest-path src-tauri/Cargo.toml hot_contract`, `scripts/run-anvil-check.sh`, and `git diff --check`. |
 | P6-2 | Milestone Merge | `main` | `43e6a80` | passed | passed | yes | yes | Fast-forward merged `codex/p6-2-hot-contract-analysis` into `main`; merged-result verification passed. |
 
+## P7 Milestone
+
+| milestone | task | branch | commit | review status | verification | pushed | merged | notes |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| P7a | Workflow And Status Records | `codex/p7-release-readiness` | `pending` | pending | pending | no | no | Records delegated workflow and starts P7 status tracking. |
+| P7b | Release Readiness Runner | `codex/p7-release-readiness` | `pending` | pending | pending | no | no | Adds reproducible release gate wrapper. |
+| P7c | Release Docs And Capability Wording | `codex/p7-release-readiness` | `pending` | pending | pending | no | no | Syncs README/spec validation wording without adding new wallet capabilities. |
+| P7d | Final Release Verification And Merge | `main` | `pending` | pending | pending | no | no | Final full validation and fast-forward merge to main. |
+
 ## Next
 
-Next task: P6-2 complete.
+Next task: P7a Workflow And Status Records.

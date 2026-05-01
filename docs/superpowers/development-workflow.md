@@ -39,6 +39,7 @@
 规则：
 
 - 子代理只实现或 review，不负责 commit / push；本项目规则覆盖通用 subagent-driven-development 示例中 implementer 可 commit 的描述。
+- 如果用户已经明确授权 controller 代为执行需要用户参与的 gate，controller 继续执行 spec / plan / review / verification / commit / push，但不得跳过 implementer -> spec reviewer -> code quality reviewer -> controller fresh verification 的任务流程；只有 scope 扩大、环境阻塞、数据破坏风险或需要业务取舍时才停下来交给用户决策。
 - controller 必须在 fresh verification 后才能提交。
 - review 反馈必须先核实事实再修，不能盲从。
 - reviewer 要求修改的任何问题，修复后都必须再次 review 直到通过；重要或阻塞问题还需要 controller 明确核实。
