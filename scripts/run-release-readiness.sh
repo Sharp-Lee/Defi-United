@@ -232,7 +232,7 @@ baseline_clean() {
   fi
 
   if [ -n "${status_short}" ]; then
-    printf 'baseline_clean_status_short=%s\n' "${status_short}"
+    printf 'baseline_clean_status_short_present=true\n'
     cleanup_baseline_resources
     stage_fail "baseline_clean" "throwaway worktree is not clean"
     return 1
@@ -334,7 +334,7 @@ wait_for_readiness_marker() {
       return 1
     fi
 
-    if grep -Eq "${READINESS_MARKER_REGEX}" "${SMOKE_LOG_PATH}" 2>/dev/null; then
+    if grep -E -q -- "${READINESS_MARKER_REGEX}" "${SMOKE_LOG_PATH}" 2>/dev/null; then
       marker_seen=1
       break
     fi
@@ -344,7 +344,7 @@ wait_for_readiness_marker() {
 
   if [ "${marker_seen}" -ne 1 ]; then
     printf 'desktop_smoke_readiness_timeout marker="%s" timeout_s=%s log_ref="%s"\n' \
-      "${READINESS_MARKER_REGEX}" "${READINESS_TIMEOUT_SECONDS}" "${SMOKE_LOG_REF}" >>"${SMOKE_LOG_PATH}"
+      "$(escape_log_value "${READINESS_MARKER_REGEX}")" "${READINESS_TIMEOUT_SECONDS}" "${SMOKE_LOG_REF}" >>"${SMOKE_LOG_PATH}"
     stage_fail "desktop_smoke" "timed out waiting for the readiness marker"
     return 1
   fi
@@ -357,6 +357,7 @@ controller_gate() {
   {
     printf 'release_readiness_controller_checklist\n'
     printf '  - confirm the desktop app is responsive at localhost:5173\n'
+    printf '  - create or unlock a throwaway vault and confirm the core transfer/history surfaces render\n'
     printf '  - enter pass to continue or fail to stop\n'
     printf 'release_readiness_controller_prompt timeout_s=%s allowed_inputs=pass|fail\n' "${CONTROLLER_TIMEOUT_SECONDS}"
   } | tee -a "${SMOKE_LOG_PATH}"
@@ -381,7 +382,7 @@ controller_gate() {
         return 1
       fi
 
-      if ! grep -Eq "${READINESS_MARKER_REGEX}" "${SMOKE_LOG_PATH}" 2>/dev/null; then
+      if ! grep -E -q -- "${READINESS_MARKER_REGEX}" "${SMOKE_LOG_PATH}" 2>/dev/null; then
         printf 'desktop_smoke_controller_recheck_marker_missing log_ref="%s"\n' "${SMOKE_LOG_REF}" >>"${SMOKE_LOG_PATH}"
         stage_fail "desktop_smoke" "controller approved pass but the readiness marker was no longer in the log"
         return 1
@@ -417,7 +418,7 @@ desktop_smoke() {
     return 1
   fi
   printf 'desktop_smoke_readiness_marker_detected marker="%s" log_ref="%s"\n' \
-    "${READINESS_MARKER_REGEX}" "${SMOKE_LOG_REF}" >>"${SMOKE_LOG_PATH}"
+    "$(escape_log_value "${READINESS_MARKER_REGEX}")" "${SMOKE_LOG_REF}" >>"${SMOKE_LOG_PATH}"
   controller_gate
 }
 
@@ -499,7 +500,7 @@ main() {
     exit 1
   fi
 
-  if printf '' | grep -Eq "${READINESS_MARKER_REGEX}" >/dev/null 2>&1; then
+  if printf '' | grep -E -q -- "${READINESS_MARKER_REGEX}" >/dev/null 2>&1; then
     :
   else
     local regex_status=$?
@@ -530,6 +531,8 @@ main() {
   run_stage "rust_regression" "capture" "rust_regression.log" rust_regression
   run_stage "anvil_smoke" "capture" "anvil_smoke.log" anvil_smoke
   run_stage "diff_check" "capture" "diff_check.log" diff_check
+
+  printf 'wallet_workbench_release_readiness_passed log_dir="[redacted_path]"\n'
 }
 
 main "$@"
