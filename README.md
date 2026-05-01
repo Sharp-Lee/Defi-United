@@ -103,7 +103,8 @@ src-tauri/src/                   Rust vault, accounts, transactions, storage, co
 src-tauri/tests/                 Rust integration/regression tests
 docs/specs/evm-wallet-workbench.md
 docs/superpowers/development-workflow.md  Project workflow and quality gates
-docs/superpowers/plans/2026-04-27-evm-wallet-workbench-p3-p4.md
+docs/superpowers/project-status.md        Current milestone status table
+docs/superpowers/roadmap.md               Current baseline, future candidates, and non-goals
 scripts/run-anvil-check.sh
 ```
 
