@@ -36,7 +36,7 @@
 | milestone | task | branch | commit | review status | verification | pushed | merged | notes |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | P9a | 规范与执行计划 | `codex/p9-repository-hygiene` | `26f98d1` | passed | passed | no | no | 本地已完成提交，记录保留/清理边界与执行步骤，尚未 push。 |
-| P9b | 历史文档清理与 roadmap | `codex/p9-repository-hygiene` | `working tree` | passed | passed | no | no | 已删除完成的历史 spec/plan，补充 roadmap，并同步 README 与状态表。 |
+| P9b | 历史文档清理与 roadmap | `codex/p9-repository-hygiene` | `f99d9cd` | passed | passed | no | no | 已删除完成的历史 spec/plan，补充 roadmap，并同步 README 与状态表。 |
 | P9c | 分支与 worktree 清理 | `codex/p9-repository-hygiene` | `pending` | todo | todo | no | no | 仅清理已合并且干净的本地 worktree 和本地/远端 `codex/*` 分支；保留未合并分支、带变更 worktree 和非 `codex` 远端分支。 |
 
 ## Next
