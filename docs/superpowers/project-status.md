@@ -20,10 +20,10 @@
 | milestone | task | branch | commit | review status | verification | pushed | merged | notes |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | P7a | Workflow And Status Records | `codex/p7-release-readiness` | `a0710d5` | passed | passed | yes | no | Records delegated workflow and starts P7 status tracking. |
-| P7b | Release Readiness Runner | `codex/p7-release-readiness` | `pending` | pending | pending | no | no | Adds reproducible release gate wrapper. |
+| P7b | Release Readiness Runner | `codex/p7-release-readiness` | `a313ae6` | passed | passed | yes | no | Controller verification passed: `bash -n scripts/run-release-readiness.sh`, `test -x scripts/run-release-readiness.sh`, `git diff --check`, and usage rejection for `--bogus`. |
 | P7c | Release Docs And Capability Wording | `codex/p7-release-readiness` | `pending` | pending | pending | no | no | Syncs README/spec validation wording without adding new wallet capabilities. |
 | P7d | Final Release Verification And Merge | `main` | `pending` | pending | pending | no | no | Final full validation and fast-forward merge to main. |
 
 ## Next
 
-Next task: P7b Release Readiness Runner.
+Next task: P7c Release Docs And Capability Wording.
