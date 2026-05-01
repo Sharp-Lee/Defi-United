@@ -41,4 +41,4 @@
 
 ## Next
 
-P9 仓库清理已完成，继续下一个 roadmap milestone。
+P9 仓库清理已完成，后续按 `docs/superpowers/roadmap.md` 的 P10+ 里程碑继续。
