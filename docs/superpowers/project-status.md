@@ -22,8 +22,8 @@
 | P7a | Workflow And Status Records | `codex/p7-release-readiness` | `a0710d5` | passed | passed | yes | no | Records delegated workflow and starts P7 status tracking. |
 | P7b | Release Readiness Runner | `codex/p7-release-readiness` | `a313ae6` | passed | passed | yes | no | Controller verification passed: `bash -n scripts/run-release-readiness.sh`, `test -x scripts/run-release-readiness.sh`, `git diff --check`, and usage rejection for `--bogus`. |
 | P7c | Release Docs And Capability Wording | `codex/p7-release-readiness` | `b57ad4a` | passed | passed | yes | no | Controller verification passed: release readiness gate docs were added to README/spec, and `git diff --check` passed. |
-| P7d | Final Release Verification And Merge | `main` | `pending` | pending | pending | no | no | Final full validation and fast-forward merge to main. |
+| P7d | Final Release Verification And Merge | `main` | `617e7d2` | passed | passed | yes | yes | `codex/p7-release-readiness` was fast-forward merged into `main`; merged-result verification passed. |
 
 ## Next
 
-Next task: P7d Final Release Verification And Merge.
+P7 is complete; release readiness is merged and verified.
