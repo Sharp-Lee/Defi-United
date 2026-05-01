@@ -26,11 +26,11 @@
 
 ## Next
 
-P8b Local Workspace Hygiene is next.
+P8 cleanup is complete; continue with the next product roadmap milestone.
 
 ## P8 Cleanup
 
 | milestone | task | branch | commit | review status | verification | pushed | merged | notes |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| P8a | Browser Donor Source Cleanup | `codex/p8-clean-browser-residue` | `1e5c0c9` | passed | passed | no | no | Remove browser donor source residue from the Tauri desktop mainline. |
-| P8b | Local Workspace Hygiene | local worktree cleanup | `pending` | pending | pending | no | no | Remove or neutralize root worktree confusion after P8a is merged. |
+| P8a | Browser Donor Source Cleanup | `main` | `71acf57` | passed | passed | yes | yes | Browser donor source removed from the Tauri desktop mainline; merged-result verification passed on `main`. |
+| P8b | Local Workspace Hygiene | local worktree cleanup | `n/a` | done | done | n/a | n/a | Root checkout now opens `main`; the old browser branch is no longer the default local entrypoint. |
