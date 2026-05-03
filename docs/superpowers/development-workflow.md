@@ -4,8 +4,11 @@
 
 ## 1. 产品主线
 
-- Tauri desktop app 是唯一主线。后续产品、测试、发布、诊断和安全边界都以桌面端为准。
-- 浏览器版只作历史迁移参考，不作为新功能验收目标，也不补齐同等能力。
+- P10 起活跃产品主线是 browser-first PWA 钱包工作台；新的产品能力、测试、发布和文档收口默认面向 PWA，除非任务明确维护归档桌面版。
+- Tauri desktop v1 是已合并、可验证的归档 runtime/source baseline；README 和项目级 spec 中涉及桌面端能力时必须标明 archived / 归档语义。
+- PWA 相关实现必须先落在对应 spec / plan / status 中，完成验证后再同步 README、项目级 spec、workflow 和 roadmap 的 current / future wording。
+- 在 PWA 子任务真正完成并通过验证前，不得把 PWA 解锁、签名、广播、批量队列或移动端能力写成当前已完成能力。
+- 旧 browser donor 仍只作历史迁移参考；新的 PWA 工作不能直接把历史 donor source 当作可维护主线。
 
 ## 2. 文档分工
 

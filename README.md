@@ -1,10 +1,10 @@
 # EVM Wallet Workbench
 
-Local-first Tauri desktop workbench for EVM accounts, native-token transfers, ERC-20 transfers, ABI calls, raw calldata sends, batch workflows, and auditable transaction history.
+Browser-first PWA wallet workbench for EVM accounts, assets, batch transaction workflows, ABI/contract calls, and auditable local history.
 
-The current product and test mainline is the Tauri desktop app. Browser donor source has been removed from the current source tree and remains only in git history as historical migration context; new wallet work should follow the desktop boundary in `src/app`, `src/features`, `src/core`, `src/lib/tauri.ts`, and `src-tauri`.
+The active product mainline from P10 onward is the browser-first PWA direction tracked in `docs/superpowers/specs/2026-05-02-browser-first-pwa-wallet-design.md`. The current verified runtime/source baseline is the archived Tauri desktop v1 in `src/app`, `src/features`, `src/core`, `src/lib/tauri.ts`, and `src-tauri`; it remains useful as implementation reference and regression baseline, but new product work should target the PWA roadmap unless a task explicitly maintains the archive.
 
-## What v1 Supports
+## Archived Tauri Desktop v1 Supports
 
 - Create and unlock one encrypted mnemonic vault stored in the local app data directory. The desktop UI does not import, export, display, or receive plaintext mnemonic material.
 - Derive EVM accounts from the vault in Rust and scan native balances/nonces per `account + chainId`.
@@ -26,24 +26,28 @@ The current product and test mainline is the Tauri desktop app. Browser donor so
 - View and export non-sensitive diagnostics for RPC, chainId, history, broadcast, and reconcile troubleshooting.
 - Inspect damaged history storage, quarantine unreadable history, recover broadcasted-but-unwritten submissions, and manually review dropped records.
 
-Full portfolio or NFT collection discovery, full authorization discovery, batch revoke, risk scoring, wallet recovery automation, browser-version work, and broader contract interaction tooling remain future/non-goal exploration unless a later task explicitly implements them.
+Full portfolio or NFT collection discovery, full authorization discovery, batch revoke, risk scoring, wallet recovery automation, and broader contract interaction tooling remain future/non-goal exploration unless a later task explicitly implements them.
 
-Plaintext mnemonic import/export and backup UX are not part of P3. Until a future native secure recovery workflow exists, preserve the encrypted vault file together with the password needed to unlock it. On macOS the default app data directory is `~/Library/Application Support/EVMWalletWorkbench/`; the encrypted vault is `vault.json` in that directory. Losing both that vault file or an app-data backup and the password means the generated wallet cannot be recovered by the P3 desktop app.
+Plaintext mnemonic import/export and backup UX are not part of archived Tauri desktop v1. Until a future secure recovery workflow exists, preserve the encrypted vault file together with the password needed to unlock it. On macOS the default app data directory is `~/Library/Application Support/EVMWalletWorkbench/`; the encrypted vault is `vault.json` in that directory. Losing both that vault file or an app-data backup and the password means the generated wallet cannot be recovered by the archived desktop app.
 
-## Install And Run
+## Current PWA Direction
+
+PWA capabilities are implemented incrementally through P10+ milestones. Until a PWA subtask is completed and verified, the corresponding browser unlock, signing, broadcasting, batch queue, mobile, or installability behavior remains planned work rather than current runtime capability.
+
+## Install And Run Archived Desktop
 
 ```bash
 npm install
 npm run tauri:dev
 ```
 
-Frontend-only development is still useful for component work:
+Frontend-only development is the default entry point for PWA work and remains useful for archived desktop component work:
 
 ```bash
 npm run dev
 ```
 
-Desktop release build:
+Archived desktop release build:
 
 ```bash
 npm run tauri:build
@@ -51,7 +55,7 @@ npm run tauri:build
 
 ## Validation
 
-Release readiness gate:
+Archived desktop release readiness gate:
 
 ```bash
 scripts/run-release-readiness.sh
@@ -59,7 +63,7 @@ scripts/run-release-readiness.sh
 
 This wrapper first confirms local `main` still matches `origin/main`, verifies a throwaway `origin/main` worktree is clean, checks dependency readiness, then runs an isolated interactive desktop startup/unlock/core smoke against a fresh app dir before frontend/core tests, typecheck, Rust suite, anvil smoke, and final diff check. The controller only enters pass/fail after the readiness marker has appeared, the checklist is complete, and the desktop smoke timeout is kept under control. Use `--post-merge` for merged-main rechecks; it skips only the already-proven `main_sync` stage.
 
-Recommended regression commands, which remain the manual fallback:
+Recommended archived desktop regression commands, which remain the manual fallback for desktop maintenance:
 
 ```bash
 npm test
@@ -73,9 +77,9 @@ git diff --check
 
 ## Safety Boundaries
 
-- Rust/Tauri owns vault decryption, account derivation, transaction signing, broadcasting, and local file persistence.
-- Rust/Tauri owns desktop vault creation and generates the vault mnemonic internally.
-- React owns UI state, form intent, read models, and display. React must not receive plaintext mnemonics, private keys, or derived signing material.
+- Archived Tauri desktop v1 keeps vault decryption, account derivation, transaction signing, broadcasting, and local file persistence in Rust/Tauri.
+- Archived Tauri desktop v1 creates the desktop vault in Rust and generates the vault mnemonic internally.
+- PWA work changes the security boundary: browser unlock, derivation, signing, and broadcasting must be introduced only through explicit P10+ specs/plans, redaction tests, and verification.
 - The app must reject RPC or submission flows when remote `chainId` does not match the requested chain.
 - Local nonce recovery must consider persisted pending history, not only in-memory state.
 - If a transaction broadcasts but local history persistence fails, the returned error must include the tx hash and the local write failure.
@@ -83,7 +87,7 @@ git diff --check
 ## Key Paths
 
 ```text
-src/app/                         Tauri app shell and session wiring
+src/app/                         Archived Tauri app shell and session wiring
 src/features/history/            History filters, details, nonce threads, action guidance
 src/features/transfer/           Native transfer draft and submit UI
 src/features/tokens/             Token watchlist and ERC-20 balance scanning UI

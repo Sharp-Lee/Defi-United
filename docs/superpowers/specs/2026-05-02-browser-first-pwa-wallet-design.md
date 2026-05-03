@@ -2,9 +2,9 @@
 
 ## 1. Purpose
 
-本 spec 记录 EVM Wallet Workbench 的下一阶段产品方向：从当前 Tauri desktop-only 主线转向 **browser-first PWA 钱包工作台**。新方向要求 PC 和移动端都能通过 PWA 使用，并允许在前端完成账户解锁、交易签名和 RPC 广播。
+本 spec 记录 EVM Wallet Workbench 从 P10 起的活跃产品主线：**browser-first PWA 钱包工作台**。新主线要求 PC 和移动端都能通过 PWA 使用，并允许在前端完成账户解锁、交易签名和 RPC 广播。
 
-这不是当前已完成能力说明。当前 README 和项目级 spec 仍描述已经合并的 Tauri desktop v1；本文件是后续 P10+ 架构转向和实施计划的设计输入。真正进入实施前，需要用 plan 拆分任务，并在完成后同步 README、项目级 spec、workflow、status 和 roadmap 的 current/future wording。
+这不是当前已完成能力说明。Tauri desktop v1 已归档为已合并、可验证的 runtime/source baseline；本文件是 P10+ PWA 架构转向和实施计划的设计输入。真正进入实施前，需要用 plan 拆分任务，并在完成后同步 README、项目级 spec、workflow、status 和 roadmap 的 current/future wording。
 
 ## 2. Product Direction
 
@@ -13,7 +13,7 @@
 - 第一主线：PWA/browser-first wallet。
 - 支持形态：PC 浏览器、移动浏览器、可安装 PWA。
 - 中文优先：主要 UI、错误、确认页、风险提示、批量结果和设置都默认中文。
-- Tauri desktop 不再作为唯一前台主线；后续可以作为本地安全壳、调试壳或高级能力入口存在，但 PWA 是新产品体验的主线。
+- Tauri desktop v1 是归档 baseline；后续可以作为本地安全壳、调试壳或高级能力入口存在，但 PWA 是活跃产品主线。
 
 ### 2.2 核心目标
 

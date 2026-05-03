@@ -2,50 +2,50 @@
 
 ## 1. 产品定位
 
-EVM Wallet Workbench 是一个面向本地桌面使用的 EVM 钱包工作台。当前主线形态是 Tauri desktop app，前端使用 React/TypeScript 表达工作流和界面状态，Tauri/Rust 负责 vault、账户派生、交易签名、广播和本地持久化。
+EVM Wallet Workbench 从 P10 起的活跃产品主线是 browser-first PWA 钱包工作台，面向 PC 浏览器、移动浏览器和可安装 PWA。PWA 方向由 `docs/superpowers/specs/2026-05-02-browser-first-pwa-wallet-design.md` 记录，并通过 P10+ 子任务逐步实现。
 
-浏览器 donor 源码已经从当前仓库 source tree 中移除，当前仅在 git 历史中保留其迁移背景；后续产品、技术债治理、安全边界、测试和发布都以 Tauri desktop 形态为准，不再把浏览器实现视为当前可维护主线。
+当前已合并、可验证的 runtime/source baseline 是 Tauri desktop v1。Tauri desktop v1 已归档为实现参考、回归基线和安全边界对照；除非任务明确维护归档桌面版，新产品能力、测试和发布 wording 都应面向 PWA 主线。浏览器 donor 源码已经从当前仓库 source tree 中移除，当前仅在 git 历史中保留其迁移背景，不能当作新的 PWA 可维护主线直接复用。
 
 ## 2. 产品目标
 
-- 提供一个长期自用、可审计、可恢复的 EVM 多账户工作台。
-- 用单助记词 vault 管理多个派生账户，并在多条 EVM 链上查看账户状态。
-- 支持专业模式原生币转账、ERC-20 转账、native/ERC-20 批量工作流和 managed ABI read/write 调用，提交前明确展示最终链、账户、nonce、gas、费用参数和交易类型摘要。
-- 将交易历史持久化到本地，并追踪 pending 交易后续状态。
-- 在桌面侧隔离敏感能力，避免助记词和私钥进入 React UI 或浏览器运行环境。
+- 提供一个长期自用、可审计、可恢复的 browser-first EVM 多账户工作台。
+- 支持一套助记词对应一个账户组，账户组内可派生多个 EVM 子账户。
+- 在 PC 浏览器、移动浏览器和可安装 PWA 中管理账户、资产、交易计划、批量执行队列和本地历史。
+- 支持专业模式原生币转账、ERC-20 转账、分发/归集、铭文刻录、managed ABI read/write 调用和合约交互，提交前明确展示最终链、账户、nonce、gas、费用参数和交易类型摘要。
+- 在浏览器本地加密保存 vault，并在当前标签页热会话内完成解锁、派生、签名和广播；敏感材料不得写入 diagnostics、history、错误提示、日志或导出材料。
 
 ## 3. 非目标
 
-- 不作为通用消费级移动钱包。
-- 不追求浏览器插件钱包或网页钱包形态。
-- v1 不支持多助记词 vault、私钥导入、硬件钱包、只读地址。
-- 当前 v1 runtime 已提供受控 raw calldata sender/preview、P5-4 资产/授权扫描与 revoke workflow、只读 tx hash 逆向解析入口，以及只读 hot contract analysis；但不作为通用链测试平台、安全解析器、full portfolio/NFT discovery、batch revoke、risk scoring 或 full-chain hot contract trend 工具。
-- v1 不提供云同步、多人协作或跨设备状态同步。
-- v1 不承诺 Windows/Linux 发布支持；当前目标平台优先为 macOS desktop。
+- 不做浏览器扩展钱包。
+- 不作为通用消费级极简钱包；目标用户仍是熟悉 EVM、nonce、gas、RPC 和批量交易风险的高级用户。
+- 不默认提供云同步、服务端托管私钥、多人协作或跨设备自动同步。
+- 不在第一阶段实现硬件钱包、MPC、社交恢复或服务端账户恢复。
+- 不把旧 browser donor 源码恢复成活跃主线。
+- 归档 Tauri desktop v1 已提供受控 raw calldata sender/preview、P5-4 资产/授权扫描与 revoke workflow、只读 tx hash 逆向解析入口，以及只读 hot contract analysis；PWA 主线重新实现或迁移这些能力前，不能把它们写成 PWA 已完成能力。
 
 ## 4. 目标用户
 
 - 熟悉 EVM、nonce、gas、RPC、pending/replacement 语义的高级用户。
-- 需要在多条 EVM 链之间管理同一组派生账户的个人用户。
-- 需要比普通钱包更透明地查看提交参数、历史记录和错误状态的使用者。
-- 开发或运维场景下需要本地 anvil smoke check 辅助验证的钱包工作流使用者。
+- 需要在 PC 和移动浏览器中管理同一组派生账户的个人用户。
+- 需要比普通钱包更透明地查看提交参数、批量计划、历史记录和错误状态的使用者。
+- 需要快速机会场景、批量交易队列和可解释失败重跑能力的钱包工作流使用者。
 
 ## 5. 核心场景
 
-1. 创建或解锁本地 vault。
-2. 从单助记词按标准 EVM 路径派生账户。
-3. 为账户扫描指定链上的原生币余额和 nonce。
+1. 在浏览器本地创建、导入或解锁 encrypted vault。
+2. 从一套助记词对应的账户组派生多个 EVM 子账户。
+3. 为选中账户扫描指定链上的原生币、ERC-20 余额和 nonce。
 4. 验证并保存 RPC 配置，切换默认链或自定义 RPC。
-5. 构建原生币转账 draft，确认冻结参数后由 Rust 签名并广播。
-6. 构建 ERC-20 转账、native/ERC-20 批量或 managed ABI write draft，确认冻结参数后由 Rust 签名并广播。
+5. 使用共享 fee panel 构建原生币、ERC-20、分发/归集、铭文刻录或 managed ABI write 计划。
+6. 执行集中预检查，确认后在当前标签页热会话内按队列签名并广播。
 7. 使用 ABI library/cache 执行 managed ABI read-only call，或为 managed ABI write 预览 selector、calldata 摘要和参数摘要。
-8. 广播后写入本地 pending 历史，并在后续 reconcile 中更新状态。
-9. 对 pending 交易执行 replace 或 cancel。
-10. 运行 anvil smoke check 验证本地转账闭环。
+8. 广播后写入本地 pending history / batch job history，并在后续 reconcile 中更新状态。
+9. 对失败队列或 pending 交易提供可解释的重跑、replace 或 cancel 路径。
+10. 在 PC 浏览器、移动浏览器和可安装 PWA 中完成主要工作流。
 
-## 6. 当前 v1 能力边界
+## 6. 归档 Tauri desktop v1 能力边界
 
-当前已合并 v1 是 Tauri EVM Wallet Workbench，已包含：
+当前已合并、可验证的归档 v1 是 Tauri EVM Wallet Workbench，已包含：
 
 - vault/mnemonic 的本地创建、解锁和会话使用。
 - desktop 创建 vault 时由 Rust 内部生成助记词；React 不接收、不显示、不校验明文助记词。
@@ -73,24 +73,24 @@ EVM Wallet Workbench 是一个面向本地桌面使用的 EVM 钱包工作台。
 - P6-1 tx hash 逆向解析：按交易 hash 读取 transaction、receipt、logs、block/code、ABI decode 和本地 history side-by-side 摘要，结果是只读 analysis/read model，不签名、不广播、不自动写 history。
 - P6-2 contract address hot 交易/selector 分析：按合约地址读取 RPC code identity、bounded sampling source、selector/topic candidates、ABI/cache advisory decode、source visibility 和 uncertainty states，结果是只读 analysis/read model，不签名、不广播、不自动写 history，不提供 risk scoring、审计结论或全链索引。
 
-当前已可用交易/调用能力包括 native transfer、ERC-20 transfer、native batch、ERC-20 batch、managed ABI read-only call、managed ABI write caller、raw calldata sender/preview 和 asset approval revoke workflow。
-复杂资产组合展示、full portfolio/NFT collection discovery、全量授权发现、batch revoke、risk scoring、wallet recovery automation 和 browser-version work 仍属于后续/非目标能力，不能列入当前能力。
+归档 Tauri desktop v1 已可用交易/调用能力包括 native transfer、ERC-20 transfer、native batch、ERC-20 batch、managed ABI read-only call、managed ABI write caller、raw calldata sender/preview 和 asset approval revoke workflow。
+复杂资产组合展示、full portfolio/NFT collection discovery、全量授权发现、batch revoke、risk scoring 和 wallet recovery automation 仍属于后续/非目标能力，不能列入当前 PWA 能力。
 
-P3 desktop 不提供明文助记词 import/export/backup UI。当前恢复边界是保护本地 encrypted vault file 和对应密码；更完整的 native secure recovery workflow 属于后续设计，不应在 P3 文档或 UI 中写成已完成。
+归档 Tauri desktop v1 不提供明文助记词 import/export/backup UI。当前桌面恢复边界是保护本地 encrypted vault file 和对应密码；PWA encrypted vault 的导入、导出、备份和恢复必须按 P10+ browser-first 安全模型单独实现，不能直接沿用桌面恢复 wording。
 
 ### 6.1 P7 release readiness gate
 
 - P7 是 release validation gate，不是新的 wallet runtime capability。
 - P7 通过 `scripts/run-release-readiness.sh` 运行，并带 controller verification。
-- README 里的当前能力 wording 只能列已经实现的钱包功能；未来能力、探索项和后续设计不能写成已完成。
-- browser-version work 仍然只是历史参考或未来/non-goal，不是 P7 的验收目标。
+- README 里的归档桌面能力 wording 只能列已经实现的钱包功能；PWA 未来能力、探索项和后续设计不能写成已完成。
+- browser-first PWA work 从 P10 起成为活跃主线；P7 的 desktop release readiness 只作为归档基线验证记录。
 
 ## 7. 架构边界
 
-- React/TypeScript 负责 UI、表单、视图状态、只读查询和用户意图表达。
-- Tauri/Rust 负责 vault 解密、助记词使用、账户派生、签名、广播和本地文件持久化。
-- 最终交易广播必须走 Rust 命令层，不允许出现前端和 Rust 双广播出口。
-- 本地持久化至少按 vault、app config、account registry、chain snapshots、tx history 的职责分离。
+- PWA 主线中，React/TypeScript 负责 UI、表单、视图状态、只读查询、用户意图表达、浏览器本地加密 vault、热会话、签名、广播和本地持久化。
+- 浏览器持久化至少按 encrypted vault records、account group registry、chain/RPC config、token watchlist、asset snapshots、batch job records、transaction history 和 non-sensitive diagnostics 职责分离。
+- PWA 主线不得再引入前端和 Rust 双广播出口；如果保留 Tauri 壳作为高级入口，必须单独定义它和 PWA 的签名/广播边界。
+- 归档 Tauri desktop v1 的历史边界是 React/TypeScript 表达 UI 和意图，Tauri/Rust 负责 vault 解密、账户派生、签名、广播和本地文件持久化。
 
 ## 8. 核心安全/正确性不变量
 
@@ -897,9 +897,9 @@ P4-1 到 P4-13 已在主线完成，作为后续 P5/P6 探索任务的诊断、�
 - 在不引入远程监控服务的前提下，继续优化本地诊断事件的筛选、定位和说明。
 - 为关键命令增加更细的本地失败摘要，但仍不得输出敏感材料。
 
-### 10.6 当前能力与后续 P5/P6 扩展
+### 10.6 归档桌面能力与后续 PWA 扩展
 
-当前已完成：
+归档 Tauri desktop v1 已完成：
 
 - ERC-20 转账：已完成最小标准 `transfer(address,uint256)` 发送闭环；最终签名/广播仍走 Rust/Tauri command，React 只表达意图和展示冻结参数。
 - Token watchlist 与 ERC-20 余额扫描：已支持用户维护 token watchlist，并按 `account + chainId + token contract` 读取余额；token metadata、decimals、symbol 只能作为可验证或可回退的展示信息，不能作为合约身份。
@@ -914,13 +914,13 @@ P4-1 到 P4-13 已在主线完成，作为后续 P5/P6 探索任务的诊断、�
 
 后续/计划：
 
-- Full portfolio/NFT collection discovery、全量授权发现、batch revoke、risk scoring、wallet recovery automation、browser-version work 和 full-chain hot contract trend 仍属于后续/非目标；任何未来扩展都必须继续保留 source coverage、采样偏差、代理合约、未验证合约、selector 冲突和链特异性边界，不能把推断结果展示为确定事实。
+- Full portfolio/NFT collection discovery、全量授权发现、batch revoke、risk scoring、wallet recovery automation 和 full-chain hot contract trend 仍属于后续/非目标；任何未来扩展都必须继续保留 source coverage、采样偏差、代理合约、未验证合约、selector 冲突和链特异性边界，不能把推断结果展示为确定事实。
 
-后续/计划能力尚未作为当前 v1 可用能力承诺。
+后续/计划能力尚未作为当前 PWA 可用能力承诺。
 
 ## 11. 验收原则
 
 - 不破坏 RPC chainId 匹配、`account + chain` 状态隔离、pending 历史恢复和敏感信息隔离。
-- 不把浏览器版本重新设为主线。
-- 新功能必须明确属于当前已实现、后续/计划或非目标，不能在文档和 UI 中混淆。
+- 不把旧 browser donor 重新设为主线；PWA 主线必须按 P10+ spec / plan 重新实现和验证。
+- 新功能必须明确属于 PWA 已实现、归档桌面已实现、后续/计划或非目标，不能在文档和 UI 中混淆。
 - 涉及交易提交、replace/cancel、reconcile 的改动必须覆盖关键状态迁移和错误路径。
