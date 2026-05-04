@@ -1301,6 +1301,112 @@ td {
   background: rgba(211, 154, 50, 0.09);
 }
 
+.pwa-vault-access,
+.pwa-vault-workspace {
+  display: grid;
+  gap: 16px;
+}
+
+.pwa-vault-access-grid,
+.pwa-vault-workspace-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(260px, 0.44fr);
+  gap: 14px;
+  align-items: start;
+}
+
+.pwa-vault-access-grid {
+  grid-template-columns: minmax(320px, 0.62fr) minmax(260px, 0.38fr);
+}
+
+.pwa-vault-access-tabs {
+  width: min(320px, 100%);
+}
+
+.pwa-vault-access .button-row,
+.pwa-vault-workspace .button-row {
+  flex-wrap: wrap;
+}
+
+.pwa-file-button {
+  display: inline-flex;
+  width: fit-content;
+  min-height: 34px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  padding: 7px 12px;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.pwa-file-button input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.pwa-group-list-card {
+  gap: 14px;
+}
+
+.pwa-group-list,
+.pwa-group-summary,
+.pwa-account-list,
+.pwa-account-row-main {
+  display: grid;
+  gap: 10px;
+}
+
+.pwa-group-list {
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+}
+
+.pwa-group-pill {
+  color: var(--text);
+  background: rgba(13, 15, 19, 0.72);
+  border-color: var(--border);
+  overflow-wrap: anywhere;
+}
+
+.pwa-group-pill-active {
+  border-color: rgba(0, 165, 106, 0.62);
+  background: var(--accent-soft);
+}
+
+.pwa-account-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.pwa-account-row {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  justify-content: space-between;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px;
+  background: rgba(13, 15, 19, 0.52);
+}
+
+.pwa-account-row-selected {
+  border-color: rgba(0, 165, 106, 0.62);
+  background: rgba(0, 165, 106, 0.1);
+}
+
+.pwa-account-row-main {
+  min-width: 0;
+}
+
+.pwa-account-row-main strong {
+  font-size: 15px;
+}
+
 .pill {
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -1398,8 +1504,14 @@ td {
   }
 
   .pwa-hero,
-  .pwa-card-grid {
+  .pwa-card-grid,
+  .pwa-vault-access-grid,
+  .pwa-vault-workspace-grid {
     grid-template-columns: 1fr;
+  }
+
+  .pwa-account-row {
+    display: grid;
   }
 
   .pwa-nav {
