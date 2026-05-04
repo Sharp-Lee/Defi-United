@@ -47,8 +47,8 @@
 | P10-docs | PWA mainline documentation convergence | `codex/p10-pwa-wallet-spec` | `862b578` | passed | passed | no | no | 同步 README、项目级 spec、workflow、status 和 roadmap 的 current/future wording，明确 PWA 是活跃主线，Tauri desktop v1 是已验证归档 baseline。 |
 | P10a-plan | PWA architecture baseline plan | `codex/p10-pwa-wallet-spec` | `862b578` | passed | passed | no | no | 新增 `docs/superpowers/plans/2026-05-03-p10a-pwa-architecture-baseline.md`，拆分 P10a PWA shell、中文导航、移动布局和 installability baseline；明确不实现 vault、签名、广播或 RPC 提交。 |
 | P10a | PWA architecture baseline and Chinese shell | `codex/p10-pwa-wallet-spec` | `f99027c` | passed | passed | no | no | 默认入口切换为 browser-first PWA shell，新增中文一级导航、页面骨架、响应式布局和 PWA manifest/installability baseline；自动测试、typecheck、build、按需 Playwright Chromium smoke 和 whitespace 检查通过；不实现 vault、签名、广播、RPC 提交或真实 history 写入。 |
-| P10b | Browser encrypted vault and account groups | `codex/p10b-browser-encrypted-vault` | `pending` | passed | passed | no | no | 已实现浏览器加密 vault、账户组、派生账户、PWA 账户页工作台、锁定/导入/导出和浏览器 smoke；待提交后回填 commit hash。 |
+| P10b | Browser encrypted vault and account groups | `codex/p10b-browser-encrypted-vault` | `5563f3e` | passed | passed | no | no | 已实现浏览器加密 vault、账户组、派生账户、PWA 账户页工作台、锁定/导入/导出和浏览器 smoke。 |
 
 ## Next
 
-P10b browser encrypted vault and account groups 已完成本地实现与自动验证；下一步提交后回填 P10b commit hash，Tauri desktop v1 只作为归档 baseline 维护。
+P10b browser encrypted vault and account groups 已完成本地实现与自动验证；下一步推送分支并创建 PR，Tauri desktop v1 只作为归档 baseline 维护。
