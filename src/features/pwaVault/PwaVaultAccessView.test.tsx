@@ -22,6 +22,31 @@ describe("PwaVaultAccessView", () => {
     expect(screen.getByText(/本阶段不展示明文助记词/)).toBeInTheDocument();
   });
 
+  it("switches to unlock mode when stored vault detection completes", async () => {
+    const { rerender } = renderScreen(
+      <PwaVaultAccessView
+        hasVault={false}
+        onCreateVault={async () => {}}
+        onImportVault={async () => {}}
+        onUnlock={async () => {}}
+      />,
+    );
+
+    expect(screen.getByRole("tab", { name: "创建" })).toHaveAttribute("aria-selected", "true");
+
+    rerender(
+      <PwaVaultAccessView
+        hasVault={true}
+        onCreateVault={async () => {}}
+        onImportVault={async () => {}}
+        onUnlock={async () => {}}
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByRole("tab", { name: "解锁" })).toHaveAttribute("aria-selected", "true"));
+    expect(screen.queryByLabelText("确认密码")).not.toBeInTheDocument();
+  });
+
   it("validates create passwords before calling the handler", async () => {
     const onCreateVault = vi.fn(async () => {});
     renderScreen(

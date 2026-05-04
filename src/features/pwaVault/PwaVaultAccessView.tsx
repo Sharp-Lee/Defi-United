@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 export interface PwaVaultAccessViewProps {
   hasVault: boolean;
@@ -21,6 +21,12 @@ export function PwaVaultAccessView({
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [importError, setImportError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (hasVault) {
+      setMode("unlock");
+    }
+  }, [hasVault]);
 
   async function submitUnlock() {
     setImportError(null);
