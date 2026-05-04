@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppShell } from "./app/AppShell";
+import { PwaShell } from "./app/PwaShell";
 import type { WorkspaceTab } from "./app/AppShell";
 import { BUILT_IN_CHAINS, validateCustomRpc } from "./core/chains/registry";
 import { probeChainId, readAccountState } from "./lib/rpc";
@@ -203,7 +204,7 @@ function abiCacheIdentityInput(entry: AbiCacheEntryRecord): AbiCacheEntryIdentit
   };
 }
 
-export function App() {
+export function ArchivedDesktopApp() {
   const [sessionStatus, setSessionStatus] = useState<"locked" | "ready">("locked");
   const [activeTab, setActiveTab] = useState<WorkspaceTab>("accounts");
   const [selectedChainId, setSelectedChainId] = useState<bigint>(1n);
@@ -1570,4 +1571,8 @@ export function App() {
       tokenWatchlistState={tokenWatchlistState}
     />
   );
+}
+
+export function App() {
+  return <PwaShell />;
 }
