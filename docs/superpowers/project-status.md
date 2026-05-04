@@ -39,6 +39,15 @@
 | P9b | 历史文档清理与 roadmap | `codex/p9-repository-hygiene` | `f99d9cd` | passed | passed | yes | yes | 已删除完成的历史 spec/plan，补充 roadmap，并同步 README 与状态表。 |
 | P9c | 分支与 worktree 清理 | `local branch/worktree cleanup` | `n/a` | done | done | n/a | n/a | 仅清理已合并且干净的本地 worktree 和本地/远端 `codex/*` 分支；保留未合并分支、带变更 worktree 和非 `codex` 远端分支。 |
 
+## P10 Browser-First PWA Wallet
+
+| milestone | task | branch | commit | review status | verification | pushed | merged | notes |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| P10 | Browser-first PWA wallet design input | `codex/p10-pwa-wallet-spec` | `ee768a9` | pending | pending | no | no | 本地分支新增 `docs/superpowers/specs/2026-05-02-browser-first-pwa-wallet-design.md`，记录 P10+ 以 browser-first PWA 钱包工作台作为活跃产品主线；Tauri desktop v1 转为归档 baseline。 |
+| P10-docs | PWA mainline documentation convergence | `codex/p10-pwa-wallet-spec` | `862b578` | passed | passed | no | no | 同步 README、项目级 spec、workflow、status 和 roadmap 的 current/future wording，明确 PWA 是活跃主线，Tauri desktop v1 是已验证归档 baseline。 |
+| P10a-plan | PWA architecture baseline plan | `codex/p10-pwa-wallet-spec` | `862b578` | passed | passed | no | no | 新增 `docs/superpowers/plans/2026-05-03-p10a-pwa-architecture-baseline.md`，拆分 P10a PWA shell、中文导航、移动布局和 installability baseline；明确不实现 vault、签名、广播或 RPC 提交。 |
+| P10a | PWA architecture baseline and Chinese shell | `codex/p10-pwa-wallet-spec` | `f99027c` | passed | passed | no | no | 默认入口切换为 browser-first PWA shell，新增中文一级导航、页面骨架、响应式布局和 PWA manifest/installability baseline；自动测试、typecheck、build、按需 Playwright Chromium smoke 和 whitespace 检查通过；不实现 vault、签名、广播、RPC 提交或真实 history 写入。 |
+
 ## Next
 
-P9 仓库清理已完成，后续按 `docs/superpowers/roadmap.md` 的 P10+ 里程碑继续。
+P10a browser-first PWA architecture baseline and Chinese shell 已完成本地实现与自动验证；下一步提交后回填 P10a commit hash，Tauri desktop v1 只作为归档 baseline 维护。

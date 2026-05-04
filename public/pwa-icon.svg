@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">DeFi United PWA icon</title>
+  <desc id="desc">Green geometric D mark on a dark rounded square.</desc>
+  <rect width="512" height="512" rx="112" fill="#101216"/>
+  <path d="M120 128h144c76 0 128 52 128 128s-52 128-128 128H120V128Z" fill="#00a56a"/>
+  <path d="M190 198v116h70c35 0 62-23 62-58s-27-58-62-58h-70Z" fill="#101216"/>
+  <path d="M120 384 392 128" fill="none" stroke="#f3f5f8" stroke-width="28" stroke-linecap="round" opacity="0.9"/>
+</svg>

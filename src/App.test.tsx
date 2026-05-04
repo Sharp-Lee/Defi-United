@@ -1,5 +1,7 @@
+import { screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import {
+  App,
   abiRegistryMutationFailureMessage,
   canStartAccountsRefresh,
   ensureRpcChainMatchesSelectedChain,
@@ -10,6 +12,15 @@ import {
   nextTokenOperationGeneration,
 } from "./App";
 import type { AbiRegistryMutationResult } from "./lib/tauri";
+import { renderScreen } from "./test/render";
+
+describe("App", () => {
+  it("renders the PWA shell by default", () => {
+    renderScreen(<App />);
+
+    expect(screen.getByRole("heading", { name: "DeFi United PWA 钱包工作台" })).toBeInTheDocument();
+  });
+});
 
 describe("mergeRefreshedAccounts", () => {
   it("updates matching accounts without dropping accounts added during refresh", () => {

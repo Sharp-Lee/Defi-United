@@ -1,0 +1,19 @@
+{
+  "name": "DeFi United PWA 钱包工作台",
+  "short_name": "DeFi United",
+  "description": "Browser-first PWA wallet workbench baseline for EVM account, asset, batch, inscription, contract, history, and settings workflows.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#101216",
+  "theme_color": "#00a56a",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "/pwa-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

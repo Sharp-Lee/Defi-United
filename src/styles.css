@@ -1155,6 +1155,152 @@ td {
   word-break: break-all;
 }
 
+.pwa-shell {
+  display: grid;
+  gap: 16px;
+  min-height: 100vh;
+  padding: 24px;
+  background:
+    radial-gradient(circle at top left, rgba(0, 165, 106, 0.18), transparent 30rem),
+    var(--bg);
+}
+
+.pwa-hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(240px, 340px);
+  gap: 16px;
+  align-items: stretch;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 20px;
+  background: rgba(23, 26, 32, 0.84);
+}
+
+.pwa-hero h1,
+.pwa-panel h2,
+.pwa-card h3,
+.pwa-archive-callout p {
+  margin: 0;
+}
+
+.pwa-hero h1 {
+  margin-bottom: 8px;
+  font-size: clamp(25px, 5vw, 42px);
+  line-height: 1.12;
+}
+
+.pwa-hero p,
+.pwa-panel-header p,
+.pwa-card p,
+.pwa-card li {
+  color: var(--muted);
+}
+
+.pwa-kicker {
+  margin: 0 0 8px;
+  color: #a7ebc4;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.pwa-archive-callout,
+.pwa-card,
+.pwa-panel {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--panel);
+}
+
+.pwa-archive-callout {
+  display: grid;
+  gap: 8px;
+  align-content: start;
+  padding: 16px;
+}
+
+.pwa-archive-callout span,
+.pwa-status-badge {
+  width: fit-content;
+  border: 1px solid rgba(211, 154, 50, 0.62);
+  border-radius: 999px;
+  padding: 4px 9px;
+  color: #ffd891;
+  background: rgba(211, 154, 50, 0.12);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.pwa-archive-callout strong {
+  font-size: 18px;
+}
+
+.pwa-nav {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 8px;
+  background: rgba(13, 15, 19, 0.82);
+}
+
+.pwa-nav-item {
+  flex: 0 0 auto;
+  color: var(--text);
+  background: transparent;
+  border-color: var(--border);
+}
+
+.pwa-nav-item-active {
+  border-color: rgba(0, 165, 106, 0.62);
+  background: var(--accent-soft);
+}
+
+.pwa-panel {
+  display: grid;
+  gap: 16px;
+  padding: 18px;
+}
+
+.pwa-panel-header {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
+.pwa-panel h2 {
+  font-size: 24px;
+}
+
+.pwa-card-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.pwa-card {
+  display: grid;
+  gap: 10px;
+  align-content: start;
+  padding: 16px;
+  background: var(--panel-soft);
+}
+
+.pwa-card ul {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding-left: 18px;
+}
+
+.pwa-card-warning {
+  border-color: rgba(211, 154, 50, 0.5);
+  background: rgba(211, 154, 50, 0.09);
+}
+
 .pill {
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -1234,19 +1380,34 @@ td {
 }
 
 @media (max-width: 720px) {
-  .workbench-shell {
+  .workbench-shell,
+  .pwa-shell {
     padding: 12px;
   }
 
   .workbench-header,
   .section-header,
-  .field-row {
+  .field-row,
+  .pwa-panel-header {
     align-items: stretch;
     flex-direction: column;
   }
 
   .workspace-tablist {
     flex-wrap: wrap;
+  }
+
+  .pwa-hero,
+  .pwa-card-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .pwa-nav {
+    scroll-snap-type: x mandatory;
+  }
+
+  .pwa-nav-item {
+    scroll-snap-align: start;
   }
 
   .history-controls,
