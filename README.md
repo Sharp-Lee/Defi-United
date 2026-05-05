@@ -1,128 +1,50 @@
-# EVM Wallet Workbench
+# DeFi United PWA 钱包工作台
 
-Browser-first PWA wallet workbench for EVM accounts, assets, batch transaction workflows, ABI/contract calls, and auditable local history.
+Browser-first PWA wallet workbench for EVM accounts, assets, batch workflows, ABI / contract calls, and auditable local history.
 
-The active product mainline from P10 onward is the browser-first PWA direction tracked in `docs/superpowers/specs/2026-05-02-browser-first-pwa-wallet-design.md`. The current verified runtime/source baseline is the archived Tauri desktop v1 in `src/app`, `src/features`, `src/core`, `src/lib/tauri.ts`, and `src-tauri`; it remains useful as implementation reference and regression baseline, but new product work should target the PWA roadmap unless a task explicitly maintains the archive.
+This repository is now PWA-only. The current tree contains only the browser runtime, PWA shell, vault workflow, and PWA verification assets.
 
-## Archived Tauri Desktop v1 Supports
+## Current capabilities
 
-- Create and unlock one encrypted mnemonic vault stored in the local app data directory. The desktop UI does not import, export, display, or receive plaintext mnemonic material.
-- Derive EVM accounts from the vault in Rust and scan native balances/nonces per `account + chainId`.
-- Validate RPC endpoints by probing remote `chainId` before saving or submitting.
-- Build and submit native-token transfers through Tauri commands.
-- Build and submit standard ERC-20 transfers through Tauri commands, with token contract identity kept separate from calldata recipient.
-- Maintain a token watchlist and scan ERC-20 balances for watched contracts.
-- Use managed ABI read-only calls and ABI write transactions through the desktop confirmation and Rust/Tauri submit path.
-- Preview and submit raw calldata transactions with bounded calldata summaries, selector inference warnings, and Rust/Tauri signing/broadcast.
-- Run native and ERC-20 batch distribution/collection workflows through controlled desktop paths.
-- Scan configured/known assets and approvals, including ERC-20 balances/allowances and known NFT approval points, with explicit source coverage and stale/failure states.
-- Revoke clearly active ERC-20/NFT approvals through the controlled desktop confirmation, Rust/Tauri signing/broadcast, and typed history path.
-- Analyze an existing transaction hash in a read-only desktop view with RPC transaction/receipt/log facts, ABI decode candidates, provider/source visibility, and local history comparison.
-- Analyze a contract address in a read-only hot contract view with bounded source sampling, selector/topic candidates, ABI/cache advisory decode, source visibility, uncertainty states, and no signing, broadcasting, history mutation, or full payload persistence.
-- Persist local transaction history with separate Intent, Submission, and ChainOutcome fields.
-- Reconcile pending history from RPC receipts/nonces.
-- Show history filters, nonce-thread grouping, replace/cancel relationships, categorized errors, pending-age guidance, and recovery prompts.
-- Replace or cancel an existing pending native transfer while preserving the original `chainId`, account/from, and nonce.
-- View and export non-sensitive diagnostics for RPC, chainId, history, broadcast, and reconcile troubleshooting.
-- Inspect damaged history storage, quarantine unreadable history, recover broadcasted-but-unwritten submissions, and manually review dropped records.
+- Browser encrypted vault stored in IndexedDB.
+- Create, unlock, import, export, lock, and persist encrypted vault sessions.
+- Account groups and deterministic EVM account derivation.
+- Chinese-first PWA shell with mobile-friendly layout and manifest metadata.
+- PWA vault workspace for group/account management.
+- Focused tests and browser smoke coverage for the current PWA baseline.
 
-Full portfolio or NFT collection discovery, full authorization discovery, batch revoke, risk scoring, wallet recovery automation, and broader contract interaction tooling remain future/non-goal exploration unless a later task explicitly implements them.
-
-Plaintext mnemonic import/export and backup UX are not part of archived Tauri desktop v1. Until a future secure recovery workflow exists, preserve the encrypted vault file together with the password needed to unlock it. On macOS the default app data directory is `~/Library/Application Support/EVMWalletWorkbench/`; the encrypted vault is `vault.json` in that directory. Losing both that vault file or an app-data backup and the password means the generated wallet cannot be recovered by the archived desktop app.
-
-## Current PWA Direction
-
-PWA capabilities are implemented incrementally through P10+ milestones. Until a PWA subtask is completed and verified, the corresponding browser unlock, signing, broadcasting, batch queue, mobile, or installability behavior remains planned work rather than current runtime capability.
-
-## Install And Run Archived Desktop
+## Run
 
 ```bash
 npm install
-npm run tauri:dev
-```
-
-Frontend-only development is the default entry point for PWA work and remains useful for archived desktop component work:
-
-```bash
 npm run dev
 ```
 
-Archived desktop release build:
-
-```bash
-npm run tauri:build
-```
-
-## Validation
-
-Archived desktop release readiness gate:
-
-```bash
-scripts/run-release-readiness.sh
-```
-
-This wrapper first confirms local `main` still matches `origin/main`, verifies a throwaway `origin/main` worktree is clean, checks dependency readiness, then runs an isolated interactive desktop startup/unlock/core smoke against a fresh app dir before frontend/core tests, typecheck, Rust suite, anvil smoke, and final diff check. The controller only enters pass/fail after the readiness marker has appeared, the checklist is complete, and the desktop smoke timeout is kept under control. Use `--post-merge` for merged-main rechecks; it skips only the already-proven `main_sync` stage.
-
-Recommended archived desktop regression commands, which remain the manual fallback for desktop maintenance:
+## Verify
 
 ```bash
 npm test
 npm run typecheck
-cargo test --manifest-path src-tauri/Cargo.toml
-scripts/run-anvil-check.sh
-git diff --check
+npm run build
+npm run smoke:browser
 ```
 
-`scripts/run-anvil-check.sh` starts anvil on `127.0.0.1:8545` with chainId `31337`, probes `eth_chainId`, runs focused P4 Vitest checks, runs the ignored native-transfer roundtrip test, then runs the Rust test suite. The native roundtrip test is currently hardcoded to port `8545`, so the script fails fast if `ANVIL_PORT` is set to another value. Failures print a `wallet_workbench_validation_failed` line with a category such as `environment_startup`, `rpc_chain_id`, `frontend_vitest`, `vault_session`, `signing_broadcast`, `history`, `reconcile`, or `rust_regression`, plus redacted log references such as `frontend_vitest.log` or `anvil.log`. The summary is intentionally non-sensitive and does not print absolute paths; set `WALLET_WORKBENCH_ANVIL_LOG_DIR` to a directory you control if you want stable local log files for diagnosis. If anvil or the npm fallback cannot start in the local environment, record the categorized output as an environment failure rather than treating the smoke path as proven.
+## Safety boundaries
 
-## Safety Boundaries
+- The browser persistent layer only stores encrypted vault data.
+- Passwords, mnemonics, private keys, and raw signed transactions must never be written to persistent storage or logs.
+- Unlock state is a hot in-memory session only; lock or reload requires re-entry of the password.
+- RPC and chain-specific features should continue to validate chain identity before any future send or history workflow is introduced.
 
-- Archived Tauri desktop v1 keeps vault decryption, account derivation, transaction signing, broadcasting, and local file persistence in Rust/Tauri.
-- Archived Tauri desktop v1 creates the desktop vault in Rust and generates the vault mnemonic internally.
-- PWA work changes the security boundary: browser unlock, derivation, signing, and broadcasting must be introduced only through explicit P10+ specs/plans, redaction tests, and verification.
-- The app must reject RPC or submission flows when remote `chainId` does not match the requested chain.
-- Local nonce recovery must consider persisted pending history, not only in-memory state.
-- If a transaction broadcasts but local history persistence fails, the returned error must include the tx hash and the local write failure.
-
-## Key Paths
+## Key paths
 
 ```text
-src/app/                         Archived Tauri app shell and session wiring
-src/features/history/            History filters, details, nonce threads, action guidance
-src/features/transfer/           Native transfer draft and submit UI
-src/features/tokens/             Token watchlist and ERC-20 balance scanning UI
-src/features/assets/             Asset/approval scan and revoke workflow UI
-src/features/abi/                Managed ABI library and read/write caller UI
-src/features/rawCalldata/        Raw calldata preview and submit UI
-src/features/orchestration/      Account selection and orchestration UI
-src/core/history/                History schema, selectors, reconcile helpers, action gates
-src/core/transactions/           Native/ERC-20 transfer draft helpers
-src/core/batch/                  Native/ERC-20 batch planning helpers
-src/core/assets/                 Asset/approval scan and revoke read-model helpers
-src/core/abi/                    ABI read-model helpers
-src/core/rawCalldata/            Raw calldata draft and preview helpers
-src/lib/tauri.ts                 Typed Tauri command boundary
-src-tauri/src/commands/asset_approvals.rs  Asset/approval scan and revoke commands
-src-tauri/src/                   Rust vault, accounts, transactions, storage, commands
-src-tauri/tests/                 Rust integration/regression tests
-docs/specs/evm-wallet-workbench.md
-docs/superpowers/development-workflow.md  Project workflow and quality gates
-docs/superpowers/project-status.md        Current milestone status table
-docs/superpowers/roadmap.md               Current baseline, future candidates, and non-goals
-scripts/run-anvil-check.sh
+src/App.tsx                      PWA app entry
+src/app/PwaShell.tsx             Current PWA shell
+src/features/pwaVault/           PWA vault UI
+src/lib/browserVault.ts          IndexedDB encrypted vault persistence
+src/core/browserVault/accounts.ts PWA account group and derivation model
+public/manifest.webmanifest      PWA manifest baseline
+tests/browser/pwa-smoke.spec.ts  Browser smoke coverage
+docs/                            Current roadmap, workflow, status, and specs
 ```
-
-## History Semantics
-
-- `pending`: broadcast locally and tracked, without terminal receipt/replacement/cancellation/drop.
-- `confirmed`: receipt status indicates success.
-- `failed`: receipt exists and indicates failure/revert.
-- `replaced`: another same-account, same-chain, same-nonce submission superseded it.
-- `cancelled`: a same-nonce cancellation transaction to self with 0 value superseded it.
-- `dropped`: local reconcile could not find a receipt and the account nonce advanced; this is not an on-chain failed receipt.
-
-History is grouped by `account + chainId + nonce`. RPC URL is an access endpoint, not chain identity.
-
-## Risk Notice
-
-This is local wallet software for advanced users. Chain transactions are irreversible, RPC providers can observe queried addresses and transactions, and one vault mnemonic links derived accounts on chain. Keep a recoverable copy of the encrypted vault file and its password, and test changes against anvil before touching real funds.
