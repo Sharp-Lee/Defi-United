@@ -246,10 +246,10 @@ export function PwaShell({ vaultStorage }: PwaShellProps = {}) {
             面向 PC 浏览器、移动浏览器和可安装 PWA 的中文工作台基线。P10b 已启用浏览器本地 encrypted vault、当前标签页热会话和账户组。
           </p>
         </div>
-        <div className="pwa-archive-callout" aria-label="归档桌面基线说明">
-          <span>归档基线</span>
-          <strong>Tauri desktop v1</strong>
-          <p>保留为已验证实现参考和回归对照；新产品能力默认进入 PWA 主线。</p>
+        <div className="pwa-archive-callout" aria-label="PWA 主线说明">
+          <span>PWA 主线</span>
+          <strong>Browser-first</strong>
+          <p>仓库现在只保留 PWA runtime、PWA shell 和 PWA 相关测试。</p>
         </div>
       </header>
 

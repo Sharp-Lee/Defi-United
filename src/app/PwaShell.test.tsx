@@ -17,7 +17,7 @@ describe("PwaShell", () => {
 
     expect(screen.getByRole("heading", { name: "DeFi United PWA 钱包工作台" })).toBeInTheDocument();
     expect(screen.getByText(/Browser-first PWA mainline/i)).toBeInTheDocument();
-    expect(screen.getByText(/Tauri desktop v1/)).toBeInTheDocument();
+    expect(screen.getByText(/仓库现在只保留 PWA runtime/)).toBeInTheDocument();
     await waitFor(() => expect(screen.getByLabelText("Vault 密码")).toBeInTheDocument());
   });
 
@@ -78,13 +78,5 @@ describe("PwaShell", () => {
     await waitFor(() => expect(screen.getByRole("heading", { name: "账户" })).toBeInTheDocument());
     expect(screen.queryByRole("heading", { name: "账户与组" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "解锁 vault" })).toBeInTheDocument();
-  });
-
-  it("shows the archived Tauri desktop baseline notice", async () => {
-    renderPwaShell();
-
-    expect(screen.getByLabelText("归档桌面基线说明")).toHaveTextContent("归档基线");
-    expect(screen.getByLabelText("归档桌面基线说明")).toHaveTextContent("Tauri desktop v1");
-    await waitFor(() => expect(screen.getByLabelText("Vault 密码")).toBeInTheDocument());
   });
 });
