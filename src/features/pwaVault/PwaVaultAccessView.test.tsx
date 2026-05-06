@@ -109,8 +109,19 @@ describe("PwaVaultAccessView", () => {
     const encryptedEnvelope = JSON.stringify({ schemaVersion: 1, ciphertext: "encrypted" });
     const file = new File([encryptedEnvelope], "vault.json", { type: "application/json" });
     Object.defineProperty(file, "text", { value: async () => encryptedEnvelope });
+
+    expect((screen.getByLabelText("导入加密 vault") as HTMLInputElement).disabled).toBe(true);
+    fireEvent.change(screen.getByLabelText("导入 vault 密码"), { target: { value: "import password" } });
+    expect((screen.getByLabelText("导入加密 vault") as HTMLInputElement).disabled).toBe(true);
+    fireEvent.click(screen.getByLabelText("确认覆盖已有 vault"));
     fireEvent.change(screen.getByLabelText("导入加密 vault"), { target: { files: [file] } });
 
-    await waitFor(() => expect(onImportVault).toHaveBeenCalledWith(encryptedEnvelope));
+    await waitFor(() =>
+      expect(onImportVault).toHaveBeenCalledWith({
+        password: "import password",
+        serializedEnvelope: encryptedEnvelope,
+        overwriteExisting: true,
+      }),
+    );
   });
 });

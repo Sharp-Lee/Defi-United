@@ -6,7 +6,7 @@ export interface PwaVaultAccessViewProps {
   error?: string | null;
   onCreateVault(password: string): Promise<void> | void;
   onUnlock(password: string): Promise<void> | void;
-  onImportVault(serializedEnvelope: string): Promise<void> | void;
+  onImportVault(input: { password: string; serializedEnvelope: string; overwriteExisting: boolean }): Promise<void> | void;
 }
 
 export function PwaVaultAccessView({
@@ -20,6 +20,8 @@ export function PwaVaultAccessView({
   const [mode, setMode] = useState<"unlock" | "create">(hasVault ? "unlock" : "create");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
+  const [importPassword, setImportPassword] = useState("");
+  const [confirmImportOverwrite, setConfirmImportOverwrite] = useState(false);
   const [importError, setImportError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -57,8 +59,22 @@ export function PwaVaultAccessView({
   async function handleImportFile(file: File | null) {
     setImportError(null);
     if (!file) return;
+    if (importPassword.length === 0) {
+      setImportError("Import password is required to verify the encrypted vault before saving.");
+      return;
+    }
+    if (hasVault && !confirmImportOverwrite) {
+      setImportError("Existing vault overwrite must be confirmed before import.");
+      return;
+    }
     try {
-      await onImportVault(await file.text());
+      await onImportVault({
+        password: importPassword,
+        serializedEnvelope: await file.text(),
+        overwriteExisting: hasVault && confirmImportOverwrite,
+      });
+      setImportPassword("");
+      setConfirmImportOverwrite(false);
     } catch (err) {
       setImportError(err instanceof Error ? err.message : String(err));
     }
@@ -132,18 +148,45 @@ export function PwaVaultAccessView({
                 创建 vault
               </button>
             )}
-            <label className="secondary-button pwa-file-button" htmlFor="pwa-vault-import">
-              导入加密 vault
-              <input
-                accept="application/json,.json"
-                aria-label="导入加密 vault"
-                disabled={busy}
-                id="pwa-vault-import"
-                onChange={(event) => void handleImportFile(event.target.files?.[0] ?? null)}
-                type="file"
-              />
-            </label>
           </div>
+        </article>
+
+        <article className="pwa-card">
+          <h3>导入加密 vault</h3>
+          <p>导入前会先用导入密码解密验证 vault 文件；验证失败不会覆盖浏览器里已有的 vault。</p>
+          <label>
+            导入 vault 密码
+            <input
+              aria-label="导入 vault 密码"
+              disabled={busy}
+              onChange={(event) => setImportPassword(event.target.value)}
+              type="password"
+              value={importPassword}
+            />
+          </label>
+          {hasVault && (
+            <label className="pwa-checkbox-row">
+              <input
+                aria-label="确认覆盖已有 vault"
+                checked={confirmImportOverwrite}
+                disabled={busy}
+                onChange={(event) => setConfirmImportOverwrite(event.target.checked)}
+                type="checkbox"
+              />
+              <span>我确认导入成功后覆盖当前浏览器里的已有 vault。</span>
+            </label>
+          )}
+          <label className="secondary-button pwa-file-button" htmlFor="pwa-vault-import">
+            选择并验证 vault 文件
+            <input
+              accept="application/json,.json"
+              aria-label="导入加密 vault"
+              disabled={busy || importPassword.length === 0 || (hasVault && !confirmImportOverwrite)}
+              id="pwa-vault-import"
+              onChange={(event) => void handleImportFile(event.target.files?.[0] ?? null)}
+              type="file"
+            />
+          </label>
         </article>
 
         <article className="pwa-card pwa-card-warning">

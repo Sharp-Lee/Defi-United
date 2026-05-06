@@ -12,7 +12,7 @@ The current shipped baseline is:
 
 - Chinese PWA shell with responsive layout and manifest metadata.
 - Browser encrypted vault stored locally in IndexedDB.
-- Vault create, unlock, import, export, lock, and persist flows.
+- Vault create, unlock, password-verified import, export, lock, and persist flows.
 - Account groups and deterministic EVM account derivation.
 - Focused unit tests and browser smoke coverage for the PWA baseline.
 
@@ -38,6 +38,8 @@ The current shipped baseline is:
 - Unlock state lives only in the current tab session.
 - Manual lock clears hot state and returns the shell to the access view.
 - Import / export works on encrypted vault envelopes only.
+- Import must decrypt with the imported vault password before saving and must require explicit overwrite confirmation when a local vault already exists.
+- Imported envelopes must satisfy the current PBKDF2 policy before they are accepted.
 
 ### 3.3 Account groups
 
@@ -93,6 +95,8 @@ npm run typecheck
 npm run build
 npm run smoke:browser
 ```
+
+The browser smoke command uses the production preview server and covers both desktop Chromium and a mobile Chromium viewport. It is still a smoke gate, not a substitute for future send/signing safety tests.
 
 Then confirm the working tree is clean with:
 

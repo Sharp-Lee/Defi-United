@@ -1,6 +1,12 @@
 import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import { createMemoryBrowserVaultStorage } from "../lib/browserVault";
+import { createInitialBrowserVaultState } from "../core/browserVault/accounts";
+import { createMemoryBrowserChainConfigStorage } from "../lib/browserChainConfig";
+import {
+  createBrowserVaultSession,
+  createMemoryBrowserVaultStorage,
+  serializeBrowserVaultEnvelope,
+} from "../lib/browserVault";
 import { renderScreen } from "../test/render";
 import { PwaShell } from "./PwaShell";
 
@@ -8,7 +14,8 @@ const primaryNavLabels = ["账户", "资产", "分发/归集", "铭文刻录", "
 
 function renderPwaShell() {
   const vaultStorage = createMemoryBrowserVaultStorage();
-  return renderScreen(<PwaShell vaultStorage={vaultStorage} />);
+  const chainConfigStorage = createMemoryBrowserChainConfigStorage();
+  return renderScreen(<PwaShell chainConfigStorage={chainConfigStorage} vaultStorage={vaultStorage} />);
 }
 
 describe("PwaShell", () => {
@@ -42,7 +49,27 @@ describe("PwaShell", () => {
     await waitFor(() => expect(screen.getByText("当前未启用")).toBeInTheDocument());
   });
 
-  it("keeps P10c+ wallet capabilities unavailable outside the account vault section", async () => {
+  it("renders browser chain config and shared fee settings without send controls", async () => {
+    renderPwaShell();
+
+    fireEvent.click(screen.getByRole("button", { name: "设置" }));
+
+    expect(await screen.findByRole("heading", { name: "设置" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Chain / RPC Config" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "共享 Fee Panel" })).toBeInTheDocument();
+    expect(screen.getByDisplayValue("Ethereum Mainnet")).toBeInTheDocument();
+    expect(screen.getByLabelText("RPC URL")).toHaveValue("https://ethereum.publicnode.com");
+
+    fireEvent.change(screen.getByLabelText("Max Fee gwei"), { target: { value: "42" } });
+    await waitFor(() => expect(screen.getByText(/0\.00088200 ETH/)).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: "添加 Base 示例链" }));
+    await waitFor(() => expect(screen.getByDisplayValue("Base")).toBeInTheDocument());
+    expect(screen.getByLabelText("Chain ID")).toHaveValue("8453");
+    expect(screen.queryByRole("button", { name: /sign|broadcast|签名|广播|提交/i })).not.toBeInTheDocument();
+  });
+
+  it("keeps P10c+ wallet capabilities unavailable outside implemented sections", async () => {
     renderPwaShell();
 
     fireEvent.click(screen.getByRole("button", { name: "合约调用" }));
@@ -51,6 +78,54 @@ describe("PwaShell", () => {
     expect(screen.getByText(/本页仍不包含签名、广播、RPC 提交/)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /sign|broadcast|签名|广播/i })).not.toBeInTheDocument();
     await waitFor(() => expect(screen.getByRole("heading", { name: "合约调用" })).toBeInTheDocument());
+  });
+
+  it("imports only password-verified encrypted vault files with overwrite confirmation", async () => {
+    const existingStorage = createMemoryBrowserVaultStorage();
+    await createBrowserVaultSession("existing password", createInitialBrowserVaultState(), existingStorage);
+    const importStorage = createMemoryBrowserVaultStorage();
+    const imported = await createBrowserVaultSession(
+      "import password",
+      createInitialBrowserVaultState({
+        mnemonicPhrase: "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+      }),
+      importStorage,
+    );
+    const chainConfigStorage = createMemoryBrowserChainConfigStorage();
+    renderScreen(<PwaShell chainConfigStorage={chainConfigStorage} vaultStorage={existingStorage} />);
+
+    expect(await screen.findByRole("button", { name: "解锁 vault" })).toBeInTheDocument();
+    const importInput = screen.getByLabelText("导入加密 vault") as HTMLInputElement;
+    expect(importInput.disabled).toBe(true);
+
+    fireEvent.change(screen.getByLabelText("导入 vault 密码"), { target: { value: "wrong password" } });
+    expect(importInput.disabled).toBe(true);
+
+    const serializedImport = serializeBrowserVaultEnvelope(imported.envelope);
+    const wrongPasswordFile = new File([serializedImport], "vault-wrong-password.json", { type: "application/json" });
+    Object.defineProperty(wrongPasswordFile, "text", { value: async () => serializedImport });
+
+    fireEvent.click(screen.getByLabelText("确认覆盖已有 vault"));
+    fireEvent.change(screen.getByLabelText("导入加密 vault"), {
+      target: {
+        files: [wrongPasswordFile],
+      },
+    });
+    expect(await screen.findByText(/unable to unlock encrypted vault/i)).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "账户与组" })).not.toBeInTheDocument();
+
+    const correctPasswordFile = new File([serializedImport], "vault-correct-password.json", { type: "application/json" });
+    Object.defineProperty(correctPasswordFile, "text", { value: async () => serializedImport });
+
+    fireEvent.change(screen.getByLabelText("导入 vault 密码"), { target: { value: "import password" } });
+    fireEvent.change(screen.getByLabelText("导入加密 vault"), {
+      target: {
+        files: [correctPasswordFile],
+      },
+    });
+
+    expect(await screen.findByRole("heading", { name: "账户与组" })).toBeInTheDocument();
+    expect(screen.getByText(imported.state.groups[0].accounts[0].address)).toBeInTheDocument();
   });
 
   it("creates a browser vault, derives an account, and locks the hot session", async () => {

@@ -7,11 +7,12 @@ This repository is now PWA-only. The current tree contains only the browser runt
 ## Current capabilities
 
 - Browser encrypted vault stored in IndexedDB.
-- Create, unlock, import, export, lock, and persist encrypted vault sessions.
+- Create, unlock, password-verified import, export, lock, and persist encrypted vault sessions.
 - Account groups and deterministic EVM account derivation.
 - Chinese-first PWA shell with mobile-friendly layout and manifest metadata.
 - PWA vault workspace for group/account management.
 - Focused tests and browser smoke coverage for the current PWA baseline.
+- Browser-side chain/RPC settings and shared fee draft preview are being added for P10c.
 
 ## Run
 
@@ -34,7 +35,8 @@ npm run smoke:browser
 - The browser persistent layer only stores encrypted vault data.
 - Passwords, mnemonics, private keys, and raw signed transactions must never be written to persistent storage or logs.
 - Unlock state is a hot in-memory session only; lock or reload requires re-entry of the password.
-- RPC and chain-specific features should continue to validate chain identity before any future send or history workflow is introduced.
+- Imported encrypted vault files must pass password verification and current KDF policy before they can replace a local vault.
+- RPC and chain-specific settings remain local drafts until future send/history workflows add chain identity validation and confirmation gates.
 
 ## Key paths
 

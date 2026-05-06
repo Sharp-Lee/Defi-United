@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
@@ -29,5 +29,24 @@ describe("PWA manifest", () => {
       type: "image/svg+xml",
       purpose: "any maskable",
     });
+    expect(manifest.icons).toContainEqual({
+      src: "/pwa-icon-192.png",
+      sizes: "192x192",
+      type: "image/png",
+      purpose: "any maskable",
+    });
+    expect(manifest.icons).toContainEqual({
+      src: "/pwa-icon-512.png",
+      sizes: "512x512",
+      type: "image/png",
+      purpose: "any maskable",
+    });
+    expect(manifest.icons.some((icon) => icon.purpose?.includes("maskable"))).toBe(true);
+
+    const iconSvg = await readFile(resolve(process.cwd(), "public/pwa-icon.svg"), "utf8");
+    expect(iconSvg).toContain('viewBox="0 0 512 512"');
+    expect(iconSvg).toContain('role="img"');
+    await expect(stat(resolve(process.cwd(), "public/pwa-icon-192.png"))).resolves.toMatchObject({ size: expect.any(Number) });
+    await expect(stat(resolve(process.cwd(), "public/pwa-icon-512.png"))).resolves.toMatchObject({ size: expect.any(Number) });
   });
 });

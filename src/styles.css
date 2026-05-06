@@ -1302,7 +1302,8 @@ td {
 }
 
 .pwa-vault-access,
-.pwa-vault-workspace {
+.pwa-vault-workspace,
+.pwa-settings-panel {
   display: grid;
   gap: 16px;
 }
@@ -1317,6 +1318,65 @@ td {
 
 .pwa-vault-access-grid {
   grid-template-columns: minmax(320px, 0.62fr) minmax(260px, 0.38fr);
+}
+
+.pwa-settings-grid {
+  display: grid;
+  grid-template-columns: minmax(230px, 0.32fr) minmax(0, 0.68fr);
+  gap: 14px;
+  align-items: start;
+}
+
+.pwa-chain-list-card,
+.pwa-chain-editor-card,
+.pwa-fee-panel {
+  gap: 14px;
+}
+
+.pwa-card-heading-row,
+.pwa-fee-summary {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
+.pwa-card-heading-row p {
+  margin: 4px 0 0;
+}
+
+.pwa-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.pwa-fee-panel,
+.pwa-card-warning {
+  grid-column: span 2;
+}
+
+.pwa-fee-summary {
+  flex-wrap: wrap;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px;
+  background: rgba(13, 15, 19, 0.52);
+}
+
+.pwa-fee-summary div {
+  display: grid;
+  gap: 4px;
+}
+
+.pwa-fee-summary span,
+.pwa-muted-note {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.pwa-fee-summary strong {
+  font-size: 14px;
 }
 
 .pwa-vault-access-tabs {
@@ -1347,6 +1407,23 @@ td {
   overflow: hidden;
   opacity: 0;
   pointer-events: none;
+}
+
+.pwa-file-button:has(input:disabled) {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+
+.pwa-checkbox-row {
+  align-items: flex-start;
+  display: flex;
+  flex-direction: row;
+  gap: 0.65rem;
+}
+
+.pwa-checkbox-row input {
+  margin-top: 0.2rem;
+  width: auto;
 }
 
 .pwa-group-list-card {
@@ -1506,8 +1583,20 @@ td {
   .pwa-hero,
   .pwa-card-grid,
   .pwa-vault-access-grid,
-  .pwa-vault-workspace-grid {
+  .pwa-vault-workspace-grid,
+  .pwa-settings-grid,
+  .pwa-form-grid {
     grid-template-columns: 1fr;
+  }
+
+  .pwa-fee-panel,
+  .pwa-card-warning {
+    grid-column: auto;
+  }
+
+  .pwa-card-heading-row,
+  .pwa-fee-summary {
+    display: grid;
   }
 
   .pwa-account-row {

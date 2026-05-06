@@ -41,13 +41,13 @@ The browser encrypted vault, hot session, account groups, and deterministic acco
 
 ### P10c Chain / RPC config and shared fee panel
 
-Build browser-side chain configuration and the shared fee model for all future send flows.
+Build browser-side chain configuration and a shared fee model for future send flows, starting as local settings and fee draft preview without signing or broadcasting.
 
 **Done when**
 
 - RPC URL is treated as an access endpoint, not chain identity.
-- Chain identity is validated before any future send or account-refresh flow.
-- Shared fee panel exposes gas, fee, nonce, and total cost clearly.
+- Chain identity requirements are explicit before any future send or account-refresh flow.
+- Shared fee panel exposes gas, fee, and estimated native cost clearly without submit actions.
 
 ### P10d Asset watchlist and balance snapshots
 

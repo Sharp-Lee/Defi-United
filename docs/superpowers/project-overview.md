@@ -4,7 +4,7 @@
 
 DeFi United is now a browser-first, PWA-only EVM wallet workbench. The repository now keeps only the browser runtime, PWA shell, browser encrypted vault, account-group model, and the tests/docs that support the active PWA mainline.
 
-The current baseline is intentionally small and safety-focused: it supports local encrypted vault creation/unlock/import/export/lock, deterministic EVM account derivation, account groups, Chinese PWA navigation, responsive layout, manifest metadata, and focused verification. It does not yet sign, broadcast, submit RPC transactions, scan balances, or write real transaction history.
+The current baseline is intentionally small and safety-focused: it supports local encrypted vault creation/unlock/import/export/lock, deterministic EVM account derivation, account groups, Chinese PWA navigation, responsive layout, manifest metadata, and focused verification. P10c is adding local chain/RPC settings and fee drafts, but the app still does not sign, broadcast, submit RPC transactions, scan balances, or write real transaction history.
 
 ## Product direction
 
@@ -29,7 +29,7 @@ The project is not currently:
 The current shipped PWA baseline includes:
 
 - Browser encrypted vault persisted in IndexedDB.
-- Vault create, unlock, import, export, persist, and lock flows.
+- Vault create, unlock, password-verified import, export, persist, and lock flows.
 - Hot in-memory session semantics after unlock.
 - Account groups.
 - Deterministic EVM account derivation.
@@ -45,6 +45,7 @@ The current runtime follows these boundaries:
 
 - Browser persistence stores encrypted vault data only for secret-bearing state.
 - Passwords, mnemonic phrases, private keys, and raw signed transactions must not be written to persistent storage, logs, exports, diagnostics, or history.
+- Vault import must decrypt with the imported vault password and satisfy the current KDF policy before it can overwrite browser storage.
 - Unlock state is tab-local hot memory only.
 - Lock, reload, tab close, or process recovery requires re-entry of the vault password.
 - Current pages do not provide signing, broadcasting, RPC submission, balance scanning, or real transaction-history write paths.
@@ -92,7 +93,7 @@ The current mainline has been verified with the full sequence above after the PW
 - P10: PWA direction and docs convergence — complete.
 - P10a: PWA shell and installability baseline — complete.
 - P10b: Browser encrypted vault and account groups — complete.
-- P10c: Chain / RPC config and shared fee panel — next.
+- P10c: Chain / RPC config and shared fee panel — in implementation.
 
 ## Next milestone: P10c
 

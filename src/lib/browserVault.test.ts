@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createInitialBrowserVaultState } from "../core/browserVault/accounts";
 import {
+  BROWSER_VAULT_KDF_ITERATIONS,
   createBrowserVaultSession,
   createMemoryBrowserVaultStorage,
   hasBrowserVault,
@@ -50,8 +51,44 @@ describe("browserVault", () => {
 
     const tampered = parseBrowserVaultEnvelope(serializeBrowserVaultEnvelope(created.envelope));
     tampered.ciphertext = tampered.ciphertext.slice(0, -2) + "AA";
-    await importBrowserVaultEnvelope(tampered, storage);
+    await storage.saveEnvelope(tampered);
 
     await expect(unlockBrowserVaultSession("correct horse battery staple", storage)).rejects.toThrow(/unlock encrypted vault/i);
+  });
+
+  it("verifies imported vault passwords before saving and never overwrites on failure", async () => {
+    const existingStorage = createMemoryBrowserVaultStorage();
+    const existingState = createInitialBrowserVaultState({ mnemonicPhrase: "test test test test test test test test test test test junk" });
+    const existing = await createBrowserVaultSession("existing password", existingState, existingStorage);
+
+    const importStorage = createMemoryBrowserVaultStorage();
+    const importState = createInitialBrowserVaultState({ mnemonicPhrase: "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about" });
+    const imported = await createBrowserVaultSession("import password", importState, importStorage);
+
+    await expect(importBrowserVaultEnvelope(imported.envelope, "wrong password", existingStorage, { overwriteExisting: true })).rejects.toThrow(
+      /unlock encrypted vault/i,
+    );
+    expect((await existingStorage.loadEnvelope())?.ciphertext).toBe(existing.envelope.ciphertext);
+
+    await expect(importBrowserVaultEnvelope(imported.envelope, "import password", existingStorage)).rejects.toThrow(/confirm overwrite/i);
+    expect((await existingStorage.loadEnvelope())?.ciphertext).toBe(existing.envelope.ciphertext);
+
+    const importedSession = await importBrowserVaultEnvelope(imported.envelope, "import password", existingStorage, {
+      overwriteExisting: true,
+    });
+    expect(importedSession.state.groups[0].accounts[0].address).toBe(importState.groups[0].accounts[0].address);
+    expect((await existingStorage.loadEnvelope())?.ciphertext).toBe(imported.envelope.ciphertext);
+  });
+
+  it("rejects imported vault envelopes below the current KDF policy", async () => {
+    const storage = createMemoryBrowserVaultStorage();
+    const state = createInitialBrowserVaultState({ mnemonicPhrase: "test test test test test test test test test test test junk" });
+    const created = await createBrowserVaultSession("correct horse battery staple", state, storage);
+    const weakEnvelope = JSON.parse(serializeBrowserVaultEnvelope(created.envelope)) as typeof created.envelope;
+    weakEnvelope.kdf.iterations = BROWSER_VAULT_KDF_ITERATIONS - 1;
+
+    await expect(importBrowserVaultEnvelope(weakEnvelope, "correct horse battery staple", createMemoryBrowserVaultStorage())).rejects.toThrow(
+      /invalid encrypted vault envelope/i,
+    );
   });
 });

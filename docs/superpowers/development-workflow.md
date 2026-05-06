@@ -41,6 +41,37 @@ This document defines the workflow for the current browser-first PWA mainline. I
   - `npm run smoke:browser`
   - `git diff --check`
 
+### 5.1 Current PWA gate coverage
+
+The current PWA gate intentionally covers only the browser-first runtime:
+
+- `npm test` covers TypeScript unit/component tests for the PWA shell, vault model, browser storage adapters, manifest metadata, and current settings/fee drafts.
+- `npm run typecheck` covers the PWA TypeScript project.
+- `npm run build` produces the browser production bundle.
+- `npm run smoke:browser` runs Playwright against a production preview server on desktop Chromium and a mobile Chromium viewport.
+- `git diff --check` catches whitespace and patch hygiene issues before review.
+
+### 5.2 Retired pre-PWA gates
+
+The archived desktop/Tauri baseline is no longer part of this repository. The previous non-PWA release gates are therefore retired rather than silently skipped:
+
+- no Rust, Cargo, or Tauri build/test gate;
+- no Anvil/local-chain gate;
+- no desktop packaging gate;
+- no backend or extension runtime gate.
+
+If any of those runtimes are reintroduced in a future repository or package, they must receive a new explicit workflow section and CI gate before being treated as supported.
+
+### 5.3 Known non-coverage
+
+The current gate still does not prove future wallet execution safety. Before enabling send, signing, balance refresh, nonce submission, or transaction history writes, add dedicated verification for:
+
+- chain identity validation independent of RPC URL labels;
+- fee and nonce confirmation behavior;
+- signing redaction and raw transaction handling;
+- failure/retry history semantics;
+- mobile install UX beyond manifest metadata.
+
 ## 6. Documentation updates
 
 - Keep README, spec, workflow, roadmap, and status aligned.

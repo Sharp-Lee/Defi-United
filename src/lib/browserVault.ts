@@ -4,7 +4,7 @@ const DB_NAME = "defi-united-pwa-vault";
 const DB_VERSION = 1;
 const STORE_NAME = "vaults";
 const PRIMARY_VAULT_ID = "primary";
-const KDF_ITERATIONS = 210_000;
+export const BROWSER_VAULT_KDF_ITERATIONS = 210_000;
 const SALT_BYTES = 16;
 const IV_BYTES = 12;
 
@@ -142,11 +142,15 @@ function validateEnvelope(value: unknown): BrowserVaultEnvelope {
     envelope.schemaVersion !== 1 ||
     envelope.kdf?.name !== "PBKDF2" ||
     envelope.kdf.hash !== "SHA-256" ||
-    typeof envelope.kdf.iterations !== "number" ||
+    !Number.isSafeInteger(envelope.kdf.iterations) ||
+    envelope.kdf.iterations < BROWSER_VAULT_KDF_ITERATIONS ||
     typeof envelope.kdf.salt !== "string" ||
+    base64ToBytes(envelope.kdf.salt).byteLength !== SALT_BYTES ||
     envelope.cipher?.name !== "AES-GCM" ||
     typeof envelope.cipher.iv !== "string" ||
-    typeof envelope.ciphertext !== "string"
+    base64ToBytes(envelope.cipher.iv).byteLength !== IV_BYTES ||
+    typeof envelope.ciphertext !== "string" ||
+    base64ToBytes(envelope.ciphertext).byteLength === 0
   ) {
     throw new Error("Invalid encrypted vault envelope.");
   }
@@ -189,7 +193,7 @@ export async function createBrowserVaultSession(
   storage: BrowserVaultStorage = indexedDbBrowserVaultStorage,
 ): Promise<BrowserVaultSession> {
   const salt = randomBytes(SALT_BYTES);
-  const key = await deriveVaultKey(password, salt, KDF_ITERATIONS);
+  const key = await deriveVaultKey(password, salt, BROWSER_VAULT_KDF_ITERATIONS);
   const createdAt = timestamp();
   const envelope = await encryptState(state, key, {
     id: PRIMARY_VAULT_ID,
@@ -198,7 +202,7 @@ export async function createBrowserVaultSession(
     kdf: {
       name: "PBKDF2",
       hash: "SHA-256",
-      iterations: KDF_ITERATIONS,
+      iterations: BROWSER_VAULT_KDF_ITERATIONS,
       salt: bytesToBase64(salt),
     },
   });
@@ -256,9 +260,24 @@ export function parseBrowserVaultEnvelope(serialized: string) {
 
 export async function importBrowserVaultEnvelope(
   envelope: BrowserVaultEnvelope,
+  password: string,
   storage: BrowserVaultStorage = indexedDbBrowserVaultStorage,
-) {
-  await storage.saveEnvelope(validateEnvelope(envelope));
+  options: { overwriteExisting?: boolean } = {},
+): Promise<BrowserVaultSession> {
+  const validatedEnvelope = validateEnvelope(envelope);
+  const existingEnvelope = await storage.loadEnvelope();
+  if (existingEnvelope && !options.overwriteExisting) {
+    throw new Error("A browser vault already exists. Confirm overwrite before importing another encrypted vault.");
+  }
+
+  const key = await deriveVaultKey(
+    password,
+    base64ToBytes(validatedEnvelope.kdf.salt),
+    validatedEnvelope.kdf.iterations,
+  );
+  const state = await decryptEnvelope(validatedEnvelope, key);
+  await storage.saveEnvelope(validatedEnvelope);
+  return { state, envelope: validatedEnvelope, key };
 }
 
 export function createMemoryBrowserVaultStorage(initialEnvelope: BrowserVaultEnvelope | null = null) {
