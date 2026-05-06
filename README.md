@@ -46,5 +46,5 @@ src/lib/browserVault.ts          IndexedDB encrypted vault persistence
 src/core/browserVault/accounts.ts PWA account group and derivation model
 public/manifest.webmanifest      PWA manifest baseline
 tests/browser/pwa-smoke.spec.ts  Browser smoke coverage
-docs/                            Current roadmap, workflow, status, and specs
+docs/                            Current overview, roadmap, workflow, status, and specs
 ```

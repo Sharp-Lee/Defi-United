@@ -1,6 +1,6 @@
 # Project Status
 
-This file records the current PWA-only milestones.
+This file records the current PWA-only milestones. For the broader current-state summary, see `docs/superpowers/project-overview.md`.
 
 ## P10 PWA mainline
 
@@ -13,4 +13,4 @@ This file records the current PWA-only milestones.
 
 ## Next
 
-Continue the PWA roadmap from P10c onward and keep the repo free of archived desktop references.
+Continue the PWA roadmap from P10c onward and keep the repo focused on the browser runtime.

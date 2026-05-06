@@ -5,7 +5,7 @@
 - The active product mainline is browser-first PWA.
 - The repository is PWA-only; active development targets the browser runtime and PWA workflow.
 - The current delivered PWA baseline is the Chinese shell, manifest/installability metadata, browser encrypted vault, account groups, and deterministic account derivation.
-- Current source of truth: `README.md`, `docs/specs/evm-wallet-workbench.md`, `docs/superpowers/development-workflow.md`, and `docs/superpowers/project-status.md`.
+- Current source of truth: `README.md`, `docs/specs/evm-wallet-workbench.md`, `docs/superpowers/project-overview.md`, `docs/superpowers/development-workflow.md`, and `docs/superpowers/project-status.md`.
 
 ## PWA roadmap
 

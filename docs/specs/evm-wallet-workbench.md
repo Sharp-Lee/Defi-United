@@ -78,6 +78,7 @@ The current shipped baseline is:
 Keep these docs aligned with the current runtime:
 
 - `README.md`
+- `docs/superpowers/project-overview.md`
 - `docs/superpowers/development-workflow.md`
 - `docs/superpowers/project-status.md`
 - `docs/superpowers/roadmap.md`
