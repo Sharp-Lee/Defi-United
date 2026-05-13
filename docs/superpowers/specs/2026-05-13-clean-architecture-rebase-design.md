@@ -16,16 +16,45 @@ This is not a blank rewrite. Existing verified behavior remains valuable and sho
 - Preserve current vault, KDF, import, chain config, fee draft, manifest, and smoke-test safety work.
 - Establish clear state boundaries before signing or broadcast features exist.
 - Keep all current and future UI Chinese-first, high-density, and optimized for fast operation.
+- Shape the architecture so it can later support 985monitor-class wallet operations without adopting 985monitor's plaintext private-key storage model.
 
 ## 3. Non-goals
 
 - Do not add signing, broadcasting, transaction submission, balance scanning, or real history writes in this milestone.
 - Do not implement distribution / collection, inscriptions, ABI calls, or hot transaction reverse parsing yet.
+- Do not implement vanity address generation or NFT mint monitoring in this milestone.
 - Do not store plaintext mnemonics, private keys, passwords, raw signed transactions, or RPC secrets in persistent browser storage.
 - Do not preserve temporary component names or placeholder UI if they conflict with the new architecture.
 - Do not reintroduce Tauri, backend, browser extension, Anvil, Cargo, or desktop packaging paths.
 
-## 4. Product Shell
+## 4. 985monitor Benchmark And Product Gap
+
+The 985monitor wallet page is the current external product benchmark for breadth and speed. It demonstrates the kind of advanced wallet console DeFi United should be able to grow into, but its plaintext private-key localStorage model must not be copied.
+
+Observed 985monitor capabilities that influence the target architecture:
+
+- broad EVM chain presets and RPC switching;
+- wallet groups, bulk private-key import, random wallet creation, and vanity generation;
+- raw calldata and ABI-based multi-wallet contract calls;
+- transaction-hash-based operation copying and address replacement with `Self`;
+- contract-based native distribution;
+- approve plus contract-based ERC-20 distribution;
+- native and ERC-20 collection;
+- balance visibility;
+- queue logs, queue stop, and state export;
+- NFT mint monitoring through a server-push style feed.
+
+DeFi United should preserve its security advantage:
+
+- encrypted vault instead of plaintext localStorage private keys;
+- KDF policy enforcement;
+- password-verified vault import;
+- hot session memory semantics;
+- no plaintext private-key TXT export by default.
+
+The architecture must therefore prepare feature lanes for 985monitor-class workflows while keeping a stricter safety boundary.
+
+## 5. Product Shell
 
 The global layout will use the selected professional control-console structure:
 
@@ -48,9 +77,9 @@ The left navigation will include:
 
 Implemented modules may expose real controls. Future modules may have skeleton pages, but they must clearly show `未启用` / `规划中` and must not mimic live wallet actions.
 
-## 5. State And Security Boundaries
+## 6. State And Security Boundaries
 
-### 5.1 Encrypted vault
+### 6.1 Encrypted vault
 
 The encrypted vault stores secret-bearing wallet state:
 
@@ -61,7 +90,7 @@ The encrypted vault stores secret-bearing wallet state:
 
 Vault import must continue to require password verification, KDF policy validation, and explicit overwrite confirmation before replacing local vault storage.
 
-### 5.2 Local storage
+### 6.2 Local storage
 
 Local storage may hold non-secret configuration:
 
@@ -70,7 +99,7 @@ Local storage may hold non-secret configuration:
 - UI preferences;
 - recent page, chain, and group identifiers.
 
-### 5.3 Session-only state
+### 6.3 Session-only state
 
 These values must reset when the page reloads or the app reopens:
 
@@ -83,11 +112,11 @@ These values must reset when the page reloads or the app reopens:
 - unlocked hot session;
 - raw signed transaction material.
 
-### 5.4 Future local history and queue
+### 6.4 Future local history and queue
 
 Durable queue and history storage is deferred to a future milestone. It must include redaction rules before implementation and must not store plaintext secrets or raw signed transactions.
 
-## 6. Source Layout
+## 7. Source Layout
 
 The target source layout is:
 
@@ -110,18 +139,21 @@ src/
     accounts/
     chains/
     fees/
+    nonce/
     transactions/
     batch/
     calldata/
     abi/
     assets/
     queue/
+    history/
 
   services/
     storage/
     crypto/
     rpc/
     explorers/
+    workers/
 
   features/
     dashboard/
@@ -149,7 +181,7 @@ Rules:
 - `app/shell/` owns global layout and navigation only.
 - Shell files must not accumulate wallet business logic.
 
-## 7. Migration Map
+## 8. Migration Map
 
 - `src/lib/browserVault.ts` becomes storage and vault service code under `services/storage/` and `core/vault/`.
 - `src/core/browserVault/accounts.ts` becomes account and vault domain code under `core/vault/` and `core/accounts/`.
@@ -164,7 +196,85 @@ Rules:
   - `src/styles/components.css`
   - `src/styles/features.css`
 
-## 8. UI And Interaction Principles
+## 9. Future Capability Lanes
+
+This rebase does not implement transaction execution, but it must leave clear architectural lanes for the next product milestones.
+
+### 9.1 P11 account library
+
+- HD mnemonic groups with many derived accounts.
+- Multi-select accounts across a group.
+- Optional encrypted imported-private-key accounts, only after a dedicated safety spec.
+- Random wallet batch creation if it fits the vault model.
+- Vanity generation as a later worker-backed feature, not part of the rebase.
+
+### 9.2 P12 asset visibility
+
+- Native balance snapshots.
+- Watched ERC-20 balances.
+- Chain identity validation before refresh.
+- Stale / failed / partial states instead of silently showing zero.
+
+### 9.3 P13 execution and queue foundation
+
+- Job model separate from transaction records.
+- Same-account nonce serialization and cross-account concurrency.
+- RPC rate limiting.
+- Stop queue and resumable failure state.
+- JSON status export without raw signed transactions or secrets.
+
+### 9.4 P14 distribution and collection
+
+- Native distribution through the required distribution contract.
+- ERC-20 distribution through approve plus distribution contract flow.
+- Native collection from many local accounts to a target account.
+- ERC-20 collection from many local accounts to a target account.
+
+The known distribution contract is:
+
+```text
+0xd15fe25ed0dba12fe05e7029c88b10c25e8880e3
+```
+
+Contract ABI, chain coverage, approval behavior, and failure semantics require their own implementation spec.
+
+### 9.5 P15 calldata and inscriptions
+
+- Raw calldata builder in hex mode.
+- Text-to-calldata mode for inscription-like payloads.
+- Self-target or fixed-target selection.
+- Per-account repeat count and nonce continuation after failure.
+
+Raw calldata is a lower-level substrate for inscription workflows, but a dedicated inscription page is still needed for speed and correctness.
+
+### 9.6 P16 contract calls and ABI helpers
+
+- ABI paste/import.
+- Explorer ABI fetch by contract address.
+- Function-specific parameter forms.
+- Address-array parameters can be filled from local selected accounts.
+- Raw calldata fallback when ABI is unavailable.
+
+### 9.7 P17 hot transaction reverse parsing
+
+- Input transaction hash.
+- Fetch transaction, receipt, and ABI where possible.
+- Decode calldata and identify repeated address parameters.
+- Offer `Self` replacement for sender-specific address fields.
+- Generate an editable batch-call draft.
+
+### 9.8 Deferred backend decision: NFT mint monitoring
+
+985monitor's NFT mint monitoring appears to depend on server-side or gateway-style real-time data. That is outside the current PWA-only architecture.
+
+Before adding NFT mint monitoring, write a separate product decision spec covering:
+
+- whether DeFi United remains pure PWA-only;
+- whether to introduce a backend or websocket gateway;
+- API key and rate-limit handling;
+- filtering, latency, reliability, and monetization boundaries.
+
+## 10. UI And Interaction Principles
 
 - Chinese-first UI and errors.
 - Technical terms may remain English where natural: calldata, ABI, nonce, gas, base fee.
@@ -178,7 +288,7 @@ Rules:
 - PC efficiency takes priority, while mobile remains usable through folded navigation and rails.
 - All send-like pages must share fee, nonce, queue, preview, and risk components.
 
-## 9. Verification
+## 11. Verification
 
 The rebase must preserve or improve the existing PWA verification gate:
 
@@ -199,26 +309,29 @@ Focused tests must cover:
 - desktop and mobile production-preview smoke;
 - PWA manifest icon requirements.
 
-## 10. Acceptance Criteria
+## 12. Acceptance Criteria
 
 - The app opens into the new professional control-console shell.
 - The source tree follows the target layout or a documented first-step subset of it.
 - Current implemented capabilities still work.
 - Future modules are visible but clearly marked as unavailable until implemented.
+- The architecture visibly reserves lanes for assets, distribution / collection, inscriptions, contract calls, queue / history, and future hot transaction reverse parsing.
 - Fee edits remain session-only.
 - RPC URL persistence warning remains visible.
 - No secret-bearing state is introduced into local storage.
 - The full verification gate passes.
 - README, spec, roadmap, workflow, and status reflect the new architecture truthfully.
 
-## 11. Risks
+## 13. Risks
 
 - Rebase scope can grow too large. Keep the milestone focused on architecture and shell, not new transaction execution features.
 - Moving security-sensitive code can introduce regressions. Preserve tests before and after migration.
 - A professional dense UI can become visually heavy. Use restrained layout, clear hierarchy, and reusable components.
 - Mobile support can regress during shell rebuild. Keep mobile smoke coverage mandatory.
+- 985monitor parity can distract from safety. Treat 985monitor as a product benchmark, not a security benchmark.
+- Transaction execution work requires chain identity, nonce, signing redaction, broadcast, and history foundations before any real send button ships.
 
-## 12. Recommended Implementation Strategy
+## 14. Recommended Implementation Strategy
 
 Implement in small, reviewable steps:
 
