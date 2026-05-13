@@ -123,7 +123,7 @@ Durable queue and history storage is deferred to a future milestone. It must inc
 
 ## 7. Source Layout
 
-The target source layout is:
+The long-term target source layout is:
 
 ```text
 src/
@@ -186,20 +186,36 @@ Rules:
 - `app/shell/` owns global layout and navigation only.
 - Shell files must not accumulate wallet business logic.
 
+P10d implements the first-step subset of this target layout:
+
+- `src/app/shell/` owns the console shell, navigation, top context bar, workspace switch, right preview / risk rail, and unavailable future-module surfaces.
+- `src/app/state/` owns pure navigation and session-summary helpers.
+- `src/features/accounts/` owns the current encrypted-vault access and account workspace UI.
+- `src/features/settings/` owns the current chain / RPC settings and shared fee draft UI.
+- `src/services/storage/` exposes browser vault and chain-config storage service boundaries as compatibility re-exports.
+- `src/core/accounts/`, `src/core/vault/`, `src/core/chains/`, and `src/core/fees/` expose first-step domain boundaries as compatibility re-exports.
+- `src/shared/` contains reusable UI and formatting helpers.
+- `src/styles/` contains split tokens, base, layout, components, and feature CSS.
+
+The future `nonce`, `transactions`, `batch`, `calldata`, `abi`, `assets`, `queue`, `history`, `rpc`, `explorers`, and `workers` lanes remain planned only unless a later milestone explicitly implements them.
+
 ## 8. Migration Map
 
-- `src/lib/browserVault.ts` becomes storage and vault service code under `services/storage/` and `core/vault/`.
-- `src/core/browserVault/accounts.ts` becomes account and vault domain code under `core/vault/` and `core/accounts/`.
-- `src/core/browserChainConfig.ts` becomes chain and fee domain code under `core/chains/` and `core/fees/`.
-- `src/lib/browserChainConfig.ts` becomes `services/storage/chainConfigStorage.ts`.
-- `src/app/PwaShell.tsx` is split into shell, navigation, top bar, workspace, and feature pages.
-- `src/features/pwaVault/` is migrated into `features/accounts/`.
-- `src/features/pwaSettings/` is migrated into `features/settings/`.
+- `src/lib/browserVault.ts` remains the verified IndexedDB/WebCrypto implementation and is exposed through `services/storage/browserVaultStorage.ts`.
+- `src/core/browserVault/accounts.ts` remains the verified account-group and derivation model and is exposed through `core/vault/` and `core/accounts/`.
+- `src/core/browserChainConfig.ts` remains the verified chain and fee domain model and is exposed through `core/chains/` and `core/fees/`.
+- `src/lib/browserChainConfig.ts` remains the verified browser chain/RPC persistence adapter and is exposed through `services/storage/chainConfigStorage.ts`.
+- `src/app/PwaShell.tsx` now orchestrates vault, chain, session, and feature content while delegating global layout to `src/app/shell/`.
+- `src/features/pwaVault/` is kept as compatibility re-exports after migrating current account UI into `features/accounts/`.
+- `src/features/pwaSettings/` is kept as compatibility re-exports after migrating current settings UI into `features/settings/`.
 - `src/styles.css` is split into:
   - `src/styles/tokens.css`
+  - `src/styles/base.css`
   - `src/styles/layout.css`
   - `src/styles/components.css`
   - `src/styles/features.css`
+
+This first-step migration intentionally keeps compatibility re-exports so existing tests and imports can move gradually without rewriting the verified security-sensitive core in the same milestone.
 
 ## 9. Future Capability Lanes
 
@@ -317,7 +333,7 @@ Focused tests must cover:
 ## 12. Acceptance Criteria
 
 - The app opens into the new professional control-console shell.
-- The source tree follows the target layout or a documented first-step subset of it.
+- The source tree follows the documented first-step subset of the target layout.
 - Current implemented capabilities still work.
 - Future modules are visible but clearly marked as unavailable until implemented.
 - The architecture visibly reserves lanes for assets, distribution / collection, inscriptions, contract calls, queue / history, and future hot transaction reverse parsing.
@@ -326,6 +342,8 @@ Focused tests must cover:
 - No secret-bearing state is introduced into local storage.
 - The full verification gate passes.
 - README, spec, roadmap, workflow, and status reflect the new architecture truthfully.
+
+P10d satisfies these criteria on milestone branch `codex/p10d-clean-architecture-rebase` after the full verification gate passes. Merge to `main` is a controller step after final review and post-merge verification.
 
 ## 13. Risks
 

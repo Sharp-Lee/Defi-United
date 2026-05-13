@@ -1,17 +1,17 @@
 # DeFi United PWA 钱包工作台
 
-Browser-first PWA wallet workbench for EVM accounts, assets, batch workflows, ABI / contract calls, and auditable local history.
+Browser-first PWA wallet workbench foundation for encrypted EVM account management, local chain/RPC settings, and a professional console shell.
 
-This repository is now PWA-only. The current tree contains only the browser runtime, PWA shell, vault workflow, and PWA verification assets.
+This repository is now PWA-only. The current tree contains only the browser runtime, console-shell architecture, vault workflow, local chain/RPC settings, and PWA verification assets.
 
 ## Current capabilities
 
 - Browser encrypted vault stored in IndexedDB.
 - Create, unlock, password-verified import, export, lock, and persist encrypted vault sessions.
 - Account groups and deterministic EVM account derivation.
-- Chinese-first PWA shell with mobile-friendly layout and manifest metadata.
+- Chinese-first console shell with left navigation, top context, main workspace, and preview/risk rail.
 - PWA vault workspace for group/account management.
-- Focused tests and browser smoke coverage for the current PWA baseline.
+- Focused tests and browser smoke coverage for the current PWA console baseline.
 - Browser-side chain/RPC settings and shared fee draft preview.
 
 ## Run
@@ -44,13 +44,14 @@ npm run smoke:browser
 
 ```text
 src/App.tsx                      PWA app entry
-src/app/PwaShell.tsx             Current PWA shell
-src/features/pwaVault/           PWA vault UI
-src/features/pwaSettings/        Chain/RPC and fee draft UI
-src/lib/browserVault.ts          IndexedDB encrypted vault persistence
-src/lib/browserChainConfig.ts    Browser chain/RPC config persistence
-src/core/browserVault/accounts.ts PWA account group and derivation model
-src/core/browserChainConfig.ts   Chain/RPC and fee domain model
+src/app/PwaShell.tsx             Vault, chain, session, and feature orchestration
+src/app/shell/                   Console shell layout
+src/app/state/                   Pure app navigation/session helpers
+src/features/accounts/           Account vault and local account library UI
+src/features/settings/           Chain/RPC and fee draft UI
+src/shared/                      Shared UI, formatting, validation, constants
+src/services/storage/            Browser storage service boundaries
+src/styles/                      Split design tokens, layout, components, features
 public/manifest.webmanifest      PWA manifest baseline
 tests/browser/pwa-smoke.spec.ts  Browser smoke coverage
 docs/                            Current overview, roadmap, workflow, status, and specs
