@@ -35,6 +35,10 @@ describe("PwaShell", () => {
     expect(screen.getByRole("heading", { name: "主工作区" })).toBeInTheDocument();
     expect(screen.getByLabelText("预览与风险")).toBeInTheDocument();
     expect(screen.getByText(/Browser-first PWA mainline/i)).toBeInTheDocument();
+    expect(await screen.findByText("Public RPC")).toBeInTheDocument();
+    expect(screen.getByText("Max 30 gwei")).toBeInTheDocument();
+    expect(screen.getByText("Tip 1.5 gwei")).toBeInTheDocument();
+    expect(screen.getByText("Base 2x")).toBeInTheDocument();
     expect(screen.getAllByText(/P13 前仅占位，不运行签名或广播队列/)).toHaveLength(2);
     await waitFor(() => expect(screen.getByRole("heading", { name: "总览" })).toBeInTheDocument());
   });

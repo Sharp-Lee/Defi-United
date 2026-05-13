@@ -32,11 +32,12 @@ npm run smoke:browser
 
 ## Safety boundaries
 
-- The browser persistent layer only stores encrypted vault data.
+- Secret-bearing wallet state is stored only as encrypted vault data in IndexedDB.
+- Non-secret chain/RPC settings are persisted locally so the PWA can reopen with the selected network context.
+- RPC URLs are stored verbatim in local browser storage and must not include API keys, bearer tokens, or other credentials.
 - Passwords, mnemonics, private keys, and raw signed transactions must never be written to persistent storage or logs.
 - Unlock state is a hot in-memory session only; lock or reload requires re-entry of the password.
 - Imported encrypted vault files must pass password verification and current KDF policy before they can replace a local vault.
-- RPC and chain-specific settings remain local drafts until future send/history workflows add chain identity validation and confirmation gates.
 - Fee edits, base fee overrides, priority fee edits, multipliers, transaction drafts, and active queue drafts are session-only.
 - 985monitor/wallet is a product breadth benchmark, not a security model to copy.
 

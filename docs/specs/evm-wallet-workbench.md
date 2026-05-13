@@ -2,7 +2,7 @@
 
 ## 1. Product direction
 
-EVM Wallet Workbench is a browser-first, PWA-only wallet workbench for EVM users. The active product is the Chinese PWA shell plus the browser encrypted vault and account-group model.
+EVM Wallet Workbench is a browser-first, PWA-only wallet workbench for EVM users. The active product is the Chinese console shell plus browser encrypted vaults, account groups, local chain/RPC settings, and session-only transaction context previews.
 
 This document records the current product boundary, what is implemented, and what is intentionally not in scope yet.
 
@@ -10,10 +10,12 @@ This document records the current product boundary, what is implemented, and wha
 
 The current shipped baseline is:
 
-- Chinese PWA shell with responsive layout and manifest metadata.
+- Chinese console shell with left navigation, stable top context, responsive layout, and manifest metadata.
 - Browser encrypted vault stored locally in IndexedDB.
 - Vault create, unlock, password-verified import, export, lock, and persist flows.
 - Account groups and deterministic EVM account derivation.
+- Browser-side chain/RPC settings persisted as non-secret local settings.
+- Session-only shared fee draft surfaced in settings and the top context bar.
 - Focused unit tests and browser smoke coverage for the PWA baseline.
 
 ## 3. Implemented capabilities
@@ -22,14 +24,16 @@ The current shipped baseline is:
 
 - Main entry renders the PWA shell by default.
 - Primary navigation exposes the planned product areas:
-  - 账户
+  - 总览
+  - 账户库
   - 资产
   - 分发/归集
   - 铭文刻录
   - 合约调用
-  - 历史
+  - 队列/历史
   - 设置
 - Non-account sections currently show planned / unavailable state instead of fake wallet actions.
+- The top context bar shows account counts, selected chain/RPC label, and session fee context without exposing the full RPC URL.
 
 ### 3.2 Browser vault
 
@@ -48,12 +52,34 @@ The current shipped baseline is:
 - Derived accounts are deterministic and remain tied to the active vault state.
 - Account state is managed entirely in the browser runtime.
 
+### 3.4 Chain/RPC settings
+
+- Chain/RPC settings are browser-local, non-secret settings used to preserve selected network context across PWA reloads.
+- RPC URLs are stored verbatim in local browser storage and must not include API keys, bearer tokens, or other credentials.
+- Runtime surfaces show the RPC label, not the full RPC URL.
+- These settings do not imply transaction submission, chain history writes, or RPC safety validation in the current scope.
+
+### 3.5 Shared fee draft and top context
+
+- Max fee, priority fee, base fee override, and multiplier edits are session-only drafts.
+- The top context bar mirrors the current session fee context so users can see Max, Tip, and Base assumptions while navigating modules.
+- Fee drafts reset when the session resets and are not persisted to local storage.
+
+### 3.6 PWA manifest and smoke coverage
+
+- The app ships with PWA manifest metadata for the browser-first runtime.
+- Browser smoke coverage verifies the PWA baseline on desktop and mobile Chromium viewports.
+
 ## 4. Security model
 
-- Browser persistence stores only encrypted vault material and other non-sensitive PWA state.
+- Secret-bearing wallet state is stored only as encrypted vault material in IndexedDB.
+- Browser persistence may also store non-secret chain/RPC settings.
+- RPC URLs are stored verbatim in local browser storage and must not contain API keys, tokens, or other credentials.
+- Fee/base fee/priority fee/multiplier edits are session-only.
 - Plaintext mnemonic phrases, passwords, private keys, and raw signed transactions must not be written to logs, export files, or persistent storage.
 - The current product boundary does not include signing, broadcasting, RPC submission, or chain history writes.
 - Future chain-aware features must continue to validate chain identity before any send or refresh workflow.
+- 985monitor/wallet is a product breadth benchmark for module coverage and workflow inspiration; it is not a security model.
 
 ## 5. Product boundaries
 
@@ -62,18 +88,20 @@ The current shipped baseline is:
 - Shell navigation
 - Browser encrypted vault
 - Account groups and derivation
+- Chain/RPC settings as non-secret local settings
+- Session-only shared fee draft and top context display
 - Manifest / installability metadata
 - PWA-focused tests and smoke coverage
 
 ### Not yet in scope
 
-- Chain configuration and shared fee panel
-- Native asset scanning
-- Token watchlists
-- Batch execution and local history
+- Signing, broadcasting, or RPC transaction submission
+- Asset scanning or token watchlists
+- Batch execution or history
 - Distribution / collection workflows
-- Inscription workflows
-- Contract call workflows
+- Inscriptions or calldata execution
+- ABI contract calls
+- Hot transaction reverse parsing
 
 ## 6. Source of truth
 

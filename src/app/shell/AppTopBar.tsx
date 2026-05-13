@@ -29,8 +29,20 @@ export function AppTopBar({ sessionSummary }: { sessionSummary: AppSessionSummar
           <dd>{sessionSummary.activeChainName}</dd>
         </div>
         <div>
-          <dt>Gas</dt>
-          <dd>{sessionSummary.nativeSymbol}</dd>
+          <dt>RPC</dt>
+          <dd>{sessionSummary.rpcLabel}</dd>
+        </div>
+        <div>
+          <dt>Fee</dt>
+          <dd>Max {sessionSummary.maxFeeLabel}</dd>
+        </div>
+        <div>
+          <dt>Priority</dt>
+          <dd>Tip {sessionSummary.priorityFeeLabel}</dd>
+        </div>
+        <div>
+          <dt>Multiplier</dt>
+          <dd>Base {sessionSummary.baseFeeMultiplierLabel}</dd>
         </div>
       </dl>
     </header>
