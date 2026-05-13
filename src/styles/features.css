@@ -1050,6 +1050,11 @@
   gap: 14px;
 }
 
+.pwa-account-library-summary .status-badge {
+  max-width: 100%;
+  white-space: normal;
+}
+
 .pwa-group-list,
 .pwa-group-summary,
 .pwa-account-list,

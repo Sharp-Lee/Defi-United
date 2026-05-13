@@ -9,6 +9,7 @@ This repository is now PWA-only. The current tree contains only the browser runt
 - Browser encrypted vault stored in IndexedDB.
 - Create, unlock, password-verified import, export, lock, and persist encrypted vault sessions.
 - Account groups and deterministic EVM account derivation.
+- Account-library multi-select, select all / clear, and batch derivation controls inside the encrypted vault workspace.
 - Chinese-first console shell with left navigation, top context, main workspace, and preview/risk rail.
 - PWA vault workspace for group/account management.
 - Focused tests and browser smoke coverage for the current PWA console baseline.

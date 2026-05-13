@@ -1,13 +1,18 @@
 import { describe, expect, it } from "vitest";
 import {
   addBrowserVaultGroup,
+  clearBrowserVaultAccountSelection,
   createInitialBrowserVaultState,
   deriveBrowserVaultAccounts,
   getActiveBrowserVaultGroup,
   renameBrowserVaultAccount,
   renameBrowserVaultGroup,
+  selectAllBrowserVaultAccounts,
   selectBrowserVaultAccount,
   selectBrowserVaultGroup,
+  setBrowserVaultAccountSelection,
+  summarizeBrowserVaultAccountLibrary,
+  toggleBrowserVaultAccountSelection,
 } from "./accounts";
 
 describe("browserVault accounts", () => {
@@ -56,5 +61,141 @@ describe("browserVault accounts", () => {
 
     expect(nextState.groups).toHaveLength(2);
     expect(getActiveBrowserVaultGroup(nextState)?.name).toBe("Work");
+  });
+
+  it("supports multi-select, select-all, and clear selection within one group", () => {
+    const state = createInitialBrowserVaultState({
+      mnemonicPhrase: "test test test test test test test test test test test junk",
+      initialAccountCount: 3,
+    });
+    const group = getActiveBrowserVaultGroup(state)!;
+
+    const toggledSecond = toggleBrowserVaultAccountSelection(state, group.id, group.accounts[1].id);
+    expect(getActiveBrowserVaultGroup(toggledSecond)?.accounts.map((account) => account.selected)).toEqual([
+      true,
+      true,
+      false,
+    ]);
+
+    const setThird = setBrowserVaultAccountSelection(toggledSecond, group.id, group.accounts[2].id, true);
+    expect(getActiveBrowserVaultGroup(setThird)?.accounts.map((account) => account.selected)).toEqual([
+      true,
+      true,
+      true,
+    ]);
+
+    const toggledSecondOff = toggleBrowserVaultAccountSelection(setThird, group.id, group.accounts[1].id);
+    expect(getActiveBrowserVaultGroup(toggledSecondOff)?.accounts.map((account) => account.selected)).toEqual([
+      true,
+      false,
+      true,
+    ]);
+
+    const allSelected = selectAllBrowserVaultAccounts(toggledSecondOff, group.id);
+    expect(getActiveBrowserVaultGroup(allSelected)?.accounts.map((account) => account.selected)).toEqual([
+      true,
+      true,
+      true,
+    ]);
+
+    const cleared = clearBrowserVaultAccountSelection(allSelected, group.id);
+    expect(getActiveBrowserVaultGroup(cleared)?.accounts.map((account) => account.selected)).toEqual([
+      false,
+      false,
+      false,
+    ]);
+  });
+
+  it("keeps selection scoped to the target group", () => {
+    const state = createInitialBrowserVaultState({
+      mnemonicPhrase: "test test test test test test test test test test test junk",
+      initialAccountCount: 2,
+    });
+    const firstGroup = getActiveBrowserVaultGroup(state)!;
+    const withSecondGroup = addBrowserVaultGroup(state, "Second", {
+      mnemonicPhrase: "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+      initialAccountCount: 2,
+    });
+    const secondGroup = getActiveBrowserVaultGroup(withSecondGroup)!;
+
+    const selectedSecondGroup = selectAllBrowserVaultAccounts(withSecondGroup, secondGroup.id);
+    const clearedSecond = clearBrowserVaultAccountSelection(selectedSecondGroup, secondGroup.id);
+
+    expect(clearedSecond.groups.find((group) => group.id === firstGroup.id)?.accounts.map((account) => account.selected)).toEqual([
+      true,
+      false,
+    ]);
+    expect(
+      clearedSecond.groups.find((group) => group.id === secondGroup.id)?.accounts.map((account) => account.selected),
+    ).toEqual([false, false]);
+  });
+
+  it("summarizes account library counts for the shell", () => {
+    const state = createInitialBrowserVaultState({
+      mnemonicPhrase: "test test test test test test test test test test test junk",
+      initialAccountCount: 2,
+    });
+    const group = getActiveBrowserVaultGroup(state)!;
+    const selectedAll = selectAllBrowserVaultAccounts(state, group.id);
+    const summary = summarizeBrowserVaultAccountLibrary(selectedAll);
+
+    expect(summary).toMatchObject({
+      activeGroupAccountCount: 2,
+      activeGroupName: "主账户组",
+      activeGroupNextAccountIndex: 2,
+      activeGroupSelectedAccountCount: 2,
+      totalAccountCount: 2,
+      totalGroupCount: 1,
+      totalSelectedAccountCount: 2,
+    });
+  });
+
+  it("preserves existing selections and next account index when deriving accounts", () => {
+    const state = createInitialBrowserVaultState({
+      mnemonicPhrase: "test test test test test test test test test test test junk",
+      initialAccountCount: 3,
+    });
+    const group = getActiveBrowserVaultGroup(state)!;
+    const selectedSubset = setBrowserVaultAccountSelection(state, group.id, group.accounts[2].id, true);
+
+    const derived = deriveBrowserVaultAccounts(selectedSubset, group.id, 2);
+    const derivedGroup = getActiveBrowserVaultGroup(derived)!;
+
+    expect(derivedGroup.nextAccountIndex).toBe(5);
+    expect(derivedGroup.accounts.map((account) => account.index)).toEqual([0, 1, 2, 3, 4]);
+    expect(derivedGroup.accounts.map((account) => account.selected)).toEqual([true, false, true, false, false]);
+  });
+
+  it("does not force a selected account when deriving after all selections are cleared", () => {
+    const state = createInitialBrowserVaultState({
+      mnemonicPhrase: "test test test test test test test test test test test junk",
+      initialAccountCount: 2,
+    });
+    const group = getActiveBrowserVaultGroup(state)!;
+    const cleared = clearBrowserVaultAccountSelection(state, group.id);
+
+    const derived = deriveBrowserVaultAccounts(cleared, group.id, 2);
+    const derivedGroup = getActiveBrowserVaultGroup(derived)!;
+    const summary = summarizeBrowserVaultAccountLibrary(derived);
+
+    expect(derivedGroup.nextAccountIndex).toBe(4);
+    expect(derivedGroup.accounts.map((account) => account.selected)).toEqual([false, false, false, false]);
+    expect(summary.activeGroupSelectedAccountCount).toBe(0);
+    expect(summary.totalSelectedAccountCount).toBe(0);
+  });
+
+  it("returns the original state when selection targets are unknown", () => {
+    const state = createInitialBrowserVaultState({
+      mnemonicPhrase: "test test test test test test test test test test test junk",
+      initialAccountCount: 2,
+    });
+    const group = getActiveBrowserVaultGroup(state)!;
+
+    expect(setBrowserVaultAccountSelection(state, group.id, "missing-account", true)).toBe(state);
+    expect(toggleBrowserVaultAccountSelection(state, group.id, "missing-account")).toBe(state);
+    expect(selectAllBrowserVaultAccounts(state, "missing-group")).toBe(state);
+    expect(clearBrowserVaultAccountSelection(state, "missing-group")).toBe(state);
+    expect(deriveBrowserVaultAccounts(state, "missing-group", 1)).toBe(state);
+    expect(deriveBrowserVaultAccounts(state, group.id, 0)).toBe(state);
   });
 });

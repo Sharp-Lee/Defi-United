@@ -1,13 +1,16 @@
 import { useEffect, useState } from "react";
 import {
   addBrowserVaultGroup,
+  clearBrowserVaultAccountSelection,
   createInitialBrowserVaultState,
   deriveBrowserVaultAccounts,
   getActiveBrowserVaultGroup,
   renameBrowserVaultAccount,
   renameBrowserVaultGroup,
-  selectBrowserVaultAccount,
+  selectAllBrowserVaultAccounts,
   selectBrowserVaultGroup,
+  summarizeBrowserVaultAccountLibrary,
+  toggleBrowserVaultAccountSelection,
 } from "../core/browserVault/accounts";
 import {
   addBrowserChainRecord,
@@ -226,7 +229,11 @@ export function PwaShell({ vaultStorage, chainConfigStorage }: PwaShellProps = {
           activeGroup={activeGroup}
           busy={vaultBusy}
           groups={session.state.groups}
+          librarySummary={summarizeBrowserVaultAccountLibrary(session.state)}
           onAddGroup={() => void persistVaultState(addBrowserVaultGroup(session.state, `账户组 ${session.state.groups.length + 1}`))}
+          onClearAccountSelection={(groupId) =>
+            void persistVaultState(clearBrowserVaultAccountSelection(session.state, groupId))
+          }
           onDeriveAccounts={(groupId, count) => void persistVaultState(deriveBrowserVaultAccounts(session.state, groupId, count))}
           onExportVault={handleExportVault}
           onLock={() => {
@@ -237,10 +244,11 @@ export function PwaShell({ vaultStorage, chainConfigStorage }: PwaShellProps = {
             void persistVaultState(renameBrowserVaultAccount(session.state, groupId, accountId, label))
           }
           onRenameGroup={(groupId, name) => void persistVaultState(renameBrowserVaultGroup(session.state, groupId, name))}
-          onSelectAccount={(groupId, accountId) =>
-            void persistVaultState(selectBrowserVaultAccount(session.state, groupId, accountId))
-          }
+          onSelectAllAccounts={(groupId) => void persistVaultState(selectAllBrowserVaultAccounts(session.state, groupId))}
           onSelectGroup={(groupId) => void persistVaultState(selectBrowserVaultGroup(session.state, groupId))}
+          onToggleAccountSelection={(groupId, accountId) =>
+            void persistVaultState(toggleBrowserVaultAccountSelection(session.state, groupId, accountId))
+          }
         />
       </AccountsModule>
     );

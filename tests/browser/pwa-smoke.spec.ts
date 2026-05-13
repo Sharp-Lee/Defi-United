@@ -22,7 +22,7 @@ test("PWA shell loads and exposes the browser-first baseline", async ({ page }) 
   await expect(page.getByText(/不会运行签名、广播、RPC 提交/)).toBeVisible();
 });
 
-test("PWA account vault creates, derives, and locks without RPC actions", async ({ page }) => {
+test("PWA account vault creates, batch-derives, multi-selects, and locks without RPC actions", async ({ page }) => {
   await page.goto("/");
   await page.getByRole("button", { name: "账户库" }).click();
 
@@ -31,12 +31,18 @@ test("PWA account vault creates, derives, and locks without RPC actions", async 
   await page.getByRole("button", { name: "创建 vault" }).click();
 
   await expect(page.getByRole("heading", { name: "账户与组" })).toBeVisible();
-  await expect(page.getByText("主账户组")).toBeVisible();
+  await expect(page.getByRole("button", { name: /主账户组\s*已选 1 \/ 1/ })).toBeVisible();
   await expect(page.getByText("账户 1")).toBeVisible();
 
-  await page.getByRole("button", { name: "派生 1 个账户" }).click();
-  await expect(page.getByText("账户 2")).toBeVisible();
-  await expect(page.getByText(/^0x[0-9a-fA-F]{40}$/)).toHaveCount(2);
+  await page.getByRole("button", { name: "派生 20" }).click();
+  await expect(page.getByText("账户 21")).toBeVisible();
+  await expect(page.getByText(/^0x[0-9a-fA-F]{40}$/)).toHaveCount(21);
+
+  await page.getByRole("button", { name: "清空选择" }).click();
+  await expect(page.getByText("当前组已选 0 / 21").first()).toBeVisible();
+
+  await page.getByRole("button", { name: "全选" }).click();
+  await expect(page.getByText("当前组已选 21 / 21").first()).toBeVisible();
 
   await expect(page.getByRole("button", { name: /签名|广播|sign|broadcast/i })).toHaveCount(0);
   await page.getByRole("button", { name: "锁定" }).click();
