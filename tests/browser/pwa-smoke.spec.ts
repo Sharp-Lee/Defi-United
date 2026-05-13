@@ -1,27 +1,30 @@
 import { expect, test } from "@playwright/test";
 
-const navLabels = ["账户", "资产", "分发/归集", "铭文刻录", "合约调用", "历史", "设置"];
+const navLabels = ["总览", "账户库", "资产", "分发/归集", "铭文刻录", "合约调用", "队列/历史", "设置"];
 
 test("PWA shell loads and exposes the browser-first baseline", async ({ page }) => {
   await page.goto("/");
 
-  await expect(page.getByRole("heading", { name: "DeFi United PWA 钱包工作台" })).toBeVisible();
-  await expect(page.getByText(/仓库现在只保留 PWA runtime/)).toBeVisible();
+  await expect(page.getByText("PWA 控制台")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "主工作区" })).toBeVisible();
+  await expect(page.getByLabel("预览与风险")).toBeVisible();
 
   for (const label of navLabels) {
     await expect(page.getByRole("button", { name: label })).toBeVisible();
   }
 
-  await expect(page.getByRole("heading", { name: "账户" })).toBeVisible();
+  await page.getByRole("button", { name: "账户库" }).click();
+  await expect(page.getByRole("heading", { name: "账户库" })).toBeVisible();
   await expect(page.getByLabel("Vault 密码", { exact: true })).toBeVisible();
 
   await page.getByRole("button", { name: "合约调用" }).click();
   await expect(page.getByRole("heading", { name: "合约调用" })).toBeVisible();
-  await expect(page.getByText(/本页仍不包含签名、广播、RPC 提交/)).toBeVisible();
+  await expect(page.getByText(/不会运行签名、广播、RPC 提交/)).toBeVisible();
 });
 
 test("PWA account vault creates, derives, and locks without RPC actions", async ({ page }) => {
   await page.goto("/");
+  await page.getByRole("button", { name: "账户库" }).click();
 
   await page.getByLabel("Vault 密码", { exact: true }).fill("correct horse battery staple");
   await page.getByLabel("确认密码").fill("correct horse battery staple");
@@ -43,6 +46,7 @@ test("PWA account vault creates, derives, and locks without RPC actions", async 
 
 test("PWA import flow requires password verification and overwrite confirmation", async ({ page }) => {
   await page.goto("/");
+  await page.getByRole("button", { name: "账户库" }).click();
 
   await page.getByLabel("Vault 密码", { exact: true }).fill("correct horse battery staple");
   await page.getByLabel("确认密码").fill("correct horse battery staple");

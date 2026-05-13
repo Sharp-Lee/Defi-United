@@ -4,7 +4,7 @@
 
 - The active product mainline is browser-first PWA.
 - The repository is PWA-only; active development targets the browser runtime and PWA workflow.
-- The current delivered PWA baseline is the Chinese shell, manifest/installability metadata, browser encrypted vault, account groups, and deterministic account derivation.
+- The current delivered PWA milestone branch includes the P10d console-shell architecture, manifest/installability metadata, browser encrypted vault, account groups, deterministic account derivation, local chain/RPC settings, session-only fee drafts, and split source/style boundaries.
 - The external product breadth benchmark is `https://985monitor.xyz/wallet/`, but DeFi United keeps a stricter encrypted-vault security model.
 - Current source of truth: `README.md`, `docs/specs/evm-wallet-workbench.md`, `docs/superpowers/project-overview.md`, `docs/superpowers/development-workflow.md`, and `docs/superpowers/project-status.md`.
 - Long-term wallet capability target: `docs/superpowers/specs/2026-05-13-wallet-benchmark-product-design.md`.
@@ -58,15 +58,17 @@ Reshape the current PWA baseline into a professional control-console architectur
 **Done when**
 
 - The app shell uses the left-navigation, top-context, main-workspace, and right-preview structure.
-- Source code is organized around `app`, `core`, `services`, `features`, and `shared` boundaries.
+- Source code is organized around the first-step `app`, `services`, `features`, `shared`, and split-style boundaries while retaining compatibility re-exports for migrated core/storage modules.
 - Current vault, chain/RPC, fee draft, manifest, and smoke-tested behavior still works.
 - Future modules are visible but clearly marked as unavailable.
 - The architecture reserves lanes for 985monitor-class wallet workflows without adopting plaintext private-key storage.
 - No signing, broadcasting, queue execution, balance scanning, distribution, inscription, ABI call, or reverse parsing behavior is shipped in P10d.
 
+P10d is complete on milestone branch `codex/p10d-clean-architecture-rebase` and ready for the controller's final full release gate. It has not yet been merged into `main`.
+
 ### P11 Account library
 
-Expand the encrypted-vault account model toward fast wallet-library operation.
+Future milestone. Expand the encrypted-vault account model toward fast wallet-library operation.
 
 **Done when**
 
@@ -79,7 +81,7 @@ Expand the encrypted-vault account model toward fast wallet-library operation.
 
 ### P12 Asset watchlist and balance snapshots
 
-Add browser-side asset visibility for native balances and watched ERC-20s.
+Future milestone. Add browser-side asset visibility for native balances and watched ERC-20s.
 
 **Done when**
 
@@ -89,7 +91,7 @@ Add browser-side asset visibility for native balances and watched ERC-20s.
 
 ### P13 Execution queue and history model
 
-Build browser-side job execution, front-end signing/broadcasting, nonce control, and durable redacted local history.
+Future milestone. Build browser-side job execution, front-end signing/broadcasting, nonce control, and durable redacted local history.
 
 **Done when**
 
@@ -105,7 +107,7 @@ Build browser-side job execution, front-end signing/broadcasting, nonce control,
 
 ### P14 Distribution and collection page
 
-Implement the PWA distribution / collection page on top of the shared fee panel, queue, and history model.
+Future milestone. Implement the PWA distribution / collection page on top of the shared fee panel, queue, and history model.
 
 **Done when**
 
@@ -126,7 +128,7 @@ Known distribution contract:
 
 ### P15 Inscription and calldata page
 
-Implement the PWA inscription workflow with multi-account planning and calldata preview.
+Future milestone. Implement the PWA inscription workflow with multi-account planning and calldata preview.
 
 **Done when**
 
@@ -138,7 +140,7 @@ Implement the PWA inscription workflow with multi-account planning and calldata 
 
 ### P16 Contract call page with ABI helpers
 
-Implement the PWA contract call page with ABI import, validation, and read/write helpers.
+Future milestone. Implement the PWA contract call page with ABI import, validation, and read/write helpers.
 
 **Done when**
 
@@ -151,7 +153,7 @@ Implement the PWA contract call page with ABI import, validation, and read/write
 
 ### P17 Hot transaction reverse parsing
 
-Build transaction-hash-based reverse parsing into editable batch-call drafts.
+Future milestone. Build transaction-hash-based reverse parsing into editable batch-call drafts.
 
 **Done when**
 

@@ -2,9 +2,9 @@
 
 ## Current summary
 
-DeFi United is now a browser-first, PWA-only EVM wallet workbench. The repository now keeps only the browser runtime, PWA shell, browser encrypted vault, account-group model, and the tests/docs that support the active PWA mainline.
+DeFi United is now a browser-first, PWA-only EVM wallet workbench. The repository now keeps only the browser runtime, P10d console-shell architecture, browser encrypted vault, account-group model, local chain/RPC settings, and the tests/docs that support the active PWA mainline.
 
-The current baseline is intentionally small and safety-focused: it supports local encrypted vault creation/unlock/import/export/lock, deterministic EVM account derivation, account groups, Chinese PWA navigation, responsive layout, manifest metadata, local chain/RPC settings, and session-only fee drafts. The app still does not sign, broadcast, submit RPC transactions, scan balances, or write real transaction history.
+The current baseline is intentionally small and safety-focused: it supports local encrypted vault creation/unlock/import/export/lock, deterministic EVM account derivation, account groups, Chinese console navigation, responsive layout, manifest metadata, local chain/RPC settings, and session-only fee drafts. P10d is completed on milestone branch `codex/p10d-clean-architecture-rebase` and is ready for merge after the controller's final release gate; it has not yet been merged into `main`. The app still does not sign, broadcast, submit RPC transactions, scan balances, run distribution / collection, execute ABI or calldata workflows, reverse-parse hot transactions, or write real transaction history.
 
 ## Product direction
 
@@ -35,11 +35,12 @@ The current shipped PWA baseline includes:
 - Account groups.
 - Deterministic EVM account derivation.
 - Account selection and simple rename/group operations.
-- Chinese PWA shell and primary navigation.
+- Chinese console shell with left navigation, top context bar, main workspace, and right preview/risk rail.
 - Mobile-friendly layout baseline.
 - Web manifest and installability metadata.
 - Browser-side chain/RPC settings.
 - Shared fee draft preview with session-only fee edits.
+- Planned future modules are visible as unavailable / planned surfaces only.
 - Unit tests and browser smoke tests for the current baseline.
 
 ## Current safety boundaries
@@ -51,20 +52,21 @@ The current runtime follows these boundaries:
 - Vault import must decrypt with the imported vault password and satisfy the current KDF policy before it can overwrite browser storage.
 - Unlock state is tab-local hot memory only.
 - Lock, reload, tab close, or process recovery requires re-entry of the vault password.
-- Current pages do not provide signing, broadcasting, RPC submission, balance scanning, or real transaction-history write paths.
+- Current pages do not provide signing, broadcasting, RPC submission, balance scanning, distribution / collection, ABI calls, calldata inscription execution, reverse parsing, or real transaction-history write paths.
 - Future chain-aware features must validate chain identity before they are used for send or refresh workflows.
 
 ## Key runtime files
 
 ```text
 src/App.tsx                       PWA app entry
-src/app/PwaShell.tsx              Current shell, navigation, vault orchestration
-src/features/pwaVault/            Vault access and account workspace UI
-src/features/pwaSettings/         Chain/RPC and fee draft settings UI
-src/lib/browserVault.ts           IndexedDB encrypted vault persistence
-src/lib/browserChainConfig.ts     Browser chain/RPC config persistence
-src/core/browserVault/accounts.ts Account groups and deterministic derivation
-src/core/browserChainConfig.ts    Chain/RPC and fee domain model
+src/app/PwaShell.tsx              Vault, chain, session, and feature orchestration
+src/app/shell/                    Console shell layout and unavailable module surfaces
+src/app/state/                    Pure app navigation and session summary helpers
+src/features/accounts/            Account vault and local account library UI
+src/features/settings/            Chain/RPC and fee draft settings UI
+src/shared/                       Shared UI, formatting, validation, and constants
+src/services/storage/             Browser storage service boundaries and re-exports
+src/styles/                       Split design tokens, layout, components, and feature CSS
 public/manifest.webmanifest       PWA manifest baseline
 tests/browser/pwa-smoke.spec.ts   Browser smoke coverage
 ```
@@ -96,7 +98,7 @@ npm run smoke:browser
 git diff --check
 ```
 
-The current mainline has been verified with the full sequence above after P10c.
+The current `main` branch was verified with the full sequence above after P10c. P10d has been implemented on `codex/p10d-clean-architecture-rebase`; the controller owns the final full release gate before merging it into `main`.
 
 ## Milestone status
 
@@ -104,23 +106,22 @@ The current mainline has been verified with the full sequence above after P10c.
 - P10a: PWA shell and installability baseline — complete.
 - P10b: Browser encrypted vault and account groups — complete.
 - P10c: Chain / RPC config and shared fee panel — complete.
-- P10d: Clean architecture rebase — spec written, implementation plan next.
+- P10d: Clean architecture rebase — completed on milestone branch and ready for merge after final gate.
 
-## Next milestone: P10d
+## Next milestone: P11 account library expansion
 
-P10d should reshape the current PWA baseline into the professional control-console architecture before adding transaction execution features.
+P11 should expand the encrypted-vault account model into a faster local account library without opening transaction execution paths.
 
 Recommended scope:
 
-- Add the `app`, `core`, `services`, `features`, and `shared` source boundaries.
-- Add the left navigation, top context bar, main workspace, and right preview/risk/queue rail.
-- Migrate current vault and settings behavior without changing safety semantics.
-- Show future modules as unavailable rather than pretending they work.
-- Do not add signing, broadcasting, nonce submission, balance scanning, distribution, inscriptions, ABI calls, reverse parsing, or history writes.
+- Derive and manage larger account sets inside encrypted mnemonic groups.
+- Improve account labels, group workflows, and local selection ergonomics.
+- Keep account metadata and any future secret-bearing account material inside the encrypted vault boundary.
+- Keep signing, broadcasting, nonce submission, balance scanning, distribution, inscriptions, ABI calls, reverse parsing, and history writes deferred to later milestones.
 
 ## Current risks and watch points
 
-- Do not claim future P10c+ capabilities as current runtime behavior.
+- Do not claim future P11+ capabilities as current runtime behavior.
 - Do not mix chain settings into the encrypted vault unless a future migration explicitly requires it.
 - Do not introduce signing or broadcast controls before chain identity, fee, confirmation, history, and security review milestones are ready.
 - Do not copy 985monitor's plaintext private-key localStorage model.
@@ -129,4 +130,4 @@ Recommended scope:
 
 ## Overall assessment
 
-The repository is now in a healthy post-P10c state: the active product path is clear, the runtime is small, the safety model is explicit, and the verification loop is established. The next best step is to write the P10d implementation plan and execute the clean architecture rebase, without opening any transaction execution path yet.
+The repository is now in a healthy P10d milestone-branch state: the active product path is clear, the runtime remains small, the safety model is explicit, and the professional console architecture is in place without opening transaction execution paths. After the controller runs the final release gate and merges P10d, the next product step is P11 account library expansion.
