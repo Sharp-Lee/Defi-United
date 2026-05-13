@@ -29,6 +29,7 @@ This file records the current PWA-only milestones. For the broader current-state
 | P11 | Milestone merge to main | `main` | `2615301` | controller post-merge verified | `npm test`; `npm run typecheck`; `npm run build`; `npm run smoke:browser`; `git diff --check` | yes | yes | No-ff merged `codex/p11-account-library` into main and reran the full PWA release gate on main. |
 | P11-P18 | Full wallet workbench product target | `main` | `e164c31` | self-reviewed | `git diff --check` | yes | yes | Product capability spec records account, asset, queue, distribution, inscription, ABI, reverse parsing, and mobile/release requirements. |
 | P12 | Asset watchlist and balance snapshots spec | `codex/p12-asset-watchlist` | `0330edb` | self-reviewed | `git diff --check` | no | no | Defines read-only asset visibility, chainId validation, watched ERC-20 definitions, session-only balance snapshots, stale/partial/error states, and no-send boundaries. |
+| P12 | Asset watchlist implementation plan | `codex/p12-asset-watchlist` | pending | self-reviewed | pending | no | no | Decomposes P12 into asset registry, balance refresh core, asset UI, shell integration/smoke, docs, and release-gate tasks. |
 
 ## Next
 
