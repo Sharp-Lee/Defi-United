@@ -2,7 +2,7 @@
 
 ## 1. Product direction
 
-EVM Wallet Workbench is a browser-first, PWA-only wallet workbench for EVM users. The active product is the Chinese console shell plus browser encrypted vaults, account groups, local chain/RPC settings, and session-only transaction context previews. On the P12 milestone branch it also includes read-only asset visibility; that branch still requires the final release gate and merge before the P12 asset surface becomes the `main` baseline.
+EVM Wallet Workbench is a browser-first, PWA-only wallet workbench for EVM users. The active product is the Chinese console shell plus browser encrypted vaults, account groups, local chain/RPC settings, read-only asset visibility, and session-only transaction context previews.
 
 This document records the current product boundary, what is implemented, and what is intentionally not in scope yet.
 
@@ -16,9 +16,6 @@ The current shipped `main` baseline is:
 - Account groups and deterministic EVM account derivation.
 - Browser-side chain/RPC settings persisted as non-secret local settings.
 - Session-only shared fee draft surfaced in settings and the top context bar.
-
-The current `codex/p12-asset-watchlist` milestone branch additionally includes:
-
 - Read-only assets module wired into the PWA shell.
 - Watched ERC-20 registry persisted as non-secret token definitions in localStorage.
 - Session-only native and watched ERC-20 balance snapshots for selected accounts.
@@ -115,11 +112,6 @@ The current `codex/p12-asset-watchlist` milestone branch additionally includes:
 - Session-only shared fee draft and top context display
 - Manifest / installability metadata
 - PWA-focused tests and smoke coverage
-
-### In scope on `codex/p12-asset-watchlist` pending final gate and merge
-
-- Read-only native and watched ERC-20 balance snapshots
-- Watched ERC-20 token definitions as non-secret local settings
 
 ### Not yet in scope
 

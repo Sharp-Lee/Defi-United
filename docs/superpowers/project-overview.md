@@ -4,7 +4,7 @@
 
 DeFi United is now a browser-first, PWA-only EVM wallet workbench. The repository now keeps only the browser runtime, P10d console-shell architecture, browser encrypted vault, account-group model, local chain/RPC settings, read-only asset workspace, and the tests/docs that support the active PWA mainline.
 
-The current milestone branch baseline is intentionally small and safety-focused: it supports local encrypted vault creation/unlock/import/export/lock, deterministic EVM account derivation, account groups, account-library multi-select and batch derivation, Chinese console navigation, responsive layout, manifest metadata, local chain/RPC settings, session-only fee drafts, and read-only asset snapshots for selected accounts. P11 is merged to `main` and post-merge verified. P12 is complete on `codex/p12-asset-watchlist` through shell integration and browser smoke, and is awaiting the final release gate and merge before it becomes the `main` baseline. The app still does not sign, broadcast, submit RPC transactions, manage nonces, run distribution / collection, execute ABI or calldata workflows, reverse-parse hot transactions, scan NFT/portfolio holdings, scan/revoke authorizations, or write real transaction history.
+The current `main` baseline is intentionally small and safety-focused: it supports local encrypted vault creation/unlock/import/export/lock, deterministic EVM account derivation, account groups, account-library multi-select and batch derivation, Chinese console navigation, responsive layout, manifest metadata, local chain/RPC settings, session-only fee drafts, and read-only asset snapshots for selected accounts. P12 is merged to `main` and post-merge verified. The app still does not sign, broadcast, submit RPC transactions, manage nonces, run distribution / collection, execute ABI or calldata workflows, reverse-parse hot transactions, scan NFT/portfolio holdings, scan/revoke authorizations, or write real transaction history.
 
 ## Product direction
 
@@ -25,9 +25,9 @@ The project is not currently:
 - A consumer-simple wallet.
 - A transaction submission product before the required chain, fee, signing, and history milestones land.
 
-## Current implemented capabilities on this branch
+## Current implemented capabilities
 
-The current PWA baseline on `codex/p12-asset-watchlist` includes:
+The current `main` PWA baseline includes:
 
 - Browser encrypted vault persisted in IndexedDB.
 - Vault create, unlock, password-verified import, export, persist, and lock flows.
@@ -40,13 +40,13 @@ The current PWA baseline on `codex/p12-asset-watchlist` includes:
 - Web manifest and installability metadata.
 - Browser-side chain/RPC settings.
 - Shared fee draft preview with session-only fee edits.
-- Read-only assets module wired into the PWA shell on `codex/p12-asset-watchlist`.
+- Read-only assets module wired into the PWA shell.
 - Watched ERC-20 registry persisted as non-secret token definitions in localStorage.
 - Session-only native and watched ERC-20 balance snapshots for selected accounts.
 - Chain-identity-validated asset refresh through enabled RPC endpoints only.
 - Explicit asset states for locked vaults, no selected accounts, no enabled RPC, chain mismatch, failed/partial refreshes, and stale snapshots.
 - Planned future modules are visible as unavailable / planned surfaces only.
-- Unit tests and browser smoke tests for the current branch baseline.
+- Unit tests and browser smoke tests for the current main baseline.
 
 ## Current safety boundaries
 
@@ -107,7 +107,7 @@ npm run smoke:browser
 git diff --check
 ```
 
-The current `main` branch was verified with the full sequence above after P11 was merged. P12 still needs the final full release gate on `codex/p12-asset-watchlist` before merge.
+The current `main` branch was verified with the full sequence above after P12 was merged.
 
 ## Milestone status
 
@@ -117,11 +117,11 @@ The current `main` branch was verified with the full sequence above after P11 wa
 - P10c: Chain / RPC config and shared fee panel — complete.
 - P10d: Clean architecture rebase — merged to `main` and post-merge verified.
 - P11: Account library expansion — merged to `main` and post-merge verified.
-- P12: Asset watchlist and balance snapshots — complete on `codex/p12-asset-watchlist` through shell integration and browser smoke; awaiting Task 5 docs, full release gate, final review, and merge.
+- P12: Asset watchlist and balance snapshots — merged to `main` and post-merge verified.
 
 ## Next milestone: P13 execution queue and history model
 
-After P12 merges, P13 should add the execution queue and history model needed before any signing/broadcasting workflows can safely ship.
+P13 should add the execution queue and history model needed before any signing/broadcasting workflows can safely ship.
 
 Recommended scope:
 
@@ -133,7 +133,6 @@ Recommended scope:
 
 ## Current risks and watch points
 
-- Do not claim P12 as merged to `main` until the milestone branch is release-gated and merged.
 - Do not claim future P13+ capabilities as current runtime behavior.
 - Do not mix chain settings into the encrypted vault unless a future migration explicitly requires it.
 - Do not introduce signing or broadcast controls before chain identity, fee, confirmation, history, and security review milestones are ready.
@@ -145,4 +144,4 @@ Recommended scope:
 
 ## Overall assessment
 
-The repository is in a healthy P11-on-main state, and the P12 milestone branch now adds the first read-only chain data surface without opening transaction execution paths. The active product path is clear: finish the P12 release gate and merge, then move to the P13 queue/history foundation before any send-capable workflow.
+The repository is in a healthy P12-on-main state with the first read-only chain data surface merged without opening transaction execution paths. The active product path is clear: build the P13 queue/history foundation before any send-capable workflow.

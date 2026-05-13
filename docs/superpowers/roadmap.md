@@ -4,8 +4,7 @@
 
 - The active product mainline is browser-first PWA.
 - The repository is PWA-only; active development targets the browser runtime and PWA workflow.
-- The current delivered `main` baseline includes the P10d console-shell architecture, manifest/installability metadata, browser encrypted vault, account groups, deterministic account derivation, local chain/RPC settings, session-only fee drafts, P11 account-library expansion, and split source/style boundaries.
-- The P12 milestone branch `codex/p12-asset-watchlist` adds read-only asset visibility and is complete through shell integration/browser smoke, pending final release gate and merge.
+- The current delivered `main` baseline includes the P10d console-shell architecture, manifest/installability metadata, browser encrypted vault, account groups, deterministic account derivation, local chain/RPC settings, session-only fee drafts, P11 account-library expansion, P12 read-only asset visibility, and split source/style boundaries.
 - The external product breadth benchmark is `https://985monitor.xyz/wallet/`, but DeFi United keeps a stricter encrypted-vault security model.
 - Current source of truth: `README.md`, `docs/specs/evm-wallet-workbench.md`, `docs/superpowers/project-overview.md`, `docs/superpowers/development-workflow.md`, and `docs/superpowers/project-status.md`.
 - Long-term wallet capability target: `docs/superpowers/specs/2026-05-13-wallet-benchmark-product-design.md`.
@@ -84,7 +83,7 @@ P11 ships multi-select account helpers, account-library summary, default 20-acco
 
 ### P12 Asset watchlist and balance snapshots
 
-Complete on `codex/p12-asset-watchlist`, pending final release gate and merge. Adds browser-side read-only asset visibility for native balances and watched ERC-20s without opening send or execution paths.
+Merged to `main` and post-merge verified. Adds browser-side read-only asset visibility for native balances and watched ERC-20s without opening send or execution paths.
 
 **Done when**
 
