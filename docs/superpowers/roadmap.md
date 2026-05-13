@@ -5,7 +5,9 @@
 - The active product mainline is browser-first PWA.
 - The repository is PWA-only; active development targets the browser runtime and PWA workflow.
 - The current delivered PWA baseline is the Chinese shell, manifest/installability metadata, browser encrypted vault, account groups, and deterministic account derivation.
+- The external product breadth benchmark is `https://985monitor.xyz/wallet/`, but DeFi United keeps a stricter encrypted-vault security model.
 - Current source of truth: `README.md`, `docs/specs/evm-wallet-workbench.md`, `docs/superpowers/project-overview.md`, `docs/superpowers/development-workflow.md`, and `docs/superpowers/project-status.md`.
+- Long-term wallet capability target: `docs/superpowers/specs/2026-05-13-wallet-benchmark-product-design.md`.
 
 ## PWA roadmap
 
@@ -60,6 +62,7 @@ Reshape the current PWA baseline into a professional control-console architectur
 - Current vault, chain/RPC, fee draft, manifest, and smoke-tested behavior still works.
 - Future modules are visible but clearly marked as unavailable.
 - The architecture reserves lanes for 985monitor-class wallet workflows without adopting plaintext private-key storage.
+- No signing, broadcasting, queue execution, balance scanning, distribution, inscription, ABI call, or reverse parsing behavior is shipped in P10d.
 
 ### P11 Account library
 
@@ -70,7 +73,9 @@ Expand the encrypted-vault account model toward fast wallet-library operation.
 - Mnemonic groups can derive and manage many child accounts.
 - Local accounts can be multi-selected for future workflows.
 - Account labels, groups, and selection state stay inside the encrypted vault where appropriate.
+- Random account creation is available if it fits the encrypted vault model.
 - Any imported-private-key support has a dedicated safety spec before implementation.
+- Vanity generation remains deferred until the main transaction workflows are stable.
 
 ### P12 Asset watchlist and balance snapshots
 
@@ -84,14 +89,19 @@ Add browser-side asset visibility for native balances and watched ERC-20s.
 
 ### P13 Execution queue and history model
 
-Build browser-side job execution and durable local history.
+Build browser-side job execution, front-end signing/broadcasting, nonce control, and durable redacted local history.
 
 **Done when**
 
 - Batch jobs and transaction records are represented separately.
 - Same-account nonce ordering is preserved.
+- Cross-account concurrency is supported.
+- Default concurrency is `20` and is user-configurable.
+- RPC rate limits and wallet intervals are configurable.
 - Failure records include account, nonce, transaction summary, error category, and retry state.
+- Failed nonce continuation and rerun-from-failed-nonce behavior are modeled.
 - Queue status can be stopped and exported without raw signed transactions or secrets.
+- Live signing/broadcasting does not repeatedly ask for the vault password during an active hot session.
 
 ### P14 Distribution and collection page
 
@@ -101,7 +111,11 @@ Implement the PWA distribution / collection page on top of the shared fee panel,
 
 - Native distribution uses the required distribution contract.
 - ERC-20 distribution supports approve plus distribution contract flow.
-- Native and ERC-20 collection can move funds from selected local accounts to a target account.
+- Distribution can target local accounts or external addresses.
+- Native distribution can average a total amount across selected targets by default, with editable per-target amounts.
+- Native and ERC-20 collection can move funds from selected local accounts to a local or external target account.
+- Native collection supports gas reserve rules.
+- ERC-20 collection supports full, partial, or percentage modes.
 - Failure and retry behavior is routed through the queue model.
 
 Known distribution contract:
@@ -120,6 +134,7 @@ Implement the PWA inscription workflow with multi-account planning and calldata 
 - Text payloads can be converted into calldata.
 - Each account can self-target or use a fixed target address.
 - Per-account repeat count and failed-nonce continuation are modeled.
+- Expanded transactions are previewed before signing and routed through the shared queue.
 
 ### P16 Contract call page with ABI helpers
 
@@ -130,7 +145,9 @@ Implement the PWA contract call page with ABI import, validation, and read/write
 - ABI can be pasted/imported.
 - Explorer ABI fetch by contract address is supported where possible.
 - Address-array parameters can be filled from selected local accounts.
+- `Self` placeholders can map parameters to each sending account.
 - Raw calldata fallback remains available when ABI is unavailable.
+- Write calls use the shared fee, nonce, preview, risk, and queue controls.
 
 ### P17 Hot transaction reverse parsing
 
@@ -142,6 +159,7 @@ Build transaction-hash-based reverse parsing into editable batch-call drafts.
 - Calldata is decoded into function and parameters where ABI exists.
 - Repeated or sender-related address fields can be replaced with `Self`.
 - The result can become an editable contract-call or raw-calldata draft.
+- Contract-address mode can fetch verified ABI where available and must label selector-only guesses as low confidence.
 
 ### P18 Mobile polish and release wording
 

@@ -8,6 +8,8 @@ This milestone is a clean architecture rebase: preserve the verified safety kern
 
 This is not a blank rewrite. Existing verified behavior remains valuable and should be migrated carefully.
 
+The broader product target is defined in `docs/superpowers/specs/2026-05-13-wallet-benchmark-product-design.md`. This P10d spec only covers the architecture and shell foundation needed before those wallet workflows are implemented.
+
 ## 2. Goals
 
 - Create a clean, elegant, long-lived source layout.
@@ -17,6 +19,7 @@ This is not a blank rewrite. Existing verified behavior remains valuable and sho
 - Establish clear state boundaries before signing or broadcast features exist.
 - Keep all current and future UI Chinese-first, high-density, and optimized for fast operation.
 - Shape the architecture so it can later support 985monitor-class wallet operations without adopting 985monitor's plaintext private-key storage model.
+- Keep P10d scoped to the foundation layer; do not implement live transaction workflows during this milestone.
 
 ## 3. Non-goals
 
@@ -53,6 +56,8 @@ DeFi United should preserve its security advantage:
 - no plaintext private-key TXT export by default.
 
 The architecture must therefore prepare feature lanes for 985monitor-class workflows while keeping a stricter safety boundary.
+
+For complete product requirements across account library, assets, execution queue, distribution / collection, inscriptions, ABI calls, and hot transaction reverse parsing, see `docs/superpowers/specs/2026-05-13-wallet-benchmark-product-design.md`.
 
 ## 5. Product Shell
 
@@ -341,3 +346,17 @@ Implement in small, reviewable steps:
 4. Migrate account vault and settings pages into the new shell.
 5. Split styles and remove obsolete PWA baseline naming.
 6. Update docs and status, then run the full verification gate.
+
+## 15. Relationship To Product Milestones
+
+P10d is a foundation milestone. It should create the source boundaries and professional shell that make P11-P17 easier to build, but it should not ship the P11-P17 product behaviors.
+
+After P10d, implementation should proceed in this order:
+
+1. P11 account library expansion.
+2. P12 asset visibility.
+3. P13 execution queue, nonce model, signing, broadcasting, and redacted history.
+4. P14 distribution and collection.
+5. P15 inscription and calldata.
+6. P16 contract calls and ABI helpers.
+7. P17 hot transaction reverse parsing.
