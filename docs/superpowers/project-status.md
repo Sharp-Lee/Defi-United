@@ -11,6 +11,7 @@ This file records the current PWA-only milestones. For the broader current-state
 | P10b | Browser encrypted vault and account groups | `main` | current | passed | passed | yes | yes | The browser encrypted vault, hot session, account groups, and account derivation are implemented and tested. |
 | P10c | Chain / RPC config and shared fee panel plus vault import hardening | `main` | `c8cb3c0` | passed | `npm test`; `npm run typecheck`; `npm run build`; `npm run smoke:browser`; `git diff --check` | yes | yes | Browser-side chain/RPC config, shared fee panel, password-verified vault import, stronger KDF policy, production/mobile smoke, and PWA icons are pushed to `main`. |
 | P10d | Clean architecture rebase spec | `main` | `e164c31` | self-reviewed | `git diff --check` | no | no | Spec aligns the professional shell and future 985monitor-class product lanes before implementation planning. |
+| P10d | Clean architecture rebase implementation plan | `codex/p10d-clean-architecture-rebase` | pending | self-reviewed | `npm test`; `npm run typecheck`; `git diff --check` | no | no | Plan decomposes P10d into serial architecture, shell, feature migration, style, docs, review, and merge tasks. |
 | P11-P18 | Full wallet workbench product target | `main` | `e164c31` | self-reviewed | `git diff --check` | no | no | Product capability spec records account, asset, queue, distribution, inscription, ABI, reverse parsing, and mobile/release requirements. |
 
 ## Next
