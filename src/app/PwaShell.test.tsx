@@ -170,7 +170,7 @@ describe("PwaShell", () => {
     expect(screen.getByText(imported.state.groups[0].accounts[0].address)).toBeInTheDocument();
   });
 
-  it("creates a browser vault, derives an account, and locks the hot session", async () => {
+  it("creates a browser vault, derives account batches, persists selection across lock and unlock, and has no send controls", async () => {
     renderPwaShell();
 
     fireEvent.click(screen.getByRole("button", { name: /账户库/ }));
@@ -186,16 +186,44 @@ describe("PwaShell", () => {
     expect(await screen.findByRole("heading", { name: "账户与组" })).toBeInTheDocument();
     expect(screen.getByText("主账户组")).toBeInTheDocument();
     expect(screen.getByText("账户 1")).toBeInTheDocument();
+    expect(screen.getByLabelText("派生数量")).toHaveValue(20);
 
-    fireEvent.click(screen.getByRole("button", { name: "派生 1 个账户" }));
+    fireEvent.click(screen.getByRole("button", { name: "派生账户" }));
 
-    await waitFor(() => expect(screen.getByText("账户 2")).toBeInTheDocument());
-    expect(screen.getAllByText(/^0x[0-9a-fA-F]{40}$/)).toHaveLength(2);
+    await waitFor(() => expect(screen.getByText("账户 21")).toBeInTheDocument());
+    expect(screen.getAllByText(/^0x[0-9a-fA-F]{40}$/)).toHaveLength(21);
+    expect(screen.getAllByText("当前组已选 1 / 21")).toHaveLength(2);
+
+    fireEvent.click(screen.getByRole("checkbox", { name: /^账户 2 / }));
+    await waitFor(() => expect(screen.getAllByText("当前组已选 2 / 21")).toHaveLength(2));
+
+    fireEvent.click(screen.getByRole("button", { name: "全选" }));
+    await waitFor(() => expect(screen.getAllByText("当前组已选 21 / 21")).toHaveLength(2));
+    expect(screen.getAllByRole("checkbox")).toHaveLength(21);
+    expect(screen.getAllByRole("checkbox").every((checkbox) => (checkbox as HTMLInputElement).checked)).toBe(true);
+
+    fireEvent.click(screen.getByRole("button", { name: "清空选择" }));
+    await waitFor(() => expect(screen.getAllByText("当前组已选 0 / 21")).toHaveLength(2));
+    expect(screen.getAllByRole("checkbox").every((checkbox) => !(checkbox as HTMLInputElement).checked)).toBe(true);
+
+    fireEvent.click(screen.getByRole("checkbox", { name: /^账户 3 / }));
+    await waitFor(() => expect(screen.getAllByText("当前组已选 1 / 21")).toHaveLength(2));
+    expect(screen.queryByRole("button", { name: /sign|broadcast|签名|广播|提交/i })).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "锁定" }));
 
     await waitFor(() => expect(screen.queryByRole("heading", { name: "账户与组" })).not.toBeInTheDocument());
     expect(screen.queryByRole("heading", { name: "账户与组" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "解锁 vault" })).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("Vault 密码"), {
+      target: { value: "correct horse battery staple" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "解锁 vault" }));
+
+    expect(await screen.findByRole("heading", { name: "账户与组" })).toBeInTheDocument();
+    await waitFor(() => expect(screen.getAllByText("当前组已选 1 / 21")).toHaveLength(2));
+    expect(screen.getByRole("checkbox", { name: /^账户 3 / })).toBeChecked();
+    expect(screen.queryByRole("button", { name: /sign|broadcast|签名|广播|提交/i })).not.toBeInTheDocument();
   });
 });
