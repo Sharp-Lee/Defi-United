@@ -17,6 +17,11 @@ test("PWA shell loads and exposes the browser-first baseline", async ({ page }) 
   await expect(page.getByRole("heading", { name: "账户库" })).toBeVisible();
   await expect(page.getByLabel("Vault 密码", { exact: true })).toBeVisible();
 
+  await page.getByRole("button", { name: "资产" }).click();
+  await expect(page.getByRole("heading", { name: "资产" }).last()).toBeVisible();
+  await expect(page.getByText(/解锁 vault 后才能刷新本地账户余额/)).toBeVisible();
+  await expect(page.getByRole("button", { name: /签名|广播|提交|approve|sign|broadcast/i })).toHaveCount(0);
+
   await page.getByRole("button", { name: "合约调用" }).click();
   await expect(page.getByRole("heading", { name: "合约调用" })).toBeVisible();
   await expect(page.getByText(/不会运行签名、广播、RPC 提交/)).toBeVisible();

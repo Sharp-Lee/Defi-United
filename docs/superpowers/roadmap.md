@@ -4,7 +4,8 @@
 
 - The active product mainline is browser-first PWA.
 - The repository is PWA-only; active development targets the browser runtime and PWA workflow.
-- The current delivered PWA mainline includes the P10d console-shell architecture, manifest/installability metadata, browser encrypted vault, account groups, deterministic account derivation, local chain/RPC settings, session-only fee drafts, and split source/style boundaries.
+- The current delivered `main` baseline includes the P10d console-shell architecture, manifest/installability metadata, browser encrypted vault, account groups, deterministic account derivation, local chain/RPC settings, session-only fee drafts, P11 account-library expansion, and split source/style boundaries.
+- The P12 milestone branch `codex/p12-asset-watchlist` adds read-only asset visibility and is complete through shell integration/browser smoke, pending final release gate and merge.
 - The external product breadth benchmark is `https://985monitor.xyz/wallet/`, but DeFi United keeps a stricter encrypted-vault security model.
 - Current source of truth: `README.md`, `docs/specs/evm-wallet-workbench.md`, `docs/superpowers/project-overview.md`, `docs/superpowers/development-workflow.md`, and `docs/superpowers/project-status.md`.
 - Long-term wallet capability target: `docs/superpowers/specs/2026-05-13-wallet-benchmark-product-design.md`.
@@ -83,17 +84,25 @@ P11 ships multi-select account helpers, account-library summary, default 20-acco
 
 ### P12 Asset watchlist and balance snapshots
 
-Future milestone. Add browser-side asset visibility for native balances and watched ERC-20s.
+Complete on `codex/p12-asset-watchlist`, pending final release gate and merge. Adds browser-side read-only asset visibility for native balances and watched ERC-20s without opening send or execution paths.
 
 **Done when**
 
 - Selected accounts can display native and token balances.
 - Balance refreshes validate chain identity.
 - Failed or stale snapshots are never shown as zero without explicit status.
+- Watched ERC-20 definitions persist as non-secret localStorage settings.
+- Balance snapshots stay session-only and reset on reload/lock.
+- Disabled RPC endpoints cannot refresh balances.
+- Lock clears snapshots and invalidates in-flight refresh results.
+- RPC errors are redacted before display.
+- Desktop/mobile browser smoke opens the asset module without live RPC.
+
+P12 ships the `资产` module in the PWA shell, local watched ERC-20 definitions, chain-validated read-only native/ERC-20 refresh, explicit locked/no-selected/no-RPC/chain-mismatch/failed/partial/stale states, and session-only balance snapshots. It does not ship signing, broadcasting, nonce management, execution queue/history writes, distribution/collection, approve/transferFrom flows, calldata inscription, ABI read/write workflows, hot transaction reverse parsing, NFT/portfolio discovery, or authorization scanning/revocation.
 
 ### P13 Execution queue and history model
 
-Future milestone. Build browser-side job execution, front-end signing/broadcasting, nonce control, and durable redacted local history.
+Next future milestone. Build browser-side job execution, front-end signing/broadcasting, nonce control, and durable redacted local history.
 
 **Done when**
 

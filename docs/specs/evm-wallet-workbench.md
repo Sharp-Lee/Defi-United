@@ -2,13 +2,13 @@
 
 ## 1. Product direction
 
-EVM Wallet Workbench is a browser-first, PWA-only wallet workbench for EVM users. The active product is the Chinese console shell plus browser encrypted vaults, account groups, local chain/RPC settings, and session-only transaction context previews.
+EVM Wallet Workbench is a browser-first, PWA-only wallet workbench for EVM users. The active product is the Chinese console shell plus browser encrypted vaults, account groups, local chain/RPC settings, and session-only transaction context previews. On the P12 milestone branch it also includes read-only asset visibility; that branch still requires the final release gate and merge before the P12 asset surface becomes the `main` baseline.
 
 This document records the current product boundary, what is implemented, and what is intentionally not in scope yet.
 
 ## 2. Current baseline
 
-The current shipped baseline is:
+The current shipped `main` baseline is:
 
 - Chinese console shell with left navigation, stable top context, responsive layout, and manifest metadata.
 - Browser encrypted vault stored locally in IndexedDB.
@@ -16,6 +16,13 @@ The current shipped baseline is:
 - Account groups and deterministic EVM account derivation.
 - Browser-side chain/RPC settings persisted as non-secret local settings.
 - Session-only shared fee draft surfaced in settings and the top context bar.
+
+The current `codex/p12-asset-watchlist` milestone branch additionally includes:
+
+- Read-only assets module wired into the PWA shell.
+- Watched ERC-20 registry persisted as non-secret token definitions in localStorage.
+- Session-only native and watched ERC-20 balance snapshots for selected accounts.
+- Balance refresh validates chain identity through an enabled RPC endpoint before reading balances.
 - Focused unit tests and browser smoke coverage for the PWA baseline.
 
 ## 3. Implemented capabilities
@@ -65,7 +72,21 @@ The current shipped baseline is:
 - The top context bar mirrors the current session fee context so users can see Max, Tip, and Base assumptions while navigating modules.
 - Fee drafts reset when the session resets and are not persisted to local storage.
 
-### 3.6 PWA manifest and smoke coverage
+### 3.6 Assets
+
+- The `资产` module is ready in the PWA shell as a read-only workspace.
+- Watched ERC-20 definitions persist in localStorage as non-secret token metadata.
+- Native and ERC-20 balance snapshots are React session-only and reset on reload, lock, or session replacement.
+- Refresh requires unlocked vault state, selected accounts, a selected chain, and an enabled RPC endpoint.
+- Refresh validates the live RPC chain identity before native or ERC-20 balance reads.
+- Disabled RPC endpoints cannot be used for asset refresh.
+- Lock clears existing snapshots and invalidates in-flight refresh results.
+- The UI surfaces explicit locked, no selected accounts, no enabled RPC, chain mismatch, failed, partial, and stale snapshot states.
+- RPC refresh errors shown in the UI must redact full RPC URLs, tokens, and credential-bearing details.
+- Browser smoke opens the asset module on desktop and mobile without depending on live RPC.
+- The asset module does not sign, broadcast, submit transactions, manage nonces, approve tokens, transfer tokens, distribute/collect funds, execute calldata, run ABI write calls, or write execution history.
+
+### 3.7 PWA manifest and smoke coverage
 
 - The app ships with PWA manifest metadata for the browser-first runtime.
 - Browser smoke coverage verifies the PWA baseline on desktop and mobile Chromium viewports.
@@ -74,8 +95,10 @@ The current shipped baseline is:
 
 - Secret-bearing wallet state is stored only as encrypted vault material in IndexedDB.
 - Browser persistence may also store non-secret chain/RPC settings.
+- Browser persistence may store non-secret watched ERC-20 definitions.
 - RPC URLs are stored verbatim in local browser storage and must not contain API keys, tokens, or other credentials.
 - Fee/base fee/priority fee/multiplier edits are session-only.
+- Balance snapshots are session-only and must be cleared or invalidated when lock/session context changes.
 - Plaintext mnemonic phrases, passwords, private keys, and raw signed transactions must not be written to logs, export files, or persistent storage.
 - The current product boundary does not include signing, broadcasting, RPC submission, or chain history writes.
 - Future chain-aware features must continue to validate chain identity before any send or refresh workflow.
@@ -93,15 +116,21 @@ The current shipped baseline is:
 - Manifest / installability metadata
 - PWA-focused tests and smoke coverage
 
+### In scope on `codex/p12-asset-watchlist` pending final gate and merge
+
+- Read-only native and watched ERC-20 balance snapshots
+- Watched ERC-20 token definitions as non-secret local settings
+
 ### Not yet in scope
 
 - Signing, broadcasting, or RPC transaction submission
-- Asset scanning or token watchlists
-- Batch execution or history
+- Batch execution or history write paths
 - Distribution / collection workflows
 - Inscriptions or calldata execution
 - ABI contract calls
 - Hot transaction reverse parsing
+- NFT / portfolio discovery beyond the watched ERC-20 list
+- Authorization scanning or revocation
 
 ## 6. Source of truth
 
