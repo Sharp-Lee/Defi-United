@@ -1,16 +1,10 @@
 import type { BrowserChainRecord, BrowserFeeDraft } from "../../core/browserChainConfig";
+import { formatEstimatedNativeCost } from "../../shared/format/number";
 
 export interface PwaFeePanelProps {
   activeChain: BrowserChainRecord | null;
   busy?: boolean;
   onUpdateFeeDraft(chainId: string, updates: Partial<BrowserFeeDraft>): void;
-}
-
-function estimateNativeCost(gasLimit: string, maxFeePerGasGwei: string) {
-  const gas = Number(gasLimit);
-  const fee = Number(maxFeePerGasGwei);
-  if (!Number.isFinite(gas) || !Number.isFinite(fee) || gas <= 0 || fee <= 0) return "--";
-  return ((gas * fee) / 1_000_000_000).toFixed(8);
 }
 
 export function PwaFeePanel({ activeChain, busy = false, onUpdateFeeDraft }: PwaFeePanelProps) {
@@ -24,7 +18,7 @@ export function PwaFeePanel({ activeChain, busy = false, onUpdateFeeDraft }: Pwa
   }
 
   const { feeDraft } = activeChain;
-  const estimatedCost = estimateNativeCost(feeDraft.gasLimit, feeDraft.maxFeePerGasGwei);
+  const estimatedCost = formatEstimatedNativeCost(feeDraft.gasLimit, feeDraft.maxFeePerGasGwei);
 
   return (
     <article className="pwa-card pwa-fee-panel" aria-labelledby="pwa-fee-panel-title">
