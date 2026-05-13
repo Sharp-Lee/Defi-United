@@ -4,7 +4,7 @@
 
 DeFi United is now a browser-first, PWA-only EVM wallet workbench. The repository now keeps only the browser runtime, P10d console-shell architecture, browser encrypted vault, account-group model, local chain/RPC settings, and the tests/docs that support the active PWA mainline.
 
-The current baseline is intentionally small and safety-focused: it supports local encrypted vault creation/unlock/import/export/lock, deterministic EVM account derivation, account groups, account-library multi-select and batch derivation, Chinese console navigation, responsive layout, manifest metadata, local chain/RPC settings, and session-only fee drafts. P11 is complete on branch `codex/p11-account-library` and awaiting milestone merge to `main`. The app still does not sign, broadcast, submit RPC transactions, scan balances, run distribution / collection, execute ABI or calldata workflows, reverse-parse hot transactions, or write real transaction history.
+The current baseline is intentionally small and safety-focused: it supports local encrypted vault creation/unlock/import/export/lock, deterministic EVM account derivation, account groups, account-library multi-select and batch derivation, Chinese console navigation, responsive layout, manifest metadata, local chain/RPC settings, and session-only fee drafts. P11 is merged to `main` and post-merge verified. The app still does not sign, broadcast, submit RPC transactions, scan balances, run distribution / collection, execute ABI or calldata workflows, reverse-parse hot transactions, or write real transaction history.
 
 ## Product direction
 
@@ -98,7 +98,7 @@ npm run smoke:browser
 git diff --check
 ```
 
-The current `main` branch was verified with the full sequence above after P10d was merged. P11 has passed the same sequence on its milestone branch before merge.
+The current `main` branch was verified with the full sequence above after P11 was merged.
 
 ## Milestone status
 
@@ -107,7 +107,7 @@ The current `main` branch was verified with the full sequence above after P10d w
 - P10b: Browser encrypted vault and account groups — complete.
 - P10c: Chain / RPC config and shared fee panel — complete.
 - P10d: Clean architecture rebase — merged to `main` and post-merge verified.
-- P11: Account library expansion — complete on milestone branch and awaiting merge.
+- P11: Account library expansion — merged to `main` and post-merge verified.
 
 ## Next milestone: P12 asset watchlist and balance snapshots
 
@@ -122,7 +122,7 @@ Recommended scope:
 
 ## Current risks and watch points
 
-- Do not claim future P11+ capabilities as current runtime behavior.
+- Do not claim future P12+ capabilities as current runtime behavior.
 - Do not mix chain settings into the encrypted vault unless a future migration explicitly requires it.
 - Do not introduce signing or broadcast controls before chain identity, fee, confirmation, history, and security review milestones are ready.
 - Do not copy 985monitor's plaintext private-key localStorage model.
@@ -131,4 +131,4 @@ Recommended scope:
 
 ## Overall assessment
 
-The repository is now in a healthy P11 milestone-branch state: the active product path is clear, the runtime remains small, the safety model is explicit, and the professional console architecture now has a practical selectable account-library input for later workflows without opening transaction execution paths. After P11 merges, the next product step is P12 asset watchlist and balance snapshots.
+The repository is now in a healthy P11-on-main state: the active product path is clear, the runtime remains small, the safety model is explicit, and the professional console architecture now has a practical selectable account-library input for later workflows without opening transaction execution paths. The next product step is P12 asset watchlist and balance snapshots.

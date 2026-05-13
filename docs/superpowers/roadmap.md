@@ -68,7 +68,7 @@ P10d has been merged into `main` and post-merge verified with the full PWA relea
 
 ### P11 Account library
 
-Complete on milestone branch `codex/p11-account-library`. Expand the encrypted-vault account model toward fast wallet-library operation.
+Merged to `main` and post-merge verified. Expand the encrypted-vault account model toward fast wallet-library operation.
 
 **Done when**
 
