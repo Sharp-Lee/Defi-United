@@ -52,6 +52,16 @@ export interface BrowserVaultState {
   groups: BrowserVaultGroupRecord[];
 }
 
+export interface BrowserVaultAccountLibrarySummary {
+  activeGroupAccountCount: number;
+  activeGroupName: string;
+  activeGroupNextAccountIndex: number;
+  activeGroupSelectedAccountCount: number;
+  totalAccountCount: number;
+  totalGroupCount: number;
+  totalSelectedAccountCount: number;
+}
+
 export interface BrowserVaultStateOptions {
   groupName?: string;
   mnemonicPhrase?: string;
@@ -190,7 +200,7 @@ export function deriveBrowserVaultAccounts(
   groupId: string,
   count: number,
 ): BrowserVaultState {
-  if (count <= 0) {
+  if (count <= 0 || !state.groups.some((group) => group.id === groupId)) {
     return state;
   }
 
@@ -202,27 +212,100 @@ export function deriveBrowserVaultAccounts(
       }
 
       const nextIndex = group.nextAccountIndex;
-      const newAccounts = Array.from({ length: count }, (_, offset) =>
-        deriveAccountRecord(group, nextIndex + offset, group.accounts.length === 0 && offset === 0),
-      );
-      const hasSelectedAccount = group.accounts.some((account) => account.selected);
+      const newAccounts = Array.from({ length: count }, (_, offset) => deriveAccountRecord(group, nextIndex + offset));
 
       return {
         ...group,
-        accounts: [
-          ...group.accounts.map((account) => ({
-            ...account,
-            selected: account.selected || (!hasSelectedAccount && newAccounts.length > 0 && false),
-          })),
-          ...newAccounts.map((account, index) => ({
-            ...account,
-            selected: index === 0 && !hasSelectedAccount,
-          })),
-        ],
+        accounts: [...group.accounts, ...newAccounts],
         nextAccountIndex: nextIndex + count,
         updatedAt: nowIso(),
       };
     }),
+  };
+}
+
+function updateAccountSelection(
+  state: BrowserVaultState,
+  groupId: string,
+  predicate: (account: BrowserVaultAccountRecord) => boolean,
+  selected: (account: BrowserVaultAccountRecord) => boolean,
+): BrowserVaultState {
+  let changed = false;
+  const timestamp = nowIso();
+
+  const groups = state.groups.map((group) => {
+    if (group.id !== groupId) {
+      return group;
+    }
+
+    const accounts = group.accounts.map((account) => {
+      if (!predicate(account)) {
+        return account;
+      }
+
+      const nextSelected = selected(account);
+      if (account.selected === nextSelected) {
+        return account;
+      }
+
+      changed = true;
+      return {
+        ...account,
+        selected: nextSelected,
+        updatedAt: timestamp,
+      };
+    });
+
+    return changed
+      ? {
+          ...group,
+          accounts,
+          updatedAt: timestamp,
+        }
+      : group;
+  });
+
+  return changed ? { ...state, groups } : state;
+}
+
+export function setBrowserVaultAccountSelection(
+  state: BrowserVaultState,
+  groupId: string,
+  accountId: string,
+  selected: boolean,
+): BrowserVaultState {
+  return updateAccountSelection(state, groupId, (account) => account.id === accountId, () => selected);
+}
+
+export function toggleBrowserVaultAccountSelection(
+  state: BrowserVaultState,
+  groupId: string,
+  accountId: string,
+): BrowserVaultState {
+  return updateAccountSelection(state, groupId, (account) => account.id === accountId, (account) => !account.selected);
+}
+
+export function selectAllBrowserVaultAccounts(state: BrowserVaultState, groupId: string): BrowserVaultState {
+  return updateAccountSelection(state, groupId, () => true, () => true);
+}
+
+export function clearBrowserVaultAccountSelection(state: BrowserVaultState, groupId: string): BrowserVaultState {
+  return updateAccountSelection(state, groupId, () => true, () => false);
+}
+
+export function summarizeBrowserVaultAccountLibrary(state: BrowserVaultState): BrowserVaultAccountLibrarySummary {
+  const activeGroup = getActiveBrowserVaultGroup(state);
+  const allAccounts = state.groups.flatMap((group) => group.accounts);
+  const activeGroupAccounts = activeGroup?.accounts ?? [];
+
+  return {
+    activeGroupAccountCount: activeGroupAccounts.length,
+    activeGroupName: activeGroup?.name ?? "未选择账户组",
+    activeGroupNextAccountIndex: activeGroup?.nextAccountIndex ?? 0,
+    activeGroupSelectedAccountCount: activeGroupAccounts.filter((account) => account.selected).length,
+    totalAccountCount: allAccounts.length,
+    totalGroupCount: state.groups.length,
+    totalSelectedAccountCount: allAccounts.filter((account) => account.selected).length,
   };
 }
 
