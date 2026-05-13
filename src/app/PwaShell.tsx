@@ -21,7 +21,8 @@ import {
 import { AccountsModule } from "../features/accounts/AccountsModule";
 import { PwaVaultAccessView } from "../features/accounts/PwaVaultAccessView";
 import { PwaVaultWorkspace } from "../features/accounts/PwaVaultWorkspace";
-import { PwaChainSettingsPanel } from "../features/pwaSettings/PwaChainSettingsPanel";
+import { PwaChainSettingsPanel } from "../features/settings/PwaChainSettingsPanel";
+import { SettingsModule } from "../features/settings/SettingsModule";
 import {
   createBrowserVaultSession,
   hasBrowserVault,
@@ -181,23 +182,25 @@ export function PwaShell({ vaultStorage, chainConfigStorage }: PwaShellProps = {
 
   function renderSettingsSection() {
     return (
-      <PwaChainSettingsPanel
-        activeChain={activeChain}
-        busy={chainConfigBusy}
-        chains={chainConfig?.chains ?? []}
-        error={chainConfigError}
-        onAddChain={(input) => updateChainConfig((state) => addBrowserChainRecord(state, input))}
-        onSelectChain={(chainId) => updateChainConfig((state) => selectBrowserChain(state, chainId))}
-        onUpdateChain={(chainId, updates) =>
-          updateChainConfig((state) => updateBrowserChainRecord(state, chainId, updates))
-        }
-        onUpdateFeeDraft={(chainId, updates) =>
-          updateFeeDraft((state) => updateBrowserFeeDraft(state, chainId, updates))
-        }
-        onUpdatePrimaryRpc={(chainId, updates) =>
-          updateChainConfig((state) => updatePrimaryRpcEndpoint(state, chainId, updates))
-        }
-      />
+      <SettingsModule>
+        <PwaChainSettingsPanel
+          activeChain={activeChain}
+          busy={chainConfigBusy}
+          chains={chainConfig?.chains ?? []}
+          error={chainConfigError}
+          onAddChain={(input) => updateChainConfig((state) => addBrowserChainRecord(state, input))}
+          onSelectChain={(chainId) => updateChainConfig((state) => selectBrowserChain(state, chainId))}
+          onUpdateChain={(chainId, updates) =>
+            updateChainConfig((state) => updateBrowserChainRecord(state, chainId, updates))
+          }
+          onUpdateFeeDraft={(chainId, updates) =>
+            updateFeeDraft((state) => updateBrowserFeeDraft(state, chainId, updates))
+          }
+          onUpdatePrimaryRpc={(chainId, updates) =>
+            updateChainConfig((state) => updatePrimaryRpcEndpoint(state, chainId, updates))
+          }
+        />
+      </SettingsModule>
     );
   }
 

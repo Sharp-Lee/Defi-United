@@ -18,6 +18,15 @@ function renderPwaShell() {
   return renderScreen(<PwaShell chainConfigStorage={chainConfigStorage} vaultStorage={vaultStorage} />);
 }
 
+function renderPwaShellWithSharedStorage() {
+  const vaultStorage = createMemoryBrowserVaultStorage();
+  const chainConfigStorage = createMemoryBrowserChainConfigStorage();
+  return {
+    chainConfigStorage,
+    render: () => renderScreen(<PwaShell chainConfigStorage={chainConfigStorage} vaultStorage={vaultStorage} />),
+  };
+}
+
 describe("PwaShell", () => {
   it("renders the Chinese PWA shell baseline", async () => {
     renderPwaShell();
@@ -60,6 +69,7 @@ describe("PwaShell", () => {
     fireEvent.click(screen.getByRole("button", { name: "设置" }));
 
     expect(await screen.findByRole("heading", { name: "设置" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "链与 Fee 设置" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Chain / RPC Config" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "共享 Fee Panel" })).toBeInTheDocument();
     expect(screen.getByDisplayValue("Ethereum Mainnet")).toBeInTheDocument();
@@ -72,6 +82,28 @@ describe("PwaShell", () => {
     await waitFor(() => expect(screen.getByDisplayValue("Base")).toBeInTheDocument());
     expect(screen.getByLabelText("Chain ID")).toHaveValue("8453");
     expect(screen.queryByRole("button", { name: /sign|broadcast|签名|广播|提交/i })).not.toBeInTheDocument();
+  });
+
+  it("persists RPC edits while resetting fee drafts across shell reloads", async () => {
+    const harness = renderPwaShellWithSharedStorage();
+    const firstRender = harness.render();
+
+    fireEvent.click(screen.getByRole("button", { name: "设置" }));
+    expect(await screen.findByRole("heading", { name: "Chain / RPC Config" })).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("RPC URL"), { target: { value: "https://rpc.example.local" } });
+    await waitFor(() => expect(screen.getByLabelText("RPC URL")).toHaveValue("https://rpc.example.local"));
+
+    fireEvent.change(screen.getByLabelText("Max Fee gwei"), { target: { value: "42" } });
+    await waitFor(() => expect(screen.getByLabelText("Max Fee gwei")).toHaveValue("42"));
+
+    firstRender.unmount();
+    harness.render();
+
+    fireEvent.click(screen.getByRole("button", { name: "设置" }));
+
+    expect(await screen.findByLabelText("RPC URL")).toHaveValue("https://rpc.example.local");
+    expect(screen.getByLabelText("Max Fee gwei")).toHaveValue("30");
   });
 
   it("keeps P10c+ wallet capabilities unavailable outside implemented sections", async () => {
