@@ -321,6 +321,7 @@ Queue errors use stable categories:
 - `broadcast-failed`
 - `rpc-rate-limited`
 - `user-stopped`
+- `nonce-consumed`
 - `unknown`
 
 User-facing messages must be sanitized. Raw provider errors can be summarized but not persisted verbatim unless they pass redaction.
