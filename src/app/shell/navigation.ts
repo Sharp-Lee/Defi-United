@@ -36,9 +36,9 @@ export const appModules: AppModuleDefinition[] = [
   {
     id: "assets",
     label: "资产",
-    summary: "规划承载原生币、ERC-20、NFT 和授权风险的浏览器侧资产视图。",
-    status: "planned",
-    planned: ["资产快照", "Token watchlist", "授权扫描与撤销入口"],
+    summary: "查看选中本地账户的原生币和 watched ERC-20 只读余额快照。",
+    status: "ready",
+    planned: ["链校验后余额刷新", "Token watchlist", "失败与陈旧状态"],
   },
   {
     id: "distribution",

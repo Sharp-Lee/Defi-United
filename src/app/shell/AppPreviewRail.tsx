@@ -8,7 +8,7 @@ export function AppPreviewRail() {
       </NoticePanel>
 
       <NoticePanel title="风险边界" tone="warning">
-        <p>当前 shell 不包含签名、广播、RPC 提交、余额扫描、分发归集执行或真实历史写入。</p>
+        <p>当前 shell 只允许 P12 只读余额刷新；仍不包含签名、广播、RPC 提交交易、分发归集执行或真实历史写入。</p>
       </NoticePanel>
 
       <NoticePanel title="队列">

@@ -9,12 +9,14 @@ import type { AppModuleId } from "./navigation";
 export function AppShell({
   accountsContent,
   activeModuleId,
+  assetsContent,
   onSelectModule,
   sessionSummary,
   settingsContent,
 }: {
   accountsContent: ReactNode;
   activeModuleId: AppModuleId;
+  assetsContent: ReactNode;
   onSelectModule(moduleId: AppModuleId): void;
   sessionSummary: AppSessionSummary;
   settingsContent: ReactNode;
@@ -27,6 +29,7 @@ export function AppShell({
         <AppWorkspace
           accountsContent={accountsContent}
           activeModuleId={activeModuleId}
+          assetsContent={assetsContent}
           settingsContent={settingsContent}
         />
       </section>
