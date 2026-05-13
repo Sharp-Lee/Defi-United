@@ -9,3 +9,5 @@ dist
 tsconfig.tsbuildinfo
 .worktrees
 .claude/
+
+.superpowers/
