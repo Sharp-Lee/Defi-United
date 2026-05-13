@@ -4,7 +4,7 @@
 
 DeFi United is now a browser-first, PWA-only EVM wallet workbench. The repository now keeps only the browser runtime, P10d console-shell architecture, browser encrypted vault, account-group model, local chain/RPC settings, and the tests/docs that support the active PWA mainline.
 
-The current baseline is intentionally small and safety-focused: it supports local encrypted vault creation/unlock/import/export/lock, deterministic EVM account derivation, account groups, Chinese console navigation, responsive layout, manifest metadata, local chain/RPC settings, and session-only fee drafts. P10d is completed on milestone branch `codex/p10d-clean-architecture-rebase` and is ready for merge after the controller's final release gate; it has not yet been merged into `main`. The app still does not sign, broadcast, submit RPC transactions, scan balances, run distribution / collection, execute ABI or calldata workflows, reverse-parse hot transactions, or write real transaction history.
+The current baseline is intentionally small and safety-focused: it supports local encrypted vault creation/unlock/import/export/lock, deterministic EVM account derivation, account groups, Chinese console navigation, responsive layout, manifest metadata, local chain/RPC settings, and session-only fee drafts. P10d has been merged into `main` and post-merge verified. The app still does not sign, broadcast, submit RPC transactions, scan balances, run distribution / collection, execute ABI or calldata workflows, reverse-parse hot transactions, or write real transaction history.
 
 ## Product direction
 
@@ -98,7 +98,7 @@ npm run smoke:browser
 git diff --check
 ```
 
-The current `main` branch was verified with the full sequence above after P10c. P10d has been implemented on `codex/p10d-clean-architecture-rebase`; the controller owns the final full release gate before merging it into `main`.
+The current `main` branch was verified with the full sequence above after P10d was merged.
 
 ## Milestone status
 
@@ -106,7 +106,7 @@ The current `main` branch was verified with the full sequence above after P10c. 
 - P10a: PWA shell and installability baseline — complete.
 - P10b: Browser encrypted vault and account groups — complete.
 - P10c: Chain / RPC config and shared fee panel — complete.
-- P10d: Clean architecture rebase — completed on milestone branch and ready for merge after final gate.
+- P10d: Clean architecture rebase — merged to `main` and post-merge verified.
 
 ## Next milestone: P11 account library expansion
 
@@ -130,4 +130,4 @@ Recommended scope:
 
 ## Overall assessment
 
-The repository is now in a healthy P10d milestone-branch state: the active product path is clear, the runtime remains small, the safety model is explicit, and the professional console architecture is in place without opening transaction execution paths. After the controller runs the final release gate and merges P10d, the next product step is P11 account library expansion.
+The repository is now in a healthy P10d mainline state: the active product path is clear, the runtime remains small, the safety model is explicit, and the professional console architecture is in place without opening transaction execution paths. The next product step is P11 account library expansion.

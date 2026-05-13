@@ -4,7 +4,7 @@
 
 - The active product mainline is browser-first PWA.
 - The repository is PWA-only; active development targets the browser runtime and PWA workflow.
-- The current delivered PWA milestone branch includes the P10d console-shell architecture, manifest/installability metadata, browser encrypted vault, account groups, deterministic account derivation, local chain/RPC settings, session-only fee drafts, and split source/style boundaries.
+- The current delivered PWA mainline includes the P10d console-shell architecture, manifest/installability metadata, browser encrypted vault, account groups, deterministic account derivation, local chain/RPC settings, session-only fee drafts, and split source/style boundaries.
 - The external product breadth benchmark is `https://985monitor.xyz/wallet/`, but DeFi United keeps a stricter encrypted-vault security model.
 - Current source of truth: `README.md`, `docs/specs/evm-wallet-workbench.md`, `docs/superpowers/project-overview.md`, `docs/superpowers/development-workflow.md`, and `docs/superpowers/project-status.md`.
 - Long-term wallet capability target: `docs/superpowers/specs/2026-05-13-wallet-benchmark-product-design.md`.
@@ -64,7 +64,7 @@ Reshape the current PWA baseline into a professional control-console architectur
 - The architecture reserves lanes for 985monitor-class wallet workflows without adopting plaintext private-key storage.
 - No signing, broadcasting, queue execution, balance scanning, distribution, inscription, ABI call, or reverse parsing behavior is shipped in P10d.
 
-P10d is complete on milestone branch `codex/p10d-clean-architecture-rebase` and ready for the controller's final full release gate. It has not yet been merged into `main`.
+P10d has been merged into `main` and post-merge verified with the full PWA release gate.
 
 ### P11 Account library
 
