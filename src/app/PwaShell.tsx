@@ -77,9 +77,7 @@ export interface PwaShellProps {
 
 function getAssetRefreshRpcEndpoint(chain: BrowserChainRecord | null) {
   if (!chain) return null;
-  return chain.rpcEndpoints.find((endpoint) => endpoint.primary && endpoint.enabled) ??
-    chain.rpcEndpoints.find((endpoint) => endpoint.enabled) ??
-    null;
+  return chain.rpcEndpoints.find((endpoint) => endpoint.primary && endpoint.enabled) ?? null;
 }
 
 export function PwaShell({
@@ -124,6 +122,7 @@ export function PwaShell({
     activeChain?.id ?? "no-chain",
     activeChain?.chainId ?? "no-chain-id",
     assetRefreshRpc?.id ?? "no-rpc",
+    assetRefreshRpc?.url ?? "no-rpc-url",
     assetRegistry.updatedAt,
     selectedAccounts.map((account) => `${account.id}:${account.address}`).join("|"),
   ].join("::");
@@ -186,6 +185,8 @@ export function PwaShell({
 
   useEffect(() => {
     assetRefreshRequestId.current += 1;
+    setAssetRefreshBusy(false);
+    setAssetRefreshState(EMPTY_ASSET_BALANCE_SNAPSHOT_STATE);
   }, [assetRefreshContextKey]);
 
   async function updateSession(nextSessionPromise: Promise<BrowserVaultSession>) {

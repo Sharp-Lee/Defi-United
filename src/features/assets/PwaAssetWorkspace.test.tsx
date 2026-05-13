@@ -161,7 +161,15 @@ describe("PwaAssetWorkspace", () => {
           refreshedAt: "2026-05-14T00:00:00.000Z",
         },
       ],
-      failures: [{ kind: "erc20", assetId: "asset-tok", message: "RPC timeout: token balance failed" }],
+      failures: [
+        {
+          kind: "erc20",
+          accountAddress: "0x0000000000000000000000000000000000000001",
+          assetId: "asset-tok",
+          tokenAddress: "0x00000000000000000000000000000000000000AA",
+          message: "RPC timeout: token balance failed",
+        },
+      ],
       refreshedAt: "2026-05-14T00:00:00.000Z",
     };
 
@@ -170,7 +178,9 @@ describe("PwaAssetWorkspace", () => {
     expect(screen.getByText("部分失败")).toBeInTheDocument();
     expect(screen.getByText("1.0 ETH")).toBeInTheDocument();
     expect(screen.getByText("1.23 TOK")).toBeInTheDocument();
-    expect(screen.getByText("RPC request failed: RPC timeout: token balance failed")).toBeInTheDocument();
+    expect(screen.getByText(/账户 0x0000000000000000000000000000000000000001/)).toBeInTheDocument();
+    expect(screen.getByText(/Token 0x00000000000000000000000000000000000000AA/)).toBeInTheDocument();
+    expect(screen.getByText(/RPC request failed: RPC timeout: token balance failed/)).toBeInTheDocument();
   });
 
   it("formats zero, trimmed decimals, tiny values, and large balances", () => {
@@ -237,12 +247,20 @@ describe("PwaAssetWorkspace", () => {
     const failedState: AssetBalanceSnapshotState = {
       ...EMPTY_ASSET_BALANCE_SNAPSHOT_STATE,
       status: "failed",
-      failures: [{ kind: "native", accountAddress: activeChain.id, message: `RPC failed at ${sensitiveUrl}` }],
+      failures: [
+        {
+          kind: "native",
+          accountAddress: "0x0000000000000000000000000000000000000001",
+          message: `RPC failed at ${sensitiveUrl}`,
+        },
+      ],
     };
 
     renderWorkspace({ error: `Could not reach ${sensitiveUrl}`, refreshState: failedState });
 
-    expect(screen.getAllByText(/Could not reach \[redacted-url\]|RPC failed at \[redacted-url\]/).length).toBe(2);
+    expect(screen.getByText(/Could not reach \[redacted-url\]/)).toBeInTheDocument();
+    expect(screen.getByText(/账户 0x0000000000000000000000000000000000000001/)).toBeInTheDocument();
+    expect(screen.getByText(/RPC failed at \[redacted-url\]/)).toBeInTheDocument();
     expect(screen.queryByText(/secret-token/)).not.toBeInTheDocument();
     expect(screen.queryByText(/apiKey/)).not.toBeInTheDocument();
   });

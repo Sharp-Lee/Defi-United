@@ -67,6 +67,19 @@ function failureKey(failure: AssetBalanceSnapshotState["failures"][number]) {
   ].join(":");
 }
 
+function failureAccountCopy(failure: AssetBalanceSnapshotState["failures"][number]) {
+  return failure.accountAddress ? `账户 ${failure.accountAddress}` : null;
+}
+
+function failureTokenCopy(
+  failure: AssetBalanceSnapshotState["failures"][number],
+  watchedAssets: ReturnType<typeof getEnabledWatchedErc20AssetsForChain>,
+) {
+  if (!failure.tokenAddress) return null;
+  const asset = watchedAssets.find((item) => item.id === failure.assetId || item.contractAddress === failure.tokenAddress);
+  return asset?.symbol ? `Token ${failure.tokenAddress} (${asset.symbol})` : `Token ${failure.tokenAddress}`;
+}
+
 export function PwaAssetWorkspace({
   activeChain,
   primaryRpc,
@@ -314,7 +327,9 @@ export function PwaAssetWorkspace({
           <ul className="asset-failure-list">
             {refreshState.failures.map((failure) => (
               <li key={failureKey(failure)}>
-                {sanitizeRpcErrorMessage(failure.message)}
+                {failureAccountCopy(failure) && <div>{failureAccountCopy(failure)}</div>}
+                {failureTokenCopy(failure, watchedAssets) && <div>{failureTokenCopy(failure, watchedAssets)}</div>}
+                <div>{sanitizeRpcErrorMessage(failure.message)}</div>
               </li>
             ))}
           </ul>

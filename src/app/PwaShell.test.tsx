@@ -135,6 +135,46 @@ async function createUnlockedShellWithDisabledRpc() {
   return { createAssetRpcClient };
 }
 
+async function createUnlockedShellWithDisabledPrimaryAndEnabledFallbackRpc() {
+  const chainConfig = createDefaultBrowserChainConfigState();
+  chainConfig.chains = chainConfig.chains.map((chain) => ({
+    ...chain,
+    rpcEndpoints: [
+      ...chain.rpcEndpoints.map((endpoint) => ({ ...endpoint, enabled: false, primary: true })),
+      {
+        id: "rpc-fallback",
+        label: "Fallback RPC",
+        url: "https://fallback.example.invalid/secret-token",
+        enabled: true,
+        primary: false,
+      },
+    ],
+  }));
+  const createAssetRpcClient = vi.fn(() => createMockRpcClient());
+  renderScreen(
+    <PwaShell
+      assetRegistryStorage={createMemoryBrowserAssetRegistryStorage()}
+      chainConfigStorage={createMemoryBrowserChainConfigStorage(chainConfig)}
+      createAssetRpcClient={createAssetRpcClient}
+      vaultStorage={createMemoryBrowserVaultStorage()}
+    />,
+  );
+
+  fireEvent.click(screen.getByRole("button", { name: "账户库" }));
+  fireEvent.change(await screen.findByLabelText("Vault 密码"), {
+    target: { value: "correct horse battery staple" },
+  });
+  fireEvent.change(screen.getByLabelText("确认密码"), {
+    target: { value: "correct horse battery staple" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "创建 vault" }));
+  await screen.findByRole("heading", { name: "账户与组" });
+
+  fireEvent.click(screen.getByRole("button", { name: "资产" }));
+  await screen.findByRole("button", { name: "刷新余额" });
+  return { createAssetRpcClient };
+}
+
 describe("PwaShell", () => {
   it("renders the Chinese PWA shell baseline", async () => {
     renderPwaShell();
@@ -267,6 +307,86 @@ describe("PwaShell", () => {
     expect(screen.getByText("RPC 未配置")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "刷新余额" })).toBeDisabled();
     expect(createAssetRpcClient).not.toHaveBeenCalled();
+  });
+
+  it("does not fall back to non-primary enabled RPC endpoints for asset refresh", async () => {
+    const { createAssetRpcClient } = await createUnlockedShellWithDisabledPrimaryAndEnabledFallbackRpc();
+
+    expect(screen.getByText("RPC 未配置")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "刷新余额" })).toBeDisabled();
+    expect(createAssetRpcClient).not.toHaveBeenCalled();
+  });
+
+  it("clears asset snapshots when the watched asset context changes", async () => {
+    await createUnlockedShellWithSelectedAccount();
+
+    fireEvent.click(screen.getByRole("button", { name: "刷新余额" }));
+    expect(await screen.findByText("1.0 ETH")).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("合约地址"), {
+      target: { value: "0x0000000000000000000000000000000000000010" },
+    });
+    fireEvent.change(screen.getByLabelText("符号"), { target: { value: "tok" } });
+    fireEvent.change(screen.getByLabelText("精度"), { target: { value: "6" } });
+    fireEvent.click(screen.getByRole("button", { name: "添加资产" }));
+
+    await waitFor(() => expect(screen.queryByText("1.0 ETH")).not.toBeInTheDocument());
+    expect(screen.getByText("原生余额 0")).toBeInTheDocument();
+    expect(screen.getByText("还没有原生余额快照。")).toBeInTheDocument();
+  });
+
+  it("clears asset snapshots when the primary RPC URL changes", async () => {
+    await createUnlockedShellWithSelectedAccount();
+
+    fireEvent.click(screen.getByRole("button", { name: "刷新余额" }));
+    expect(await screen.findByText("1.0 ETH")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "设置" }));
+    expect(await screen.findByRole("heading", { name: "Chain / RPC Config" })).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("RPC URL"), { target: { value: "https://rpc.example.local/new-url" } });
+    await waitFor(() => expect(screen.getByLabelText("RPC URL")).toHaveValue("https://rpc.example.local/new-url"));
+
+    fireEvent.click(screen.getByRole("button", { name: "资产" }));
+
+    await waitFor(() => expect(screen.queryByText("1.0 ETH")).not.toBeInTheDocument());
+    expect(screen.getByText("原生余额 0")).toBeInTheDocument();
+    expect(screen.getByText("还没有原生余额快照。")).toBeInTheDocument();
+  });
+
+  it("clears asset snapshots when the selected account context changes", async () => {
+    await createUnlockedShellWithSelectedAccount();
+
+    fireEvent.click(screen.getByRole("button", { name: "刷新余额" }));
+    expect(await screen.findByText("1.0 ETH")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "账户库" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: /^账户 1 / }));
+    await waitFor(() => expect(screen.getAllByText("当前组已选 0 / 1")).toHaveLength(2));
+
+    fireEvent.click(screen.getByRole("button", { name: "资产" }));
+
+    await waitFor(() => expect(screen.queryByText("1.0 ETH")).not.toBeInTheDocument());
+    expect(screen.getByText("请选择至少一个本地账户后再刷新余额。")).toBeInTheDocument();
+    expect(screen.getByText("原生余额 0")).toBeInTheDocument();
+    expect(screen.getByText("还没有原生余额快照。")).toBeInTheDocument();
+  });
+
+  it("clears asset snapshots when the active chain changes", async () => {
+    await createUnlockedShellWithSelectedAccount();
+
+    fireEvent.click(screen.getByRole("button", { name: "刷新余额" }));
+    expect(await screen.findByText("1.0 ETH")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "设置" }));
+    fireEvent.click(await screen.findByRole("button", { name: "添加 Base 示例链" }));
+    await waitFor(() => expect(screen.getByDisplayValue("Base")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: "资产" }));
+
+    await waitFor(() => expect(screen.queryByText("1.0 ETH")).not.toBeInTheDocument());
+    expect(screen.getByText("链 Base (8453)")).toBeInTheDocument();
+    expect(screen.getByText("原生余额 0")).toBeInTheDocument();
+    expect(screen.getByText("还没有原生余额快照。")).toBeInTheDocument();
   });
 
   it("clears asset snapshots when locking the vault", async () => {
