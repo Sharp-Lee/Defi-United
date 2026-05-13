@@ -169,6 +169,40 @@
   font-size: 15px;
 }
 
+.assets-section {
+  max-width: 1280px;
+}
+
+.asset-status-strip,
+.asset-watchlist-form,
+.asset-summary-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: end;
+}
+
+.asset-watchlist-form > label {
+  min-width: 150px;
+  flex: 1 1 170px;
+}
+
+.asset-table-grid {
+  display: grid;
+  gap: 14px;
+}
+
+.asset-table-wrap {
+  overflow-x: auto;
+}
+
+.asset-failure-list {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding-left: 18px;
+}
+
 .abi-summary-strip,
 .abi-validation-summary {
   display: flex;
