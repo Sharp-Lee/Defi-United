@@ -37,6 +37,7 @@ describe("PwaShell", () => {
       expect(screen.getByRole("button", { name: label })).toBeInTheDocument();
     }
     fireEvent.click(screen.getByRole("button", { name: "账户库" }));
+    expect(screen.getByRole("heading", { name: "账户库" })).toBeInTheDocument();
     await waitFor(() => expect(screen.getByLabelText("Vault 密码")).toBeInTheDocument());
   });
 

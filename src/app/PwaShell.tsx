@@ -18,8 +18,9 @@ import {
   updatePrimaryRpcEndpoint,
   type BrowserChainConfigState,
 } from "../core/browserChainConfig";
-import { PwaVaultAccessView } from "../features/pwaVault/PwaVaultAccessView";
-import { PwaVaultWorkspace } from "../features/pwaVault/PwaVaultWorkspace";
+import { AccountsModule } from "../features/accounts/AccountsModule";
+import { PwaVaultAccessView } from "../features/accounts/PwaVaultAccessView";
+import { PwaVaultWorkspace } from "../features/accounts/PwaVaultWorkspace";
 import { PwaChainSettingsPanel } from "../features/pwaSettings/PwaChainSettingsPanel";
 import {
   createBrowserVaultSession,
@@ -203,38 +204,42 @@ export function PwaShell({ vaultStorage, chainConfigStorage }: PwaShellProps = {
   function renderAccountsSection() {
     if (!session) {
       return (
-        <PwaVaultAccessView
-          busy={vaultBusy}
-          error={vaultError}
-          hasVault={vaultExists}
-          onCreateVault={handleCreateVault}
-          onImportVault={handleImportVault}
-          onUnlock={handleUnlock}
-        />
+        <AccountsModule>
+          <PwaVaultAccessView
+            busy={vaultBusy}
+            error={vaultError}
+            hasVault={vaultExists}
+            onCreateVault={handleCreateVault}
+            onImportVault={handleImportVault}
+            onUnlock={handleUnlock}
+          />
+        </AccountsModule>
       );
     }
 
     return (
-      <PwaVaultWorkspace
-        activeGroup={activeGroup}
-        busy={vaultBusy}
-        groups={session.state.groups}
-        onAddGroup={() => void persistVaultState(addBrowserVaultGroup(session.state, `账户组 ${session.state.groups.length + 1}`))}
-        onDeriveAccounts={(groupId, count) => void persistVaultState(deriveBrowserVaultAccounts(session.state, groupId, count))}
-        onExportVault={handleExportVault}
-        onLock={() => {
-          setSession(null);
-          setVaultError(null);
-        }}
-        onRenameAccount={(groupId, accountId, label) =>
-          void persistVaultState(renameBrowserVaultAccount(session.state, groupId, accountId, label))
-        }
-        onRenameGroup={(groupId, name) => void persistVaultState(renameBrowserVaultGroup(session.state, groupId, name))}
-        onSelectAccount={(groupId, accountId) =>
-          void persistVaultState(selectBrowserVaultAccount(session.state, groupId, accountId))
-        }
-        onSelectGroup={(groupId) => void persistVaultState(selectBrowserVaultGroup(session.state, groupId))}
-      />
+      <AccountsModule>
+        <PwaVaultWorkspace
+          activeGroup={activeGroup}
+          busy={vaultBusy}
+          groups={session.state.groups}
+          onAddGroup={() => void persistVaultState(addBrowserVaultGroup(session.state, `账户组 ${session.state.groups.length + 1}`))}
+          onDeriveAccounts={(groupId, count) => void persistVaultState(deriveBrowserVaultAccounts(session.state, groupId, count))}
+          onExportVault={handleExportVault}
+          onLock={() => {
+            setSession(null);
+            setVaultError(null);
+          }}
+          onRenameAccount={(groupId, accountId, label) =>
+            void persistVaultState(renameBrowserVaultAccount(session.state, groupId, accountId, label))
+          }
+          onRenameGroup={(groupId, name) => void persistVaultState(renameBrowserVaultGroup(session.state, groupId, name))}
+          onSelectAccount={(groupId, accountId) =>
+            void persistVaultState(selectBrowserVaultAccount(session.state, groupId, accountId))
+          }
+          onSelectGroup={(groupId) => void persistVaultState(selectBrowserVaultGroup(session.state, groupId))}
+        />
+      </AccountsModule>
     );
   }
 
