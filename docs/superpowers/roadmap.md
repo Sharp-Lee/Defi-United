@@ -68,7 +68,7 @@ P10d has been merged into `main` and post-merge verified with the full PWA relea
 
 ### P11 Account library
 
-Future milestone. Expand the encrypted-vault account model toward fast wallet-library operation.
+Complete on milestone branch `codex/p11-account-library`. Expand the encrypted-vault account model toward fast wallet-library operation.
 
 **Done when**
 
@@ -78,6 +78,8 @@ Future milestone. Expand the encrypted-vault account model toward fast wallet-li
 - Random account creation is available if it fits the encrypted vault model.
 - Any imported-private-key support has a dedicated safety spec before implementation.
 - Vanity generation remains deferred until the main transaction workflows are stable.
+
+P11 ships multi-select account helpers, account-library summary, default 20-account batch derivation, select all / clear selection controls, and encrypted-vault persistence of account selection state. It does not ship private-key import, vanity generation, signing, broadcasting, balance scanning, distribution, inscriptions, ABI calls, reverse parsing, or history writes.
 
 ### P12 Asset watchlist and balance snapshots
 

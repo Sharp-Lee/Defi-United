@@ -4,7 +4,7 @@
 
 DeFi United is now a browser-first, PWA-only EVM wallet workbench. The repository now keeps only the browser runtime, P10d console-shell architecture, browser encrypted vault, account-group model, local chain/RPC settings, and the tests/docs that support the active PWA mainline.
 
-The current baseline is intentionally small and safety-focused: it supports local encrypted vault creation/unlock/import/export/lock, deterministic EVM account derivation, account groups, Chinese console navigation, responsive layout, manifest metadata, local chain/RPC settings, and session-only fee drafts. P10d has been merged into `main` and post-merge verified. The app still does not sign, broadcast, submit RPC transactions, scan balances, run distribution / collection, execute ABI or calldata workflows, reverse-parse hot transactions, or write real transaction history.
+The current baseline is intentionally small and safety-focused: it supports local encrypted vault creation/unlock/import/export/lock, deterministic EVM account derivation, account groups, account-library multi-select and batch derivation, Chinese console navigation, responsive layout, manifest metadata, local chain/RPC settings, and session-only fee drafts. P11 is complete on branch `codex/p11-account-library` and awaiting milestone merge to `main`. The app still does not sign, broadcast, submit RPC transactions, scan balances, run distribution / collection, execute ABI or calldata workflows, reverse-parse hot transactions, or write real transaction history.
 
 ## Product direction
 
@@ -34,7 +34,7 @@ The current shipped PWA baseline includes:
 - Hot in-memory session semantics after unlock.
 - Account groups.
 - Deterministic EVM account derivation.
-- Account selection and simple rename/group operations.
+- Account multi-select, select all / clear, batch derivation, and simple rename/group operations.
 - Chinese console shell with left navigation, top context bar, main workspace, and right preview/risk rail.
 - Mobile-friendly layout baseline.
 - Web manifest and installability metadata.
@@ -98,7 +98,7 @@ npm run smoke:browser
 git diff --check
 ```
 
-The current `main` branch was verified with the full sequence above after P10d was merged.
+The current `main` branch was verified with the full sequence above after P10d was merged. P11 has passed the same sequence on its milestone branch before merge.
 
 ## Milestone status
 
@@ -107,17 +107,18 @@ The current `main` branch was verified with the full sequence above after P10d w
 - P10b: Browser encrypted vault and account groups — complete.
 - P10c: Chain / RPC config and shared fee panel — complete.
 - P10d: Clean architecture rebase — merged to `main` and post-merge verified.
+- P11: Account library expansion — complete on milestone branch and awaiting merge.
 
-## Next milestone: P11 account library expansion
+## Next milestone: P12 asset watchlist and balance snapshots
 
-P11 should expand the encrypted-vault account model into a faster local account library without opening transaction execution paths.
+P12 should add asset visibility on top of P11's selectable local account library without opening transaction execution paths beyond read-only RPC calls.
 
 Recommended scope:
 
-- Derive and manage larger account sets inside encrypted mnemonic groups.
-- Improve account labels, group workflows, and local selection ergonomics.
-- Keep account metadata and any future secret-bearing account material inside the encrypted vault boundary.
-- Keep signing, broadcasting, nonce submission, balance scanning, distribution, inscriptions, ABI calls, reverse parsing, and history writes deferred to later milestones.
+- Display native balances for selected local accounts after chain identity validation.
+- Add a watched ERC-20 list and token balance snapshots.
+- Mark stale, failed, or partial refreshes explicitly instead of silently showing zero.
+- Keep signing, broadcasting, nonce submission, distribution, inscriptions, ABI calls, reverse parsing, and history writes deferred to later milestones.
 
 ## Current risks and watch points
 
@@ -130,4 +131,4 @@ Recommended scope:
 
 ## Overall assessment
 
-The repository is now in a healthy P10d mainline state: the active product path is clear, the runtime remains small, the safety model is explicit, and the professional console architecture is in place without opening transaction execution paths. The next product step is P11 account library expansion.
+The repository is now in a healthy P11 milestone-branch state: the active product path is clear, the runtime remains small, the safety model is explicit, and the professional console architecture now has a practical selectable account-library input for later workflows without opening transaction execution paths. After P11 merges, the next product step is P12 asset watchlist and balance snapshots.
