@@ -30,6 +30,7 @@ This file records the current PWA-only milestones. For the broader current-state
 | P11-P18 | Full wallet workbench product target | `main` | `e164c31` | self-reviewed | `git diff --check` | yes | yes | Product capability spec records account, asset, queue, distribution, inscription, ABI, reverse parsing, and mobile/release requirements. |
 | P12 | Asset watchlist and balance snapshots spec | `codex/p12-asset-watchlist` | `0330edb` | self-reviewed | `git diff --check` | no | no | Defines read-only asset visibility, chainId validation, watched ERC-20 definitions, session-only balance snapshots, stale/partial/error states, and no-send boundaries. |
 | P12 | Asset watchlist implementation plan | `codex/p12-asset-watchlist` | `0da00de` | self-reviewed | `git diff --check` | no | no | Decomposes P12 into asset registry, balance refresh core, asset UI, shell integration/smoke, docs, and release-gate tasks. |
+| P12 | Asset registry core and storage | `codex/p12-asset-watchlist` | `5f49381` | spec passed; quality passed after re-review | `npm test -- src/core/assets/browserAssetRegistry.test.ts src/lib/browserAssetRegistry.test.ts`; `npm run typecheck`; `git diff --check` | no | no | Adds local watched ERC-20 registry and storage with canonical persisted-state validation, duplicate protection, localStorage key coverage, and no balance/secret persistence. |
 
 ## Next
 
