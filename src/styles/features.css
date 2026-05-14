@@ -173,6 +173,19 @@
   max-width: 1280px;
 }
 
+.queue-section {
+  display: grid;
+  max-width: 1280px;
+  gap: 16px;
+}
+
+.queue-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
 .asset-status-strip,
 .asset-watchlist-form,
 .asset-summary-strip {
