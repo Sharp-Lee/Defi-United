@@ -3,8 +3,10 @@ import { Interface } from "ethers";
 import { describe, expect, it, vi } from "vitest";
 import { createInitialBrowserVaultState } from "../core/browserVault/accounts";
 import { createDefaultBrowserChainConfigState } from "../core/browserChainConfig";
+import { createDefaultQueuePolicy, type PreparedQueueTransactionDraft, type QueueJobRecord, type QueueTransactionRecord } from "../core/queue";
 import { createMemoryBrowserAssetRegistryStorage } from "../lib/browserAssetRegistry";
 import { createMemoryBrowserChainConfigStorage } from "../lib/browserChainConfig";
+import { createMemoryBrowserQueueHistoryStorage, type BrowserQueueHistoryStorage } from "../lib/browserQueueHistory";
 import {
   createBrowserVaultSession,
   createMemoryBrowserVaultStorage,
@@ -12,18 +14,90 @@ import {
 } from "../lib/browserVault";
 import type { BrowserJsonRpcClient } from "../services/rpc/browserJsonRpcClient";
 import { renderScreen } from "../test/render";
-import { PwaShell } from "./PwaShell";
+import { normalizeQueueRecoveryErrorMessage, PwaShell } from "./PwaShell";
 
 const primaryNavLabels = ["总览", "账户库", "资产", "分发/归集", "铭文刻录", "合约调用", "队列/历史", "设置"];
+const queueCreatedAt = "2026-05-14T00:00:00.000Z";
+
+function stoppedQueueFixture() {
+  const transaction: QueueTransactionRecord = {
+    id: "queue-tx-1",
+    jobId: "queue-job-1",
+    chainId: 1,
+    accountId: "account-1",
+    accountAddress: "0x0000000000000000000000000000000000000001",
+    nonce: 7,
+    status: "stopped",
+    actionType: "raw-calldata",
+    target: "0x0000000000000000000000000000000000000002",
+    valueWei: "0",
+    calldataSummary: { selector: "0x64617461", byteLength: 4, summary: "0x64617461 · 4 bytes" },
+    feeSummary: {
+      mode: "eip1559",
+      gasLimit: "21000",
+      maxFeePerGasGwei: "30",
+      maxPriorityFeePerGasGwei: "1.5",
+    },
+    txHash: null,
+    error: {
+      category: "user-stopped",
+      message: "stopped before transaction started",
+      retryable: true,
+    },
+    createdAt: queueCreatedAt,
+    updatedAt: queueCreatedAt,
+  };
+  const job: QueueJobRecord = {
+    id: "queue-job-1",
+    chainId: 1,
+    title: "测试恢复队列",
+    sourceModule: "queue",
+    status: "stopped",
+    createdAt: queueCreatedAt,
+    updatedAt: queueCreatedAt,
+    executionPolicy: createDefaultQueuePolicy(),
+    transactionIds: [transaction.id],
+    summary: { total: 1, pending: 0, failed: 0, stopped: 1, completed: 0 },
+  };
+  const draft: PreparedQueueTransactionDraft = {
+    id: "queue-draft-1",
+    chainId: 1,
+    accountId: transaction.accountId,
+    accountAddress: transaction.accountAddress,
+    to: transaction.target,
+    valueWei: transaction.valueWei,
+    data: "0x64617461",
+    gasLimit: transaction.feeSummary.gasLimit,
+    fee: {
+      mode: "eip1559",
+      gasLimit: transaction.feeSummary.gasLimit,
+      maxFeePerGasGwei: "30",
+      maxPriorityFeePerGasGwei: "1.5",
+    },
+    actionType: transaction.actionType,
+    preview: {
+      title: "测试恢复交易",
+      description: "session-only recovery fixture",
+      calldata: transaction.calldataSummary,
+    },
+  };
+
+  return {
+    activeRun: { jobs: [job], status: "stopped" as const, transactions: [transaction] },
+    draftsByTransactionId: new Map([[transaction.id, draft]]),
+  };
+}
 
 function renderPwaShell() {
   const vaultStorage = createMemoryBrowserVaultStorage();
   const chainConfigStorage = createMemoryBrowserChainConfigStorage();
   const assetRegistryStorage = createMemoryBrowserAssetRegistryStorage();
+  const queueHistoryStorage = createMemoryBrowserQueueHistoryStorage();
   return renderScreen(
     <PwaShell
       assetRegistryStorage={assetRegistryStorage}
       chainConfigStorage={chainConfigStorage}
+      queueHistoryStorage={queueHistoryStorage}
       vaultStorage={vaultStorage}
     />,
   );
@@ -33,14 +107,17 @@ function renderPwaShellWithSharedStorage() {
   const vaultStorage = createMemoryBrowserVaultStorage();
   const chainConfigStorage = createMemoryBrowserChainConfigStorage();
   const assetRegistryStorage = createMemoryBrowserAssetRegistryStorage();
+  const queueHistoryStorage = createMemoryBrowserQueueHistoryStorage();
   return {
     assetRegistryStorage,
     chainConfigStorage,
+    queueHistoryStorage,
     render: () =>
       renderScreen(
         <PwaShell
           assetRegistryStorage={assetRegistryStorage}
           chainConfigStorage={chainConfigStorage}
+          queueHistoryStorage={queueHistoryStorage}
           vaultStorage={vaultStorage}
         />,
       ),
@@ -75,6 +152,18 @@ function createDeferred<T>() {
     reject = rejectPromise;
   });
   return { promise, reject, resolve };
+}
+
+async function unlockCurrentShell() {
+  fireEvent.click(screen.getByRole("button", { name: "账户库" }));
+  fireEvent.change(await screen.findByLabelText("Vault 密码"), {
+    target: { value: "correct horse battery staple" },
+  });
+  fireEvent.change(screen.getByLabelText("确认密码"), {
+    target: { value: "correct horse battery staple" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "创建 vault" }));
+  await screen.findByRole("heading", { name: "账户与组" });
 }
 
 async function createUnlockedShellWithSelectedAccount(rpcClient: BrowserJsonRpcClient = createMockRpcClient()) {
@@ -176,6 +265,12 @@ async function createUnlockedShellWithDisabledPrimaryAndEnabledFallbackRpc() {
 }
 
 describe("PwaShell", () => {
+  it("normalizes missing current-tab queue drafts to the fixed recovery boundary message", () => {
+    expect(normalizeQueueRecoveryErrorMessage(new Error("current-tab prepared drafts are required for queue recovery"))).toBe(
+      "恢复、重试和续跑需要当前标签页的未关闭队列草稿；仅凭本地历史不能继续。",
+    );
+  });
+
   it("renders the Chinese PWA shell baseline", async () => {
     renderPwaShell();
 
@@ -187,7 +282,8 @@ describe("PwaShell", () => {
     expect(screen.getByText("Max 30 gwei")).toBeInTheDocument();
     expect(screen.getByText("Tip 1.5 gwei")).toBeInTheDocument();
     expect(screen.getByText("Base 2x")).toBeInTheDocument();
-    expect(screen.getAllByText(/P13 前仅占位，不运行签名或广播队列/)).toHaveLength(2);
+    expect(screen.getByText(/P13 仅展示队列与脱敏历史预览/)).toBeInTheDocument();
+    expect(screen.getByText(/P13 队列\/历史用于观察、停止、恢复、重试和脱敏导出/)).toBeInTheDocument();
     await waitFor(() => expect(screen.getByRole("heading", { name: "总览" })).toBeInTheDocument());
   });
 
@@ -267,6 +363,161 @@ describe("PwaShell", () => {
     expect(screen.getByText(/不会运行签名、广播、RPC 提交/)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /sign|broadcast|签名|广播/i })).not.toBeInTheDocument();
     await waitFor(() => expect(screen.getByRole("heading", { name: "合约调用" })).toBeInTheDocument());
+  });
+
+  it("renders queue history workspace without arbitrary send controls", async () => {
+    renderPwaShell();
+
+    fireEvent.click(screen.getByRole("button", { name: "队列/历史" }));
+    const workspace = within(screen.getByLabelText("主工作区"));
+
+    expect(await screen.findByRole("heading", { name: "队列/历史" })).toBeInTheDocument();
+    expect(screen.getByText(/不提供任意交易发送表单/)).toBeInTheDocument();
+    expect(screen.getByLabelText("并发数")).toHaveValue(20);
+    expect(screen.getByLabelText("失败后继续其他账户")).toBeChecked();
+    expect(screen.getByLabelText("从失败 nonce 续跑")).toBeChecked();
+    expect(
+      workspace.queryByRole("button", {
+        name: /签名|广播|提交|发送|分发|归集|approve|ABI|calldata/i,
+      }),
+    ).not.toBeInTheDocument();
+    expect(workspace.queryByLabelText(/ABI|calldata|目标地址|合约地址|私钥|金额|转账|签名|广播/i)).not.toBeInTheDocument();
+  });
+
+  it("does not overwrite queue history storage after a failed initial load", async () => {
+    const queueHistoryStorage: BrowserQueueHistoryStorage = {
+      clearState: vi.fn(),
+      loadState: vi.fn().mockRejectedValue(new Error("Invalid queue history state.")),
+      saveState: vi.fn(),
+    };
+    renderScreen(
+      <PwaShell
+        assetRegistryStorage={createMemoryBrowserAssetRegistryStorage()}
+        chainConfigStorage={createMemoryBrowserChainConfigStorage()}
+        queueHistoryStorage={queueHistoryStorage}
+        vaultStorage={createMemoryBrowserVaultStorage()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "队列/历史" }));
+
+    expect(await screen.findByText(/Invalid queue history state/)).toBeInTheDocument();
+    await waitFor(() => expect(queueHistoryStorage.saveState).not.toHaveBeenCalled());
+  });
+
+  it("redacts queue history save failures without an RPC error prefix", async () => {
+    const queueHistoryStorage: BrowserQueueHistoryStorage = {
+      clearState: vi.fn(),
+      loadState: vi.fn(async () => createMemoryBrowserQueueHistoryStorage().loadState()),
+      saveState: vi.fn().mockRejectedValue(
+        new Error("save failed https://rpc.example.test/path?apiKey=secret /Users/wukong/secret-wallet"),
+      ),
+    };
+    renderScreen(
+      <PwaShell
+        assetRegistryStorage={createMemoryBrowserAssetRegistryStorage()}
+        chainConfigStorage={createMemoryBrowserChainConfigStorage()}
+        queueHistoryStorage={queueHistoryStorage}
+        vaultStorage={createMemoryBrowserVaultStorage()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "队列/历史" }));
+
+    expect(await screen.findByText(/save failed \[redacted-url\]/)).toBeInTheDocument();
+    expect(screen.queryByText(/RPC request failed/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/rpc\.example|apiKey|Users\/wukong/)).not.toBeInTheDocument();
+  });
+
+  it("prevents duplicate queue recovery runs and lets stop signal the active runner", async () => {
+    const queue = stoppedQueueFixture();
+    const signedTransaction = createDeferred<string>();
+    const queueSigner = {
+      signTransaction: vi.fn(() => signedTransaction.promise),
+    };
+    const queueBroadcaster = {
+      broadcastSignedTransaction: vi.fn(async () => "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+      getPendingNonce: vi.fn(async () => 7),
+      validateChainId: vi.fn(async () => 1),
+    };
+    renderScreen(
+      <PwaShell
+        assetRegistryStorage={createMemoryBrowserAssetRegistryStorage()}
+        chainConfigStorage={createMemoryBrowserChainConfigStorage()}
+        initialQueueActiveRun={queue.activeRun}
+        initialQueueSessionDrafts={queue.draftsByTransactionId}
+        queueBroadcaster={queueBroadcaster}
+        queueHistoryStorage={createMemoryBrowserQueueHistoryStorage()}
+        queueSigner={queueSigner}
+        vaultStorage={createMemoryBrowserVaultStorage()}
+      />,
+    );
+
+    await unlockCurrentShell();
+    await screen.findByText("Public RPC");
+    fireEvent.click(screen.getByRole("button", { name: "队列/历史" }));
+    expect(await screen.findByText("当前队列 已停止")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "恢复停止项" }));
+    fireEvent.click(screen.getByRole("button", { name: "恢复停止项" }));
+
+    await waitFor(() => expect(queueSigner.signTransaction).toHaveBeenCalledTimes(1));
+    expect(screen.getByRole("button", { name: "恢复停止项" })).toBeDisabled();
+    expect(screen.getByText("当前队列 运行中")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "停止队列" }));
+    expect(await screen.findByText("当前队列 停止中")).toBeInTheDocument();
+
+    await act(async () => {
+      signedTransaction.resolve("0xf86c");
+      await signedTransaction.promise;
+    });
+
+    await waitFor(() => expect(screen.getByText("当前队列 已停止")).toBeInTheDocument());
+    expect(queueBroadcaster.broadcastSignedTransaction).not.toHaveBeenCalled();
+  });
+
+  it("restores the active run status when queue recovery throws", async () => {
+    const queue = stoppedQueueFixture();
+    const queueSigner = {
+      signTransaction: vi.fn(async () => "0xf86c"),
+    };
+    const queueBroadcaster = {
+      broadcastSignedTransaction: vi.fn(async () => "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+      getPendingNonce: vi.fn(async () => 7),
+      validateChainId: vi.fn(async () => 1),
+    };
+    renderScreen(
+      <PwaShell
+        assetRegistryStorage={createMemoryBrowserAssetRegistryStorage()}
+        chainConfigStorage={createMemoryBrowserChainConfigStorage()}
+        initialQueueActiveRun={queue.activeRun}
+        initialQueueSessionDrafts={new Map([
+          [
+            "queue-tx-1",
+            {
+              ...queue.draftsByTransactionId.get("queue-tx-1")!,
+              data: "0x12345678",
+            },
+          ],
+        ])}
+        queueBroadcaster={queueBroadcaster}
+        queueHistoryStorage={createMemoryBrowserQueueHistoryStorage()}
+        queueSigner={queueSigner}
+        vaultStorage={createMemoryBrowserVaultStorage()}
+      />,
+    );
+
+    await unlockCurrentShell();
+    await screen.findByText("Public RPC");
+    fireEvent.click(screen.getByRole("button", { name: "队列/历史" }));
+
+    fireEvent.click(screen.getByRole("button", { name: "恢复停止项" }));
+
+    await waitFor(() => expect(screen.getByText("当前队列 已停止")).toBeInTheDocument());
+    expect(screen.getByText(/current-tab prepared draft does not match queue history record/)).toBeInTheDocument();
+    expect(queueSigner.signTransaction).not.toHaveBeenCalled();
+    expect(queueBroadcaster.broadcastSignedTransaction).not.toHaveBeenCalled();
   });
 
   it("refreshes asset balances through chain-validated RPC without send controls", async () => {

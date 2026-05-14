@@ -24,6 +24,7 @@ export interface PwaQueueActiveRun {
 
 export interface PwaQueueHistoryWorkspaceProps {
   activeRun: PwaQueueActiveRun | null;
+  busy?: boolean;
   history: QueueHistoryState;
   policy: QueueExecutionPolicy;
   unlocked: boolean;
@@ -104,6 +105,7 @@ function policyNumberValue(value: number) {
 
 export function PwaQueueHistoryWorkspace({
   activeRun,
+  busy = false,
   history,
   policy,
   unlocked,
@@ -117,6 +119,7 @@ export function PwaQueueHistoryWorkspace({
   const activeTransactions = activeRun?.transactions ?? [];
   const activeSummary = summarizeTransactions(activeTransactions);
   const operationDisabled = !unlocked || !activeRun;
+  const recoveryDisabled = operationDisabled || busy;
 
   function updatePolicy(patch: Partial<QueueExecutionPolicy>) {
     onPolicyChange({ ...policy, ...patch });
@@ -212,13 +215,13 @@ export function PwaQueueHistoryWorkspace({
           <button disabled={operationDisabled} onClick={onStop} type="button">
             停止队列
           </button>
-          <button className="secondary-button" disabled={operationDisabled} onClick={onResume} type="button">
+          <button className="secondary-button" disabled={recoveryDisabled} onClick={onResume} type="button">
             恢复停止项
           </button>
-          <button className="secondary-button" disabled={operationDisabled} onClick={onRetryFailed} type="button">
+          <button className="secondary-button" disabled={recoveryDisabled} onClick={onRetryFailed} type="button">
             重试失败
           </button>
-          <button className="secondary-button" disabled={operationDisabled} onClick={onRerunFromFailedNonce} type="button">
+          <button className="secondary-button" disabled={recoveryDisabled} onClick={onRerunFromFailedNonce} type="button">
             从失败 nonce 续跑
           </button>
         </div>

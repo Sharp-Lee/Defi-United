@@ -27,6 +27,17 @@ test("PWA shell loads and exposes the browser-first baseline", async ({ page }) 
   await expect(page.getByText(/不会运行签名、广播、RPC 提交/)).toBeVisible();
 });
 
+test("PWA queue history opens without arbitrary send forms", async ({ page }) => {
+  await page.goto("/");
+
+  await page.getByRole("button", { name: "队列/历史" }).click();
+
+  const workspace = page.getByLabel("主工作区");
+  await expect(page.getByRole("heading", { name: "队列/历史" })).toBeVisible();
+  await expect(page.getByText(/不提供任意交易发送表单/)).toBeVisible();
+  await expect(workspace.getByRole("button", { name: /签名|广播|提交|发送|分发|归集|approve|ABI|calldata/i })).toHaveCount(0);
+});
+
 test("PWA account vault creates, batch-derives, multi-selects, and locks without RPC actions", async ({ page }) => {
   await page.goto("/");
   await page.getByRole("button", { name: "账户库" }).click();

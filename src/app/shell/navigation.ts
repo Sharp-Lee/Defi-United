@@ -64,9 +64,9 @@ export const appModules: AppModuleDefinition[] = [
   {
     id: "queueHistory",
     label: "队列/历史",
-    summary: "规划承载本地任务队列、交易历史、批量任务记录和可恢复诊断。",
-    status: "planned",
-    planned: ["本地历史记录", "pending/replaced/recovered 状态", "敏感字段脱敏诊断"],
+    summary: "本地任务队列、脱敏交易历史、停止/恢复/重试和可恢复诊断。",
+    status: "ready",
+    planned: ["队列策略", "脱敏历史", "停止/恢复/重试"],
   },
   {
     id: "settings",

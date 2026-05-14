@@ -11,6 +11,7 @@ export function AppShell({
   activeModuleId,
   assetsContent,
   onSelectModule,
+  queueContent,
   sessionSummary,
   settingsContent,
 }: {
@@ -18,6 +19,7 @@ export function AppShell({
   activeModuleId: AppModuleId;
   assetsContent: ReactNode;
   onSelectModule(moduleId: AppModuleId): void;
+  queueContent: ReactNode;
   sessionSummary: AppSessionSummary;
   settingsContent: ReactNode;
 }) {
@@ -30,6 +32,7 @@ export function AppShell({
           accountsContent={accountsContent}
           activeModuleId={activeModuleId}
           assetsContent={assetsContent}
+          queueContent={queueContent}
           settingsContent={settingsContent}
         />
       </section>

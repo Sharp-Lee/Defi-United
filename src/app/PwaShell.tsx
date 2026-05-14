@@ -34,11 +34,30 @@ import {
   type BrowserChainRecord,
   type BrowserChainConfigState,
 } from "../core/browserChainConfig";
+import {
+  appendQueueHistoryRecords,
+  createDefaultQueueHistoryState,
+  createDefaultQueuePolicy,
+  exportRedactedQueueHistory,
+  rerunQueueFromFailedNonce,
+  resumeStoppedQueueJob,
+  retryFailedQueueJob,
+  sanitizeQueueMessage,
+  type PreparedQueueTransactionDraft,
+  type QueueBroadcaster,
+  type QueueExecutionPolicy,
+  type QueueHistoryState,
+  type QueueJobRecord,
+  type QueueSigner,
+  type QueueTransactionRecord,
+} from "../core/queue";
 import { AccountsModule } from "../features/accounts/AccountsModule";
 import { PwaVaultAccessView } from "../features/accounts/PwaVaultAccessView";
 import { PwaVaultWorkspace } from "../features/accounts/PwaVaultWorkspace";
 import { AssetsModule } from "../features/assets/AssetsModule";
 import { PwaAssetWorkspace } from "../features/assets/PwaAssetWorkspace";
+import { QueueModule } from "../features/queue/QueueModule";
+import { PwaQueueHistoryWorkspace, type PwaQueueActiveRun } from "../features/queue/PwaQueueHistoryWorkspace";
 import { PwaChainSettingsPanel } from "../features/settings/PwaChainSettingsPanel";
 import { SettingsModule } from "../features/settings/SettingsModule";
 import {
@@ -62,6 +81,11 @@ import {
   saveBrowserChainConfigState,
   type BrowserChainConfigStorage,
 } from "../lib/browserChainConfig";
+import {
+  loadBrowserQueueHistoryState,
+  saveBrowserQueueHistoryState,
+  type BrowserQueueHistoryStorage,
+} from "../lib/browserQueueHistory";
 import { createBrowserJsonRpcClient, sanitizeRpcErrorMessage } from "../services/rpc/browserJsonRpcClient";
 import { AppShell } from "./shell/AppShell";
 import type { AppModuleId } from "./shell/navigation";
@@ -73,6 +97,11 @@ export interface PwaShellProps {
   chainConfigStorage?: BrowserChainConfigStorage;
   assetRegistryStorage?: BrowserAssetRegistryStorage;
   createAssetRpcClient?: (rpcUrl: string) => AssetBalanceRpcClient;
+  initialQueueActiveRun?: PwaQueueActiveRun | null;
+  initialQueueSessionDrafts?: Map<string, PreparedQueueTransactionDraft>;
+  queueBroadcaster?: QueueBroadcaster;
+  queueHistoryStorage?: BrowserQueueHistoryStorage;
+  queueSigner?: QueueSigner;
 }
 
 function getAssetRefreshRpcEndpoint(chain: BrowserChainRecord | null) {
@@ -80,11 +109,29 @@ function getAssetRefreshRpcEndpoint(chain: BrowserChainRecord | null) {
   return chain.rpcEndpoints.find((endpoint) => endpoint.primary && endpoint.enabled) ?? null;
 }
 
+function toQueueActiveRunStatus(status: QueueJobRecord["status"]): PwaQueueActiveRun["status"] {
+  if (status === "draft" || status === "queued") return "idle";
+  return status;
+}
+
+export function normalizeQueueRecoveryErrorMessage(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  if (message.includes("current-tab prepared drafts")) {
+    return "恢复、重试和续跑需要当前标签页的未关闭队列草稿；仅凭本地历史不能继续。";
+  }
+  return sanitizeQueueMessage(error);
+}
+
 export function PwaShell({
   vaultStorage,
   chainConfigStorage,
   assetRegistryStorage,
   createAssetRpcClient,
+  initialQueueActiveRun = null,
+  initialQueueSessionDrafts,
+  queueBroadcaster,
+  queueHistoryStorage,
+  queueSigner,
 }: PwaShellProps = {}) {
   const [activeModuleId, setActiveModuleId] = useState<AppModuleId>(getDefaultModuleId());
   const [session, setSession] = useState<BrowserVaultSession | null>(null);
@@ -102,6 +149,17 @@ export function PwaShell({
     EMPTY_ASSET_BALANCE_SNAPSHOT_STATE,
   );
   const [assetRefreshBusy, setAssetRefreshBusy] = useState(false);
+  const [queueHistory, setQueueHistory] = useState<QueueHistoryState>(createDefaultQueueHistoryState());
+  const [queuePolicy, setQueuePolicy] = useState<QueueExecutionPolicy>(createDefaultQueuePolicy());
+  const [queueError, setQueueError] = useState<string | null>(null);
+  const [queueHistoryLoaded, setQueueHistoryLoaded] = useState(false);
+  const [queueActiveRun, setQueueActiveRun] = useState<PwaQueueActiveRun | null>(initialQueueActiveRun);
+  const [queueRecoveryBusy, setQueueRecoveryBusy] = useState(false);
+  const [queueSessionDrafts] = useState<Map<string, PreparedQueueTransactionDraft>>(
+    () => new Map(initialQueueSessionDrafts),
+  );
+  const queueRecoveryBusyRef = useRef(false);
+  const queueRecoveryStopRef = useRef(false);
   const assetRefreshRequestId = useRef(0);
   const assetRefreshStateRef = useRef(assetRefreshState);
   const activeGroup = session ? getActiveBrowserVaultGroup(session.state) : null;
@@ -178,6 +236,35 @@ export function PwaShell({
       cancelled = true;
     };
   }, [assetRegistryStorage]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setQueueHistoryLoaded(false);
+    void loadBrowserQueueHistoryState(queueHistoryStorage)
+      .then((state) => {
+        if (!cancelled) {
+          setQueueHistory(state);
+          setQueueError(null);
+          setQueueHistoryLoaded(true);
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setQueueError(sanitizeQueueMessage(err));
+          setQueueHistoryLoaded(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [queueHistoryStorage]);
+
+  useEffect(() => {
+    if (!queueHistoryLoaded) return;
+    void saveBrowserQueueHistoryState(queueHistory, queueHistoryStorage).catch((err) => {
+      setQueueError(sanitizeQueueMessage(err));
+    });
+  }, [queueHistory, queueHistoryLoaded, queueHistoryStorage]);
 
   useEffect(() => {
     assetRefreshStateRef.current = assetRefreshState;
@@ -347,6 +434,76 @@ export function PwaShell({
     URL.revokeObjectURL(url);
   }
 
+  function handleExportQueueHistory() {
+    const serialized = exportRedactedQueueHistory(queueHistory);
+    const blob = new Blob([serialized], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = "defi-united-redacted-queue-history.json";
+    anchor.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function mergeQueueRunResult(result: {
+    historyUpdates: QueueTransactionRecord[];
+    job: QueueJobRecord;
+    transactions: QueueTransactionRecord[];
+  }) {
+    setQueueHistory((previous) => {
+      const updateById = new Map(result.historyUpdates.map((transaction) => [transaction.id, transaction]));
+      const updatedTransactions = previous.transactions.map((transaction) => updateById.get(transaction.id) ?? transaction);
+      return appendQueueHistoryRecords(
+        { ...previous, transactions: updatedTransactions },
+        { jobs: [result.job], transactions: result.transactions },
+      );
+    });
+    setQueueActiveRun({ status: toQueueActiveRunStatus(result.job.status), jobs: [result.job], transactions: result.transactions });
+  }
+
+  async function runQueueRecovery(
+    operation: "resume" | "retry" | "rerun",
+    runner: typeof resumeStoppedQueueJob | typeof retryFailedQueueJob | typeof rerunQueueFromFailedNonce,
+  ) {
+    if (queueRecoveryBusyRef.current) return;
+    if (!session || !queueSigner || !queueBroadcaster || !activeChain || !queueActiveRun || queueSessionDrafts.size === 0) {
+      setQueueError("恢复、重试和续跑需要当前标签页的未关闭队列草稿；仅凭本地历史不能继续。");
+      return;
+    }
+
+    queueRecoveryBusyRef.current = true;
+    queueRecoveryStopRef.current = false;
+    const previousActiveRun = queueActiveRun;
+    setQueueRecoveryBusy(true);
+    setQueueActiveRun((previous) => (previous ? { ...previous, status: "running" } : previous));
+    setQueueError(null);
+    try {
+      const result = await runner({
+        broadcaster: queueBroadcaster,
+        chainId: activeChain.chainId,
+        historyTransactions: queueActiveRun.transactions,
+        policy: queuePolicy,
+        sessionDraftsByTransactionId: queueSessionDrafts,
+        shouldStop: () => queueRecoveryStopRef.current,
+        signer: queueSigner,
+        title: operation === "resume" ? "恢复停止队列" : operation === "retry" ? "重试失败队列" : "从失败 nonce 续跑",
+      });
+      mergeQueueRunResult(result);
+    } catch (err) {
+      setQueueActiveRun(previousActiveRun);
+      setQueueError(normalizeQueueRecoveryErrorMessage(err));
+    } finally {
+      queueRecoveryBusyRef.current = false;
+      queueRecoveryStopRef.current = false;
+      setQueueRecoveryBusy(false);
+    }
+  }
+
+  function stopQueueRun() {
+    queueRecoveryStopRef.current = true;
+    setQueueActiveRun((previous) => (previous ? { ...previous, status: queueRecoveryBusyRef.current ? "stopping" : "stopped" } : previous));
+  }
+
   function renderSettingsSection() {
     return (
       <SettingsModule>
@@ -446,12 +603,35 @@ export function PwaShell({
     );
   }
 
+  function renderQueueSection() {
+    return (
+      <QueueModule>
+        <PwaQueueHistoryWorkspace
+          activeRun={queueActiveRun}
+          history={queueHistory}
+          busy={queueRecoveryBusy}
+          onExport={handleExportQueueHistory}
+          onPolicyChange={(nextPolicy) => setQueuePolicy(nextPolicy)}
+          onRerunFromFailedNonce={() => void runQueueRecovery("rerun", rerunQueueFromFailedNonce)}
+          onResume={() => void runQueueRecovery("resume", resumeStoppedQueueJob)}
+          onRetryFailed={() => void runQueueRecovery("retry", retryFailedQueueJob)}
+          onStop={stopQueueRun}
+          policy={queuePolicy}
+          unlocked={Boolean(session)}
+        />
+        <p className="notice-panel">P13 队列/历史不提供任意交易发送表单；业务发送入口由 P14+ 页面接入。</p>
+        {queueError && <p className="notice-panel notice-panel-warning">{queueError}</p>}
+      </QueueModule>
+    );
+  }
+
   return (
     <AppShell
       accountsContent={renderAccountsSection()}
       activeModuleId={activeModuleId}
       assetsContent={renderAssetsSection()}
       onSelectModule={setActiveModuleId}
+      queueContent={renderQueueSection()}
       sessionSummary={summarizeAppSession(session, activeChain)}
       settingsContent={renderSettingsSection()}
     />

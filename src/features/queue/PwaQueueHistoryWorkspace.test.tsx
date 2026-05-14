@@ -135,4 +135,22 @@ describe("PwaQueueHistoryWorkspace", () => {
     fireEvent.change(screen.getByLabelText("钱包间隔 ms"), { target: { value: "-1" } });
     expect(onPolicyChange).toHaveBeenCalledWith({ ...props.policy, walletIntervalMs: 0 });
   });
+
+  it("disables recovery actions while a recovery run is in flight but keeps stop available", () => {
+    const currentHistory = history();
+    renderWorkspace({
+      activeRun: {
+        status: "running",
+        jobs: currentHistory.jobs,
+        transactions: currentHistory.transactions,
+      },
+      busy: true,
+      unlocked: true,
+    });
+
+    expect(screen.getByRole("button", { name: "停止队列" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "恢复停止项" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "重试失败" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "从失败 nonce 续跑" })).toBeDisabled();
+  });
 });
